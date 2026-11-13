@@ -1,0 +1,16 @@
+# ---- build artifacts ----
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- runtime outputs ----
+out/
+out-*/
+*.log
+
+# ---- misc ----
+.DS_Store
+*.bak
+Thumbs.db
