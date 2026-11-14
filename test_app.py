@@ -1243,6 +1243,102 @@ class AppContractTest(unittest.TestCase):
                     "setDefaultOutdir"):
             self.assertIn('id="%s"' % fid, html, "设置页缺少 %s 控件" % fid)
 
+    # ------------------------------------------------------------------ #
+    # 28) v0.3.6：侧栏宽度可调节 + 关于页版本更新 / 运行日志导出
+    # ------------------------------------------------------------------ #
+    def test_28_resizable_nav_update_and_log_export(self):
+        srv = self.start()
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 侧栏宽度可调节：CSS 变量 + 拖拽手柄 + 记忆 + 折叠态覆盖
+        self.assertIn("--sidebar-w", css, "侧栏宽度未用 CSS 变量，无法动态调节")
+        self.assertIn("width: var(--sidebar-w)", css,
+                      ".sidebar 宽度未绑定 --sidebar-w")
+        self.assertIn(".nav-resizer", css, "缺少拖拽手柄样式")
+        self.assertIn(".app.nav-collapsed .nav-resizer", css,
+                      "折叠态未隐藏拖拽手柄（折叠宽度必须固定 58px）")
+        self.assertIn('id="navResizer"', html, "index.html 缺少拖拽手柄元素")
+        self.assertIn("initNavResize", js, "app.js 未初始化宽度拖拽")
+        self.assertIn("LS_NAV_W", js, "侧栏宽度未记忆到 localStorage")
+        self.assertIn("applyNavWidth", js, "缺少宽度钳制函数")
+        # 折叠态规则优先级更高，必须能覆盖变量
+        self.assertIn(".app.nav-collapsed .sidebar { width: 58px; }", css,
+                      "折叠态宽度未固定为 58px")
+
+        # ② 关于页「版本更新」：按钮 + 下载链接指向仓库最新版
+        self.assertIn('id="btnCheckUpdate"', html, "关于页缺少检查更新按钮")
+        self.assertIn('id="btnDownloadLatest"', html, "关于页缺少下载最新版本按钮")
+        self.assertIn('id="repoLink"', html, "关于页缺少仓库链接")
+        self.assertIn("https://github.com/kong-city/jinghe/releases/latest", html,
+                      "下载链接未指向 GitHub 仓库最新版本页")
+        self.assertIn("RELEASES_LATEST_URL", src, "后端未定义最新版本链接常量")
+        self.assertIn("/api/check-update", js, "前端未调用检查更新接口")
+        self.assertIn("/api/open-latest", js, "前端未调用打开下载页接口")
+
+        # ③ 首页「输出与选项」移除打开日志按钮，功能迁到关于页运行日志区
+        self.assertNotIn('id="btnOpenLog"', html,
+                         "首页仍保留打开日志文件按钮（应移到关于页）")
+        self.assertNotIn("btnOpenLog:", js, "app.js 仍注册已删除的首页日志按钮")
+        self.assertIn('id="btnOpenAboutLog"', html, "关于页运行日志缺少打开文件按钮")
+        self.assertIn('id="btnExportLog"', html, "关于页运行日志缺少生成指定文件按钮")
+        self.assertIn('id="chkErrorsOnly"', html, "缺少「仅导出报错行」选项")
+
+        # ④ 检查更新接口：离线也要诚实降级，但下载链接始终可用
+        status, upd = srv.get_json("/api/check-update")
+        self.assertEqual(status, 200, "/api/check-update 未返回 200")
+        self.assertIs(upd.get("ok"), True, "检查更新接口缺少 ok=true")
+        self.assertIn("current", upd, "检查更新未返回当前版本")
+        self.assertIn("latest_url", upd, "检查更新未返回下载链接")
+        self.assertTrue(upd["latest_url"].startswith(
+            "https://github.com/kong-city/jinghe/releases"),
+            "下载链接不是仓库 releases 页面：%s" % upd.get("latest_url"))
+        # 离线时 latest 可以为 None，但必须标记 offline 而不是伪装成功
+        if upd.get("offline"):
+            self.assertIsNone(upd.get("latest"), "离线时不应伪造最新版本号")
+            self.assertTrue(upd.get("error"), "离线降级缺少 error 说明")
+
+        # ⑤ 日志导出：显式给 path（不弹原生对话框），验证生成内容与报错筛选
+        dest = self.tmp / "jinghe-export.log"
+        status, exported = srv.post_json("/api/export-log",
+                                         {"path": str(dest), "errors_only": False})
+        self.assertEqual(status, 200, "/api/export-log 未返回 200")
+        self.assertIs(exported.get("ok"), True,
+                      "日志导出失败：%s" % exported.get("error"))
+        self.assertTrue(dest.is_file(), "日志导出文件未生成")
+        text = dest.read_text(encoding="utf-8")
+        self.assertIn("精核 · 运行日志导出", text, "导出文件缺少报告头")
+        self.assertIn("软件版本", text, "导出报告缺少版本信息")
+        self.assertIn("导出模式", text, "导出报告缺少模式标注")
+        self.assertGreater(exported.get("bytes", 0), 0, "导出字节数异常")
+        self.assertIs(exported.get("errors_only"), False, "errors_only 回显错误")
+
+        # 仅报错模式：行数不应超过完整导出，且带模式标记
+        dest2 = self.tmp / "jinghe-errors-only.log"
+        status, only = srv.post_json("/api/export-log",
+                                     {"path": str(dest2), "errors_only": True})
+        self.assertEqual(status, 200, "仅报错导出未返回 200")
+        self.assertIs(only.get("ok"), True, "仅报错导出失败")
+        self.assertIs(only.get("errors_only"), True, "errors_only 回显错误")
+        self.assertLessEqual(only.get("lines", 1 << 30),
+                             exported.get("lines", 0),
+                             "仅报错模式行数居然多于完整导出")
+        self.assertIn("仅报错 / 警告行", dest2.read_text(encoding="utf-8"),
+                      "仅报错导出文件缺少模式标注")
+
+        # ⑥ 安全：目标是目录 / 是原始日志文件时必须拒绝，不能覆盖
+        status, bad = srv.post_json("/api/export-log",
+                                    {"path": str(self.tmp), "errors_only": False})
+        self.assertEqual(status, 200)
+        self.assertIs(bad.get("ok"), False, "目标为目录时未拒绝")
+
+        # ⑦ /api/open-latest 契约：URL 固定常量，不接受外部参数（防滥用）
+        self.assertIn("RELEASES_LATEST_URL", src)
+        self.assertIn('elif path == "/api/open-latest"', src,
+                      "后端缺少打开下载页路由")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

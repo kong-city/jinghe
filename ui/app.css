@@ -20,14 +20,17 @@ button, input { font-family: inherit; }
 
 /* ---------- 应用骨架：左侧导航 + 右侧内容 ---------- */
 .app {
+  /* 侧栏宽度由 JS 拖拽后写入 --sidebar-w；折叠态由 .nav-collapsed 覆盖为 58px */
+  --sidebar-w: 184px;
   display: flex;
   align-items: stretch;
   min-height: 100vh;
 }
 
 .sidebar {
+  position: relative;
   flex: 0 0 auto;
-  width: 184px;
+  width: var(--sidebar-w);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -36,6 +39,32 @@ button, input { font-family: inherit; }
   border-right: 1px solid #E5E3DC;
   transition: width 160ms ease;
 }
+
+/* 拖动调节宽度时关掉过渡，避免跟手延迟；折叠态隐藏手柄 */
+.app.nav-resizing .sidebar { transition: none; }
+.nav-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+}
+.nav-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 3px;
+  width: 1px;
+  height: 100%;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.nav-resizer:hover::after,
+.app.nav-resizing .nav-resizer::after { background: #185FA5; }
+.app.nav-collapsed .nav-resizer { display: none; }
 
 /* 折叠态：只留图标条，文字隐藏（图标是唯一的导航线索） */
 .app.nav-collapsed .sidebar { width: 58px; }
@@ -727,3 +756,25 @@ button, input { font-family: inherit; }
   text-align: center;
   border-bottom: none;
 }
+
+/* ---------- 关于页：版本更新 / 运行日志 ---------- */
+.repo-link {
+  font-size: 12px;
+  color: #185FA5;
+  text-decoration: none;
+  word-break: break-all;
+}
+.repo-link:hover { text-decoration: underline; }
+
+.export-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6B6A65;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.export-check input { width: 15px; height: 15px; }
+
+.about-item b.mono { font-size: 12px; }

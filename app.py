@@ -44,6 +44,14 @@ HOST = "127.0.0.1"
 # 而不是抢占——这是有意的单实例保护。
 DEFAULT_PORT = 54321
 CREATE_NO_WINDOW = 0x08000000
+
+# 仓库与「最新版本」链接：GitHub 的 /releases/latest 会重定向到最新的 release，
+# 因此即使离线（无法调 API 查询具体 tag），下载按钮也始终指向仓库最新版本。
+REPO_URL = "https://github.com/kong-city/jinghe"
+RELEASES_LATEST_URL = REPO_URL + "/releases/latest"
+RELEASES_API_URL = "https://api.github.com/repos/kong-city/jinghe/releases/latest"
+# 检查更新的网络超时（秒）：桌面软件不能被慢网络卡住，超时即诚实降级。
+UPDATE_TIMEOUT = 4.0
 # 仅预览（--dry-run）超时：extract.py 会 rglob 全量递归（extract.py:1690-1693）
 # 并对每个文件读全盘算 sha256（extract.py:1756），网络盘 / 被占用文件 /
 # 超大目录会显著拖慢；600 秒对「预览」不可接受，收敛到 30 秒并给前端准确文案，
@@ -348,6 +356,12 @@ def _env_snapshot() -> dict:
         except Exception:
             pass
     return snap
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    """把 'v0.3.6' / '0.3.6' 归一成可比数字元组；非数字段忽略。"""
+    nums = re.findall(r"\d+", text or "")
+    return tuple(int(n) for n in nums[:3])
 
 
 def _job_context() -> str:
@@ -1130,6 +1144,15 @@ _OFN_FLAGS = (_OFN_HIDEREADONLY | _OFN_NOCHANGEDIR | _OFN_ALLOWMULTISELECT
 
 _OFN_TITLE = "选择要提取的文件（可多选）"
 
+# 「把日志生成到指定文件」用 GetSaveFileNameW（另存为）：
+# 与多选打开框共用 _OPENFILENAMEW 结构，但不能带 ALLOWMULTISELECT / FILEMUSTEXIST，
+# 改带 OVERWRITEPROMPT（覆盖已有文件时让用户确认）。
+_OFN_OVERWRITEPROMPT = 0x00000002
+_SAVE_FLAGS = (_OFN_HIDEREADONLY | _OFN_NOCHANGEDIR | _OFN_EXPLORER
+               | _OFN_PATHMUSTEXIST | _OFN_LONGNAMES | _OFN_ENABLESIZING
+               | _OFN_OVERWRITEPROMPT)
+_SAVE_TITLE = "把运行日志生成到指定文件"
+
 # 过滤器：name\0spec\0 依次排列，末尾再补一个 \0 表示整表结束
 _FILE_FILTERS = [
     ("常用文档",
@@ -1221,6 +1244,46 @@ def _pick_files_win32(initial: str) -> list[str]:
             raise OSError("所选文件过多，超出选择框缓冲容量，请分批选择")
         raise OSError("GetOpenFileNameW 0x%04X" % err)
     return _parse_ofn_paths(_split_ofn_buffer(filebuf, _OFN_FILE_BUFFER_CHARS))
+
+
+def _pick_save_file_win32(default_name: str) -> str | None:
+    """GetSaveFileNameW 另存为；用户取消返回 None，真实错误抛异常。"""
+    comdlg32 = ctypes.windll.comdlg32
+    user32 = ctypes.windll.user32
+    comdlg32.GetSaveFileNameW.restype = ctypes.c_int
+    comdlg32.GetSaveFileNameW.argtypes = [ctypes.POINTER(_OPENFILENAMEW)]
+    comdlg32.CommDlgExtendedError.restype = ctypes.c_uint32
+    comdlg32.CommDlgExtendedError.argtypes = []
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+
+    filt = ctypes.create_unicode_buffer(
+        "日志文件\0*.log\0文本文件\0*.txt\0Markdown\0*.md\0所有文件\0*.*\0\0")
+    filebuf = ctypes.create_unicode_buffer(1024)
+    filebuf.value = default_name
+    initbuf = ctypes.create_unicode_buffer(1024)
+    initbuf.value = str(LOG_DIR)
+    titlebuf = ctypes.create_unicode_buffer(_SAVE_TITLE)
+    defext = ctypes.create_unicode_buffer("log")
+
+    ofn = _OPENFILENAMEW()
+    ofn.lStructSize = ctypes.sizeof(_OPENFILENAMEW)
+    ofn.hwndOwner = ctypes.c_void_p(user32.GetForegroundWindow())
+    ofn.lpstrFilter = ctypes.cast(filt, ctypes.c_void_p)
+    ofn.nFilterIndex = 1
+    ofn.lpstrFile = ctypes.cast(filebuf, ctypes.c_void_p)
+    ofn.nMaxFile = 1024
+    ofn.lpstrInitialDir = ctypes.cast(initbuf, ctypes.c_void_p)
+    ofn.lpstrTitle = ctypes.cast(titlebuf, ctypes.c_void_p)
+    ofn.lpstrDefExt = ctypes.cast(defext, ctypes.c_void_p)
+    ofn.Flags = _SAVE_FLAGS
+
+    ok = comdlg32.GetSaveFileNameW(ctypes.byref(ofn))
+    if not ok:
+        err = comdlg32.CommDlgExtendedError()
+        if err == 0:
+            return None  # 用户取消
+        raise OSError("GetSaveFileNameW 0x%04X" % err)
+    return filebuf.value
 
 
 def _com_method(ptr, index: int, restype, *argtypes):
@@ -1616,6 +1679,10 @@ class Handler(BaseHTTPRequestHandler):
                 _touch_heartbeat()
                 self._send_json({"ok": True})
                 return
+            if path == "/api/check-update":
+                _touch_heartbeat()
+                self._send_json(self._api_check_update())
+                return
             if path == "/api/settings":
                 _touch_heartbeat()
                 self._send_json({
@@ -1770,6 +1837,15 @@ class Handler(BaseHTTPRequestHandler):
                                  "settings_file": str(SETTINGS_FILE)})
             elif path == "/api/open":
                 self._send_json(self._api_open(str(data.get("path") or "").strip()))
+            elif path == "/api/open-latest":
+                self._send_json(self._api_open_latest())
+            elif path == "/api/pick-log-dest":
+                self._send_json(self._api_pick_log_dest())
+            elif path == "/api/export-log":
+                self._send_json(self._api_export_log(
+                    str(data.get("path") or "").strip(),
+                    bool(data.get("errors_only")),
+                ))
             elif path == "/api/summarize":
                 self._send_json(
                     self._api_summarize(str(data.get("outdir") or "").strip()))
@@ -1854,6 +1930,141 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % exc}
         return {"ok": True}
+
+    # ---------------------------- 关于页：版本更新 / 运行日志 ---------------------------- #
+    def _api_check_update(self) -> dict:
+        """查询 GitHub 最新 release。断网/超时诚实降级，下载链接始终指向仓库最新版。"""
+        current = capabilities().get("version", "unknown")
+        out = {
+            "ok": True,
+            "current": current,
+            "latest": None,
+            "latest_url": RELEASES_LATEST_URL,
+            "repo_url": REPO_URL,
+            "up_to_date": None,
+            "offline": False,
+            "error": None,
+        }
+        try:
+            req = urllib.request.Request(
+                RELEASES_API_URL,
+                headers={"User-Agent": "jinghe-desktop",
+                         "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+            tag = str(data.get("tag_name") or "").strip()
+            html_url = str(data.get("html_url") or "").strip()
+            if tag:
+                out["latest"] = tag
+                out["up_to_date"] = _version_tuple(current) >= _version_tuple(tag.lstrip("vV"))
+                if html_url.startswith(REPO_URL):
+                    out["latest_url"] = html_url
+        except Exception as exc:
+            out["offline"] = True
+            out["error"] = "无法连接 GitHub 检查更新：%s" % exc
+            _append_log("[WARN] 检查更新失败（离线降级，下载链接仍可用）：%s" % exc)
+        return out
+
+    def _api_open_latest(self) -> dict:
+        """用系统默认浏览器打开仓库「最新版本」下载页（URL 为固定常量，不接受外部参数）。"""
+        try:
+            webbrowser.open(RELEASES_LATEST_URL)
+        except Exception as exc:
+            _log_error("API:/api/open-latest", "打开下载页失败", exc)
+            return {"ok": False, "error": "打开浏览器失败：%s" % exc,
+                    "url": RELEASES_LATEST_URL}
+        _append_log("[INFO] 已打开仓库最新版本下载页：%s" % RELEASES_LATEST_URL)
+        return {"ok": True, "url": RELEASES_LATEST_URL}
+
+    def _api_pick_log_dest(self) -> dict:
+        """弹出「另存为」对话框，仅返回用户选定的路径，不写文件。"""
+        if os.name != "nt":
+            return {"ok": False, "error": "当前系统不支持原生另存为对话框，请直接填写目标路径"}
+        try:
+            chosen = _pick_save_file_win32(
+                "jinghe-log-%s.log" % time.strftime("%Y%m%d-%H%M%S"))
+        except Exception as exc:
+            _log_error("API:/api/pick-log-dest", "另存为对话框失败", exc)
+            return {"ok": False, "error": "另存为对话框失败：%s" % exc}
+        if not chosen:
+            return {"ok": False, "cancelled": True}
+        return {"ok": True, "path": chosen}
+
+    def _api_export_log(self, target: str, errors_only: bool) -> dict:
+        """把运行日志生成为指定文件；可选只保留报错/警告行，便于系统排查与提交反馈。"""
+        if not target:
+            picked = self._api_pick_log_dest()
+            if not picked.get("ok"):
+                return picked
+            target = str(picked["path"])
+        try:
+            dest = Path(target).expanduser()
+            if not dest.is_absolute():
+                dest = (Path.cwd() / dest).resolve()
+            else:
+                dest = dest.resolve()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": "目标路径无效：%s" % exc}
+        protected = {LOG_FILE.resolve(),
+                     LOG_FILE.with_name(LOG_FILE.name + ".1").resolve()}
+        if dest in protected or dest.is_dir():
+            return {"ok": False, "error": "不能覆盖原始日志文件或目录，请另选文件名"}
+
+        snap = _env_snapshot()
+        header = [
+            "精核 · 运行日志导出",
+            "导出时间: %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+            "软件版本: %s" % snap.get("version"),
+            "运行平台: %s" % snap.get("platform"),
+            "Python  : %s" % snap.get("python"),
+            "工作目录: %s" % snap.get("cwd"),
+            "可执行文件: %s" % snap.get("executable"),
+            "进程 PID: %s" % snap.get("pid"),
+            "任务上下文: %s" % _job_context(),
+            "导出模式: %s" % ("仅报错 / 警告行" if errors_only else "完整日志"),
+            "原始日志: %s" % LOG_FILE,
+            "=" * 60,
+        ]
+        raw = ""
+        for src in (LOG_FILE.with_name(LOG_FILE.name + ".1"), LOG_FILE):
+            try:
+                if src.is_file():
+                    raw += src.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+        lines = raw.splitlines()
+        if errors_only:
+            marks = ("[ERROR]", "[WARN]", "[FATAL]", "Traceback", "组件=", "异常",
+                     "环境状态:", "任务上下文=", "请求上下文=")
+            keep: list[str] = []
+            in_block = False
+            for ln in lines:
+                if any(m in ln for m in marks):
+                    keep.append(ln)
+                    in_block = True
+                elif in_block and ln.startswith((" ", "\t")):
+                    keep.append(ln)  # 环境状态明细 / 栈缩进一并保留
+                else:
+                    in_block = False
+            lines = keep or ["（本次日志中未找到报错 / 警告记录）"]
+        if not lines:
+            lines = ["（日志暂无内容）"]
+        text = "\n".join(header + lines) + "\n"
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(dest)
+        except OSError as exc:
+            _log_error("API:/api/export-log", "写日志导出文件失败", exc,
+                       request=target)
+            return {"ok": False, "error": "写入文件失败：%s" % exc}
+        _append_log("[INFO] 运行日志已生成到指定文件：%s（%d 行，仅报错=%s）"
+                    % (dest, len(lines), errors_only))
+        return {"ok": True, "path": str(dest),
+                "bytes": len(text.encode("utf-8")),
+                "lines": len(lines), "errors_only": bool(errors_only)}
 
     # ---------------------------- 阶段 2 / 3 后处理 ---------------------------- #
     def _api_summarize(self, outdir: str) -> dict:

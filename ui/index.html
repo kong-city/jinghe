@@ -49,6 +49,10 @@
     <div class="side-foot">
       <span class="side-version mono" id="sideVersion">—</span>
     </div>
+
+    <!-- 拖拽右边缘调节侧栏宽度；折叠态隐藏，双击复位默认宽度 -->
+    <div class="nav-resizer" id="navResizer"
+         title="拖动调节导航栏宽度（双击恢复默认）" aria-hidden="true"></div>
   </aside>
 
   <main class="content">
@@ -59,7 +63,7 @@
           <p id="pageSub">阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
         </div>
       </div>
-      <div class="header-tag" id="headerTag">v0.3.5</div>
+      <div class="header-tag" id="headerTag">v0.3.6</div>
     </header>
 
     <!-- ==================== 首页 ==================== -->
@@ -99,8 +103,8 @@
           <div class="row">
             <button id="btnOpenOut" class="btn btn-ghost" type="button" disabled>打开输出目录</button>
             <button id="btnOpenMerged" class="btn btn-ghost" type="button" disabled>打开合并文档</button>
-            <button id="btnOpenLog" class="btn btn-ghost" type="button">打开日志文件</button>
           </div>
+          <div class="meta-hint">运行日志已移到「关于 · 运行日志」，可打开文件或生成到指定位置</div>
         </div>
       </section>
 
@@ -243,15 +247,45 @@
     <!-- ==================== 关于 ==================== -->
     <section class="page" id="page-about" hidden>
       <section class="card">
-        <div class="card-title">精核 · 文件提取</div>
-        <div class="card-sub">把一批文件丢进来，得到结构化 Markdown、一份带来源标注的合并文档、一份工程对账清单。</div>
+        <div class="card-title">版本更新</div>
+        <div class="card-sub">检查 GitHub 仓库是否有新版本；下载按钮始终指向仓库<strong>最新版本</strong>页面（离线也可直接打开）。</div>
         <div class="about-grid">
-          <div class="about-item"><span>软件版本</span><b id="aboutVersion">—</b></div>
+          <div class="about-item"><span>当前版本</span><b class="mono" id="aboutVersion">—</b></div>
+          <div class="about-item"><span>最新版本</span><b class="mono" id="aboutLatest">尚未检查</b></div>
+        </div>
+        <div class="row set-actions">
+          <button id="btnCheckUpdate" class="btn btn-ghost" type="button">检查更新</button>
+          <button id="btnDownloadLatest" class="btn btn-primary" type="button">下载最新版本</button>
+          <span id="updateStatus" class="run-status"></span>
+        </div>
+        <div class="row">
+          <a id="repoLink" class="repo-link mono" href="https://github.com/kong-city/jinghe/releases/latest"
+             target="_blank" rel="noopener noreferrer">https://github.com/kong-city/jinghe/releases/latest</a>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">运行日志</div>
+        <div class="card-sub">运行时报错会连带记录组件与环境状态。可打开原始日志在系统里查找报错，或把日志生成到指定文件便于排查与反馈。</div>
+        <div class="about-grid">
+          <div class="about-item"><span>软件版本</span><b id="aboutVersion2">—</b></div>
           <div class="about-item"><span>Python</span><b id="aboutPython">—</b></div>
           <div class="about-item"><span>运行平台</span><b id="aboutPlatform">—</b></div>
-          <div class="about-item"><span>规格版本</span><b id="aboutSpec">v2.x（SPEC.md，独立编号）</b></div>
+          <div class="about-item"><span>规格版本</span><b>v2.x（SPEC.md，独立编号）</b></div>
           <div class="about-item"><span>界面形态</span><b>Edge 应用窗口（本地服务 + 零第三方依赖）</b></div>
-          <div class="about-item"><span>运行日志</span><b class="mono" id="aboutLog">—</b></div>
+          <div class="about-item"><span>日志文件</span><b class="mono" id="aboutLog">—</b></div>
+        </div>
+        <div class="row set-actions">
+          <button id="btnOpenAboutLog" class="btn btn-ghost" type="button">打开文件</button>
+          <button id="btnExportLog" class="btn btn-ghost" type="button">生成指定文件…</button>
+          <label class="export-check">
+            <input id="chkErrorsOnly" type="checkbox">
+            <span>仅导出报错 / 警告行</span>
+          </label>
+          <span id="logExportStatus" class="run-status"></span>
+        </div>
+        <div class="row">
+          <span class="mono set-path" id="aboutExportResult"></span>
         </div>
       </section>
 
@@ -271,7 +305,6 @@
         <p class="card-sub">全部处理都在本机完成，不上传任何文件内容；软件只依赖 Python 标准库，打包后是单个可执行文件。</p>
         <div class="row">
           <span class="mono set-path">https://github.com/kong-city/jinghe</span>
-          <button id="btnOpenAboutLog" class="btn btn-ghost" type="button">打开日志文件</button>
         </div>
       </section>
     </section>

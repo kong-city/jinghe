@@ -51,9 +51,10 @@
     btnExportDocx: $("btnExportDocx"),
     btnTranscribe: $("btnTranscribe"),
     btnKnowledgeBase: $("btnKnowledgeBase"),
-    btnOpenLog: $("btnOpenLog"),
     // 左侧导航与页面
     appShell: $("appShell"),
+    sidebar: $("sidebar"),
+    navResizer: $("navResizer"),
     btnToggleNav: $("btnToggleNav"),
     sideVersion: $("sideVersion"),
     pageTitle: $("pageTitle"),
@@ -76,12 +77,23 @@
     settingsFilePath: $("settingsFilePath"),
     btnOpenLogSettings: $("btnOpenLogSettings"),
     btnOpenSettingsFile: $("btnOpenSettingsFile"),
-    // 关于页
+    // 关于页 · 版本更新
     aboutVersion: $("aboutVersion"),
+    aboutLatest: $("aboutLatest"),
+    btnCheckUpdate: $("btnCheckUpdate"),
+    btnDownloadLatest: $("btnDownloadLatest"),
+    updateStatus: $("updateStatus"),
+    repoLink: $("repoLink"),
+    // 关于页 · 运行日志
+    aboutVersion2: $("aboutVersion2"),
     aboutPython: $("aboutPython"),
     aboutPlatform: $("aboutPlatform"),
     aboutLog: $("aboutLog"),
-    btnOpenAboutLog: $("btnOpenAboutLog")
+    btnOpenAboutLog: $("btnOpenAboutLog"),
+    btnExportLog: $("btnExportLog"),
+    chkErrorsOnly: $("chkErrorsOnly"),
+    logExportStatus: $("logExportStatus"),
+    aboutExportResult: $("aboutExportResult")
   };
 
   // 后端 app.log 路径（来自 /api/state.log_file）；启动即可用，按钮常亮
@@ -189,6 +201,10 @@
 
   // ---- 左侧导航：折叠状态 + 页面切换 ------------------------------------- //
   var LS_NAV = "jinghe.nav.collapsed";
+  var LS_NAV_W = "jinghe.nav.width";
+  var NAV_W_MIN = 148;   // 再窄文字会被挤掉
+  var NAV_W_MAX = 360;   // 再宽内容区太窄
+  var NAV_W_DEFAULT = 184;
   var currentPage = "home";
 
   // 后端设置（来自 /api/settings）；remember_paths 决定路径要不要记
@@ -209,6 +225,55 @@
     if (!el.appShell) return;
     el.appShell.classList.toggle("nav-collapsed", !!collapsed);
     lsSet(LS_NAV, collapsed ? "1" : "");
+  }
+
+  // 侧栏宽度写在 .app 的 --sidebar-w 上：折叠态由 CSS 覆盖为 58px，
+  // 展开后自动回到用户上次拖出来的宽度。拖动时临时关掉 transition 跟手。
+  function applyNavWidth(px) {
+    var w = Math.max(NAV_W_MIN, Math.min(NAV_W_MAX, Math.round(px)));
+    if (el.appShell) el.appShell.style.setProperty("--sidebar-w", w + "px");
+    return w;
+  }
+
+  function initNavResize() {
+    if (!el.navResizer || !el.sidebar) return;
+    var saved = parseInt(lsGet(LS_NAV_W), 10);
+    if (saved >= NAV_W_MIN && saved <= NAV_W_MAX) applyNavWidth(saved);
+
+    var dragging = false;
+    var startX = 0;
+    var startW = NAV_W_DEFAULT;
+    var targetW = NAV_W_DEFAULT;   // 记录钳制后的目标宽度，不读动画中间帧
+
+    el.navResizer.addEventListener("mousedown", function (e) {
+      if (el.appShell.classList.contains("nav-collapsed")) return;
+      dragging = true;
+      startX = e.clientX;
+      startW = el.sidebar.getBoundingClientRect().width;
+      targetW = startW;
+      el.appShell.classList.add("nav-resizing");
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", function (e) {
+      if (!dragging) return;
+      targetW = applyNavWidth(startW + (e.clientX - startX));
+    });
+    document.addEventListener("mouseup", function () {
+      if (!dragging) return;
+      dragging = false;
+      el.appShell.classList.remove("nav-resizing");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      // 保存目标值：此时 transition 可能仍在从旧宽度动画到新宽度，
+      // getBoundingClientRect() 会读到中间帧，直接用 targetW 才准确。
+      lsSet(LS_NAV_W, String(targetW));
+    });
+    el.navResizer.addEventListener("dblclick", function () {
+      targetW = applyNavWidth(NAV_W_DEFAULT);
+      lsSet(LS_NAV_W, String(targetW));
+    });
   }
 
   function activatePage(name) {
@@ -273,13 +338,80 @@
   function loadAbout() {
     api("/api/state", undefined, 10000).then(function (st) {
       if (!st) return;
-      if (el.aboutVersion) el.aboutVersion.textContent = st.version || "—";
+      var ver = st.version || "—";
+      if (el.aboutVersion) el.aboutVersion.textContent = ver;
+      if (el.aboutVersion2) el.aboutVersion2.textContent = ver;
       if (el.aboutPython) el.aboutPython.textContent = st.python || "—";
       if (el.aboutPlatform) el.aboutPlatform.textContent = st.platform || "—";
       if (el.aboutLog) el.aboutLog.textContent = st.log_file || "—";
-      if (el.sideVersion) el.sideVersion.textContent = "v" + (st.version || "—");
-      if (el.headerTag) el.headerTag.textContent = "v" + (st.version || "—");
+      if (el.sideVersion) el.sideVersion.textContent = "v" + ver;
+      if (el.headerTag) el.headerTag.textContent = "v" + ver;
     }).catch(function () { /* 读不到就保持占位符 */ });
+  }
+
+  // 版本更新：查询 GitHub 最新 release；查询失败（离线/超时）诚实提示，
+  // 但下载按钮始终指向仓库最新版本页面，不因查询失败而失效。
+  function checkUpdate() {
+    if (el.updateStatus) el.updateStatus.textContent = "检查中…";
+    if (el.btnCheckUpdate) el.btnCheckUpdate.disabled = true;
+    api("/api/check-update", undefined, 12000).then(function (r) {
+      if (el.btnCheckUpdate) el.btnCheckUpdate.disabled = false;
+      if (!r) { if (el.updateStatus) el.updateStatus.textContent = "检查失败"; return; }
+      if (r.latest) {
+        if (el.aboutLatest) el.aboutLatest.textContent = r.latest;
+        if (el.updateStatus) {
+          el.updateStatus.textContent = r.up_to_date
+            ? "已是最新版本" : "发现新版本 " + r.latest;
+        }
+        if (r.latest_url && el.repoLink) el.repoLink.href = r.latest_url;
+      } else {
+        if (el.aboutLatest) el.aboutLatest.textContent = "离线 / 未获取";
+        if (el.updateStatus) {
+          el.updateStatus.textContent = "无法查询版本号，仍可点「下载最新版本」打开仓库最新发布页";
+        }
+      }
+    }).catch(function (err) {
+      if (el.btnCheckUpdate) el.btnCheckUpdate.disabled = false;
+      if (el.aboutLatest) el.aboutLatest.textContent = "离线 / 未获取";
+      if (el.updateStatus) el.updateStatus.textContent = "检查失败：" + (err.message || err);
+    });
+  }
+
+  function downloadLatest() {
+    if (el.updateStatus) el.updateStatus.textContent = "正在打开下载页…";
+    api("/api/open-latest", {}, 10000).then(function (r) {
+      if (el.updateStatus) {
+        el.updateStatus.textContent = (r && r.ok)
+          ? "已在浏览器中打开最新版本下载页" : "打开失败：" + ((r && r.error) || "未知");
+      }
+    }).catch(function (err) {
+      if (el.updateStatus) el.updateStatus.textContent = "打开失败：" + (err.message || err);
+    });
+  }
+
+  // 把运行日志生成到用户指定的文件：可只保留报错/警告行，便于系统排查。
+  function exportLog() {
+    var only = !!(el.chkErrorsOnly && el.chkErrorsOnly.checked);
+    if (el.logExportStatus) el.logExportStatus.textContent = "正在生成…";
+    if (el.btnExportLog) el.btnExportLog.disabled = true;
+    api("/api/export-log", { errors_only: only }, 120000).then(function (r) {
+      if (el.btnExportLog) el.btnExportLog.disabled = false;
+      if (r && r.cancelled) {
+        if (el.logExportStatus) el.logExportStatus.textContent = "已取消";
+        return;
+      }
+      if (!r || !r.ok) {
+        if (el.logExportStatus) {
+          el.logExportStatus.textContent = "生成失败：" + ((r && r.error) || "未知");
+        }
+        return;
+      }
+      if (el.logExportStatus) el.logExportStatus.textContent = "已生成 " + r.lines + " 行";
+      if (el.aboutExportResult) el.aboutExportResult.textContent = r.path;
+    }).catch(function (err) {
+      if (el.btnExportLog) el.btnExportLog.disabled = false;
+      if (el.logExportStatus) el.logExportStatus.textContent = "生成失败：" + (err.message || err);
+    });
   }
 
   function showBar(kind, message) {
@@ -292,13 +424,19 @@
   function showNotice(message) { showBar("notice", message); }
   function clearBar() { el.errorBar.hidden = true; el.errorBar.textContent = ""; }
 
-  function openLogFile() {
-    if (!logFile) { showNotice("日志路径尚未就绪，请稍候重试。"); return; }
+  // 可选 statusEl：关于页自己有状态栏（首页 errorBar 在切换页面后不可见）
+  function openLogFile(statusEl) {
+    function report(message) {
+      if (statusEl) statusEl.textContent = message;
+      else showError(message);
+    }
+    if (!logFile) { report("日志路径尚未就绪，请稍候重试。"); return; }
     api("/api/open", { path: logFile }, 10000)
       .then(function (r) {
-        if (!r || !r.ok) showError("打开日志失败：" + ((r && r.error) || "未知"));
+        if (!r || !r.ok) report("打开日志失败：" + ((r && r.error) || "未知"));
+        else if (statusEl) statusEl.textContent = "已打开日志文件";
       })
-      .catch(function (err) { showError("打开日志失败：" + (err.message || err)); });
+      .catch(function (err) { report("打开日志失败：" + (err.message || err)); });
   }
 
   function setState(name) {
@@ -898,9 +1036,6 @@
     el.btnOpenOut.addEventListener("click", function () {
       openOutputDir(summary && summary.outdir);
     });
-    el.btnOpenLog.addEventListener("click", function () {
-      openLogFile();
-    });
     el.btnPickFiles.addEventListener("click", pickFiles);
     el.btnSummarize.addEventListener("click", doSummarize);
     el.btnExportDocx.addEventListener("click", function () {
@@ -961,7 +1096,27 @@
       el.btnOpenLogSettings.addEventListener("click", function () { openLogFile(); });
     }
     if (el.btnOpenAboutLog) {
-      el.btnOpenAboutLog.addEventListener("click", function () { openLogFile(); });
+      el.btnOpenAboutLog.addEventListener("click", function () {
+        if (el.logExportStatus) el.logExportStatus.textContent = "";
+        openLogFile(el.logExportStatus);
+      });
+    }
+    if (el.btnCheckUpdate) {
+      el.btnCheckUpdate.addEventListener("click", function () { checkUpdate(); });
+    }
+    if (el.btnDownloadLatest) {
+      el.btnDownloadLatest.addEventListener("click", function () { downloadLatest(); });
+    }
+    if (el.btnExportLog) {
+      el.btnExportLog.addEventListener("click", function () { exportLog(); });
+    }
+    // 关于页里的仓库链接是真实 href（可右键复制）；点击时交给后端用系统浏览器打开，
+    // 避免 Edge --app 窗口内打开外链时没有地址栏。
+    if (el.repoLink) {
+      el.repoLink.addEventListener("click", function (e) {
+        e.preventDefault();
+        downloadLatest();
+      });
     }
     if (el.btnOpenSettingsFile) {
       el.btnOpenSettingsFile.addEventListener("click", function () {
@@ -978,6 +1133,7 @@
       });
     }
     setNavCollapsed(lsGet(LS_NAV) === "1");
+    initNavResize();
     activatePage("home");
 
     // 桌面端快捷键：Ctrl+Enter 开始提取、Esc 取消运行中的任务
@@ -1022,7 +1178,6 @@
       }
       if (st.log_file) {
         logFile = st.log_file;
-        el.btnOpenLog.disabled = false;
       }
       if (st.converter) el.convLabel.textContent = "转换器 " + st.converter;
       if (Array.isArray(st.inputs) && st.inputs.length > 1) {
