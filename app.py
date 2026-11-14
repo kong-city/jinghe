@@ -2054,17 +2054,19 @@ class Handler(BaseHTTPRequestHandler):
                     out["latest_url"] = html_url
         except Exception as exc:
             out["offline"] = True
-            out["error"] = "无法连接 GitHub 检查更新：%s" % exc
-            _append_log("[WARN] 检查更新失败（离线降级，下载链接仍可用）：%s" % exc)
+            out["error"] = "检查更新请求失败：%s" % exc
+            _append_log("[WARN] 检查更新失败（离线降级）：%s" % exc)
         return out
 
     def _api_update(self) -> dict:
-        """v0.3.8 一键更新：查询最新版，并在需要时自动打开最新发布页。
+        """v0.3.9 一键检查更新：只做「查询 GitHub 仓库最新版本」这一件事。
 
-        关于页不再有单独的「下载最新版本」按钮，一次点击就走完
-        「检查 → 引导更新」整条链路。已是最新则不弹浏览器；发现新版本
-        或离线无法确认时，自动打开仓库 releases/latest（离线也诚实说明）。
-        打开的 URL 必须收敛在仓库 releases 之下，不接受任意跳转。
+        关于页按需求清除了说明文字、仓库链接显示与离线长文案：
+          · 已是最新 → 简短提示，不弹浏览器；
+          · 发现新版本 → 自动用系统浏览器打开下载页；
+          · 离线 → 诚实降级，不弹浏览器，也不再输出离线长文案，
+            由前端隐藏状态条（按钮从「检查中…」恢复即是已完成反馈）。
+        打开的 URL 仍收敛在仓库 releases 之下，不接受任意跳转。
         """
         info = self._api_check_update()
         out = dict(info)
@@ -2074,9 +2076,8 @@ class Handler(BaseHTTPRequestHandler):
         out["url"] = url
         out["opened"] = False
 
-        need_open = bool(info.get("offline") or not info.get("latest")
-                         or info.get("up_to_date") is False)
-        if need_open:
+        # 只有「确实发现新版本」才自动打开下载页；离线按需求不再弹浏览器
+        if info.get("up_to_date") is False:
             try:
                 # webbrowser.open 返回 False 表示系统没有可用浏览器，不能谎报已打开
                 result = webbrowser.open(url)
@@ -2085,7 +2086,7 @@ class Handler(BaseHTTPRequestHandler):
                     _append_log("[INFO] 检查更新已打开最新版本页面：%s" % url)
                 else:
                     out["error"] = ((out.get("error") or "") +
-                                    "；系统未找到可用浏览器，请手动打开仓库最新版本页")
+                                    "；系统未找到可用浏览器")
             except Exception as exc:
                 _log_error("API:/api/update", "打开最新版本页面失败", exc,
                            request="url=%s" % url)
@@ -2098,14 +2099,13 @@ class Handler(BaseHTTPRequestHandler):
                 info.get("latest") or info.get("current"))
         elif info.get("offline") or not info.get("latest"):
             out["status"] = "offline"
-            out["message"] = ("无法连接 GitHub，" +
-                              ("已打开最新版本页面，请手动确认是否有更新"
-                               if out["opened"] else "且打开下载页失败，请检查网络"))
+            # v0.3.9：按需求清除离线长文案，只保留极短的排查说明（UI 不展示）
+            out["message"] = "检查更新失败，请检查网络后重试"
         else:
             out["status"] = "new_version"
             out["message"] = ("发现新版本 %s，" % info["latest"] +
-                              ("已打开最新版本下载页，下载后覆盖现有程序即可完成更新"
-                               if out["opened"] else "但打开下载页失败"))
+                              ("已打开下载页" if out["opened"]
+                               else "但打开下载页失败"))
         return out
 
     def _api_open_latest(self) -> dict:

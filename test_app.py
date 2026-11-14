@@ -1271,16 +1271,18 @@ class AppContractTest(unittest.TestCase):
         self.assertIn(".app.nav-collapsed .sidebar { width: 58px; }", css,
                       "折叠态宽度未固定为 58px")
 
-        # ② 关于页「版本更新」：v0.3.8 起只保留一个「检查更新」按钮（本段按新版契约更新）
+        # ② 关于页「版本更新」：v0.3.9 起只保留「检查更新」（左）+「当前版本」（右）
         self.assertIn('id="btnCheckUpdate"', html, "关于页缺少检查更新按钮")
         self.assertNotIn('id="btnDownloadLatest"', html,
-                         "v0.3.8 已取消「下载最新版本」按钮")
+                         "「下载最新版本」按钮已取消")
         self.assertNotIn('id="aboutLatest"', html,
-                         "v0.3.8 已把「最新版本」信息格换成检查更新按钮")
-        self.assertIn('id="repoLink"', html, "关于页缺少仓库链接")
-        self.assertIn("https://github.com/kong-city/jinghe/releases/latest", html,
-                      "下载链接未指向 GitHub 仓库最新版本页")
-        self.assertIn("RELEASES_LATEST_URL", src, "后端未定义最新版本链接常量")
+                         "「最新版本」信息格已移除")
+        self.assertNotIn('id="repoLink"', html,
+                         "v0.3.9 已清除显示的 GitHub 链接")
+        self.assertNotIn("https://github.com/kong-city/jinghe/releases/latest", html,
+                         "版本更新卡片不再显示 GitHub 链接")
+        self.assertIn("RELEASES_LATEST_URL", src,
+                      "后端仍保留最新版本链接常量（发现新版本时自动打开）")
         self.assertIn("/api/update", js, "前端未调用一键更新接口")
         self.assertIn("/api/update", src, "后端缺少一键更新路由")
 
@@ -1448,13 +1450,14 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn("<span>最新版本</span>", html, "「最新版本」信息格未移除")
         self.assertNotIn('id="aboutLatest"', html, "仍残留 aboutLatest 元素")
         self.assertNotIn('id="btnDownloadLatest"', html, "「下载最新版本」按钮未取消")
-        self.assertIn('id="updateStatus" class="update-status"', html,
-                      "缺少独立可见的更新状态条")
+        self.assertIn('id="updateStatus" class="update-status" hidden', html,
+                      "更新状态条应默认隐藏（离线长文案已清除）")
         p_ver = html.index("<span>当前版本</span>")
         p_btn = html.index('id="btnCheckUpdate"')
         p_st = html.index('id="updateStatus"')
-        self.assertLess(p_ver, p_btn, "检查更新按钮未取代「最新版本」格")
-        self.assertLess(p_btn, p_st, "更新状态条位置异常")
+        self.assertLess(p_btn, p_ver,
+                        "v0.3.9：检查更新按钮应在左侧（先于「当前版本」）")
+        self.assertLess(p_ver, p_st, "更新状态条位置异常")
 
         # ② 前端：一键端点、状态回显、旧按钮 / 旧函数彻底清理
         self.assertIn("/api/update", js, "前端未调用 /api/update")
@@ -1512,14 +1515,87 @@ class AppContractTest(unittest.TestCase):
             self.assertIsNone(upd.get("latest"), "离线时不应伪造最新版本号")
         if upd.get("status") == "up_to_date":
             self.assertIs(upd.get("opened"), False, "已是最新却仍弹了下载页")
+        elif upd.get("status") == "offline":
+            self.assertIs(upd.get("opened"), False,
+                          "v0.3.9：离线不应再自动弹浏览器")
         else:
             self.assertIs(upd.get("opened"), True,
-                          "发现新版本 / 离线时未自动打开最新版本页")
+                          "发现新版本时未自动打开下载页")
 
         # ⑥ 保留的旧端点仍可用（后端能力不删，UI 不再单独暴露）
         status, chk = srv.get_json("/api/check-update")
         self.assertEqual(status, 200, "/api/check-update 兼容端点不可用")
         self.assertIs(chk.get("ok"), True)
+
+    # ------------------------------------------------------------------ #
+    # 31) v0.3.9：关于页清除说明内容/链接/离线长文案 + 按钮左、当前版本右
+    # ------------------------------------------------------------------ #
+    def test_31_about_cleanup_and_button_left(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 清除说明段：整段「点击「检查更新」即可完成更新…」不再出现在页面
+        for gone in ("点击「检查更新」即可完成更新",
+                     "发现新版本时自动打开最新版本下载页",
+                     "离线时也会打开仓库最新发布页供手动确认"):
+            self.assertNotIn(gone, html, "版本更新卡片仍残留说明文案：%s" % gone)
+        # 版本更新卡片内不允许再有 card-sub
+        seg = html[html.index('id="page-about"'):]
+        card = seg[:seg.index("</section>")]
+        self.assertNotIn("card-sub", card, "版本更新卡片说明段未清除")
+        self.assertNotIn("github.com", card, "版本更新卡片仍显示 GitHub 链接")
+
+        # ② 检查更新按钮在左、当前版本在右（DOM 顺序即左右顺序）
+        self.assertIn('class="about-grid about-grid-update"', html,
+                      "版本更新卡片未使用双列 grid")
+        p_btn = card.index('id="btnCheckUpdate"')
+        p_ver = card.index("<span>当前版本</span>")
+        self.assertLess(p_btn, p_ver, "检查更新按钮未放到左侧")
+        self.assertIn(">检查更新</button>", card, "按钮文案应为「检查更新」")
+        self.assertIn('id="aboutVersion"', card, "右侧缺少当前版本")
+
+        # ③ 清除显示的 GitHub 链接与离线长文案
+        self.assertNotIn('id="repoLink"', html, "仍残留 repoLink 链接")
+        self.assertNotIn("repo-link", css, "仍残留 repo-link 样式")
+        self.assertNotIn("el.repoLink", js, "前端仍引用已删除的链接")
+        self.assertNotIn('href="https://github.com/kong-city/jinghe', html,
+                         "关于页仍显示 GitHub 链接")
+        self.assertNotIn('<span class="mono set-path">https://github.com', html,
+                         "隐私与依赖卡片仍显示仓库地址")
+        offline_msg = "无法连接 GitHub，已打开最新版本页面，请手动确认是否有更新"
+        self.assertNotIn(offline_msg, html, "页面仍残留离线长文案")
+        self.assertNotIn(offline_msg, js, "前端仍残留离线长文案")
+        self.assertNotIn(offline_msg, src, "后端仍生成离线长文案")
+        self.assertNotIn("is-warn", css, "离线专用警告样式未清除")
+
+        # ④ 状态条默认隐藏，离线时前端隐藏、后端不弹浏览器
+        self.assertIn('id="updateStatus" class="update-status" hidden', html,
+                      "状态条应默认隐藏，不显示任何占位文案")
+        self.assertIn("el.updateStatus.hidden = !s", js,
+                      "前端未实现空文案隐藏状态条")
+        self.assertIn('if (status === "offline")', js,
+                      "前端未对离线状态做静默处理")
+        self.assertIn('if info.get("up_to_date") is False:', src,
+                      "后端只在发现新版本时自动打开下载页")
+        self.assertNotIn("need_open = bool(info.get(\"offline\")", src,
+                         "后端仍会在离线时弹浏览器")
+        self.assertIn("self._api_check_update()", src,
+                      "点击检查更新后必须真的查询 GitHub 最新版本")
+
+        # ⑤ 真实 HTTP：离线诚实降级、不弹浏览器、不返回被清除的文案
+        srv = self.start(patch_open=True)
+        status, upd = srv.post_json("/api/update", {})
+        self.assertEqual(status, 200, "/api/update 未返回 200：%s" % upd)
+        self.assertIs(upd.get("ok"), True)
+        if upd.get("offline"):
+            self.assertEqual(upd.get("status"), "offline")
+            self.assertIs(upd.get("opened"), False,
+                          "离线时不应自动打开浏览器：%s" % upd)
+            self.assertNotIn("无法连接 GitHub", upd.get("message") or "",
+                             "离线提示仍含被清除的文案：%s" % upd.get("message"))
+            self.assertIsNone(upd.get("latest"), "离线不应伪造最新版本号")
 
 
 def print_summary(result=None) -> None:

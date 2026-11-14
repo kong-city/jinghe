@@ -79,7 +79,6 @@
     aboutVersion: $("aboutVersion"),
     btnCheckUpdate: $("btnCheckUpdate"),
     updateStatus: $("updateStatus"),
-    repoLink: $("repoLink"),
     // 关于页 · 运行日志
     aboutVersion2: $("aboutVersion2"),
     aboutPython: $("aboutPython"),
@@ -345,14 +344,19 @@
     }).catch(function () { /* 读不到就保持占位符 */ });
   }
 
-  /* v0.3.8：关于页只保留一个「检查更新」按钮，点一下即走完更新链路——
-     查询 GitHub 最新版本 → 发现新版本（或离线无法确认）自动打开最新发布页。
-     后端 /api/update 一次调用完成「检查 + 引导更新」，前端只负责诚实回显，
-     不再有第二个「下载最新版本」按钮，也不再静默吞掉结果。*/
+  /* v0.3.9：关于页「版本更新」卡片只保留左侧「检查更新」按钮与右侧
+     「当前版本」；说明段、仓库链接显示与离线长文案全部清除。
+     点击按钮 → /api/update 自动查询 GitHub 仓库最新版本：
+       · 已是最新 → 简短绿色提示；
+       · 发现新版本 → 简短蓝色提示 + 自动打开下载页；
+       · 离线 → 不弹浏览器、不显示离线长文案（状态条隐藏），
+         由按钮从「检查中…」恢复给出「已检查」反馈。*/
   function setUpdateStatus(text, cls) {
     if (!el.updateStatus) return;
-    el.updateStatus.textContent = text;
-    el.updateStatus.className = "update-status" + (cls ? " " + cls : "");
+    var s = text || "";
+    el.updateStatus.textContent = s;
+    el.updateStatus.hidden = !s;
+    el.updateStatus.className = "update-status" + (cls && s ? " " + cls : "");
   }
 
   function checkUpdate() {
@@ -360,16 +364,18 @@
     var old = el.btnCheckUpdate.textContent;
     el.btnCheckUpdate.disabled = true;
     el.btnCheckUpdate.textContent = "检查中…";
-    setUpdateStatus("正在查询 GitHub 最新版本…", "");
+    setUpdateStatus("", "");  // 检查期间不显示冗余文字
 
     api("/api/update", {}, 15000).then(function (r) {
-      if (r && r.url && el.repoLink) el.repoLink.href = r.url;
-      if (r && r.latest_url && el.repoLink) el.repoLink.href = r.latest_url;
       var status = (r && r.status) || "";
+      if (status === "offline") {
+        // 按需求清除离线长文案：既不显示状态条，也不自动弹浏览器
+        setUpdateStatus("", "");
+        return;
+      }
       var cls = status === "up_to_date" ? "is-ok"
-        : status === "new_version" ? "is-new"
-        : status === "offline" ? "is-warn" : "is-err";
-      setUpdateStatus((r && r.message) || "检查完成，但未返回说明", cls);
+        : status === "new_version" ? "is-new" : "is-err";
+      setUpdateStatus((r && r.message) || "检查完成", cls);
     }).catch(function (err) {
       setUpdateStatus("检查更新失败：" + (err.message || String(err)), "is-err");
     }).finally(function () {
@@ -1124,14 +1130,6 @@
     }
     if (el.btnExportLog) {
       el.btnExportLog.addEventListener("click", function () { exportLog(); });
-    }
-    // 关于页里的仓库链接是真实 href（可右键复制）；点击时走同一套一键更新流程，
-    // 由后端用系统浏览器打开最新版本页，避免 Edge --app 窗口内打开外链时没有地址栏。
-    if (el.repoLink) {
-      el.repoLink.addEventListener("click", function (e) {
-        e.preventDefault();
-        checkUpdate();
-      });
     }
     if (el.btnOpenSettingsFile) {
       el.btnOpenSettingsFile.addEventListener("click", function () {

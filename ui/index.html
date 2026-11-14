@@ -63,7 +63,7 @@
           <p id="pageSub">阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
         </div>
       </div>
-      <div class="header-tag" id="headerTag">v0.3.8</div>
+      <div class="header-tag" id="headerTag">v0.3.9</div>
     </header>
 
     <!-- ==================== 首页 ==================== -->
@@ -246,18 +246,15 @@
 
     <!-- ==================== 关于 ==================== -->
     <section class="page" id="page-about" hidden>
+      <!-- v0.3.9：卡片只保留「检查更新」（左）与「当前版本」（右）；
+           说明文字、仓库链接显示与离线长文案一律清除。 -->
       <section class="card">
         <div class="card-title">版本更新</div>
-        <div class="card-sub">点击「检查更新」即可完成更新：查询 GitHub 最新版本，发现新版本时自动打开最新版本下载页；已是最新则直接提示，离线时也会打开仓库最新发布页供手动确认。</div>
         <div class="about-grid about-grid-update">
-          <div class="about-item"><span>当前版本</span><b class="mono" id="aboutVersion">—</b></div>
           <button id="btnCheckUpdate" class="btn btn-primary about-check-btn" type="button">检查更新</button>
+          <div class="about-item"><span>当前版本</span><b class="mono" id="aboutVersion">—</b></div>
         </div>
-        <div id="updateStatus" class="update-status">尚未检查更新</div>
-        <div class="row">
-          <a id="repoLink" class="repo-link mono" href="https://github.com/kong-city/jinghe/releases/latest"
-             target="_blank" rel="noopener noreferrer">https://github.com/kong-city/jinghe/releases/latest</a>
-        </div>
+        <div id="updateStatus" class="update-status" hidden></div>
       </section>
 
       <section class="card">
@@ -299,9 +296,6 @@
       <section class="card">
         <div class="card-title">隐私与依赖</div>
         <p class="card-sub">全部处理都在本机完成，不上传任何文件内容；软件只依赖 Python 标准库，打包后是单个可执行文件。</p>
-        <div class="row">
-          <span class="mono set-path">https://github.com/kong-city/jinghe</span>
-        </div>
       </section>
     </section>
 
