@@ -1726,8 +1726,21 @@ def open_window(url: str) -> None:
             return
         except Exception:
             pass
+    # 无 Edge 或 Edge 启动失败：退回系统默认浏览器（如本机 Chrome）
     try:
-        webbrowser.open(url)
+        if webbrowser.open(url):
+            return
+    except Exception:
+        pass
+    # 所有自动打开方式都失败：明确告知用户服务地址，避免「双击无反应」
+    try:
+        import ctypes as _ct
+        _ct.windll.user32.MessageBoxW(
+            None,
+            "精核已在后台启动，但无法自动打开窗口。\n\n请手动在浏览器打开：\n%s" % url,
+            "精核",
+            0x00000040,
+        )
     except Exception:
         pass
 
@@ -1763,8 +1776,13 @@ def main(argv: list[str] | None = None) -> int:
         _probe.settimeout(0.5)
         try:
             _probe.connect((HOST, args.port))
-            _append_log("[INFO] 端口 %d 已有实例在运行，本进程退出" % args.port)
-            print("[INFO] 端口 %d 已有实例在运行（请勿重复启动）" % args.port, flush=True)
+            _append_log("[INFO] 端口 %d 已有实例在运行" % args.port)
+            if args.no_browser:
+                print("[INFO] 端口 %d 已有实例在运行（请勿重复启动）" % args.port, flush=True)
+            else:
+                # 界面实例已在运行：再次唤起浏览器窗口，避免「双击无反应」
+                open_window("http://127.0.0.1:%d/" % args.port)
+                _append_log("[INFO] 已尝试唤起已有实例的窗口")
             return 0
         except OSError:
             pass
