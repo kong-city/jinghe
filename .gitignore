@@ -1,6 +1,8 @@
 # ---- build artifacts ----
 build/
 dist/
+# 并行构建目录（旧实例占用 dist/Jinghe.exe 时使用）
+dist_v*/
 __pycache__/
 *.pyc
 *.pyo

@@ -25,6 +25,25 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?$")
 HARDCODED_TAG = re.compile(r">\s*v\d+\.\d+\.\d+\s*<")
 
 
+def _force_utf8_streams() -> None:
+    """Windows runner 默认 cp1252，打印中文会抛 UnicodeEncodeError。
+
+    v0.4.0 的 CI 因此挂在「全量单元测试」里的门禁子进程，发布作业被
+    整体跳过，Release 从未生成 exe 资产。这里只重配置真实的终端 / 管道
+    流（TextIOWrapper）；被 unittest 捕获的 StringIO 没有 reconfigure，
+    直接跳过，不影响测试替身。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, TypeError):
+            pass
+
+
 def _read(rel: str) -> str:
     p = ROOT / rel
     if not p.is_file():
@@ -33,6 +52,7 @@ def _read(rel: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     ap = argparse.ArgumentParser(description="精核发版一致性门禁")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--no-exe", action="store_true", help="跳过 exe 校验")

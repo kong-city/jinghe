@@ -1638,10 +1638,19 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("el.headerTag", boot[:500],
                       "页头版本号挂在 loadAbout 里，首页会一直显示占位符")
 
+        # 防回归：Windows runner 默认 cp1252，门禁打印中文会抛
+        # UnicodeEncodeError，导致整个 Release 构建作业被 needs: test 跳过。
+        gate_src = (ROOT / "tools" / "check_release.py").read_text(
+            encoding="utf-8")
+        self.assertIn('reconfigure(encoding="utf-8"', gate_src,
+                      "发版门禁缺少 Windows 控制台 UTF-8 兜底")
+        self.assertIn("PYTHONUTF8", wf, "CI 未固定 Python UTF-8 模式")
+
         # ③ 发版门禁脚本可独立运行且判定通过
         gate = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "check_release.py"), "--no-exe"],
-            cwd=str(ROOT), capture_output=True, text=True, timeout=90)
+            cwd=str(ROOT), capture_output=True, text=True, timeout=90,
+            encoding="utf-8", errors="replace")
         self.assertEqual(gate.returncode, 0,
                          "发版门禁未通过：%s" % (gate.stdout + gate.stderr)[-800:])
 

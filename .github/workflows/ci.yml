@@ -11,6 +11,12 @@ on:
 permissions:
   contents: write
 
+# Windows runner 的控制台默认是 cp1252 / cp936，Python 打印中文（测试名、
+# 门禁结果）会抛 UnicodeEncodeError 或花屏。统一固定为 UTF-8。
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 concurrency:
   group: jinghe-${{ github.ref }}
   cancel-in-progress: true

@@ -4,6 +4,22 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.4.1] - 2026-11-14
+
+修复发版链路的最后一环：v0.4.0 的代码与 tag 都已推送，但 GitHub 上始终没有 Release、也没有 `Jinghe.exe` 资产，客户端「检查更新」因此拿不到安装包。
+
+### Fixed
+
+- **CI 在 Windows 上因中文输出崩溃**：`tools/check_release.py` 打印中文门禁结果时，Windows runner 的默认 `cp1252` 编码抛 `UnicodeEncodeError`；`test_app.py::test_32` 随之失败，`needs: test` 使「构建 exe 并上传 Release 资产」作业被整段跳过。现由脚本自身把 `stdout/stderr` 重配置为 UTF-8（`errors=replace`），并在 workflow 全局设置 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`。
+- **父进程解码不一致**：`test_32` 调用门禁的子进程显式按 UTF-8 解码，避免 cp1252 下中文输出乱码或再次抛异常。
+
+### Added
+
+- 防回归断言：`test_32` 检查门禁脚本含 UTF-8 兜底、CI workflow 含 `PYTHONUTF8`，保证发布作业不会再因编码被静默跳过。
+- 本版本同时补发 v0.4.0 / v0.4.1 的 Release 资产，使 `/api/check-update` 的 `assets[]` 解析链路真正可用。
+
+---
+
 ## [0.4.0] - 2026-11-14
 
 架构阶段：从「手工迭代」升级为「工程化交付闭环」，补齐软件项目里一直缺失的构建发布与运维更新两个阶段。
