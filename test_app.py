@@ -30,7 +30,7 @@
  10. 并发保护（运行中再 run 必被拒）
  11. 取消（第一次 ok、state=cancelled、第二次 ok=false）
  12. 临时目录清理（正常完成 / 取消两条路径下 jinghe-run-* 与 jinghe-enc-* 均无残留）
- 13. /api/open（不存在 → ok=false；存在 → ok=true，用打了补丁的启动器避免真弹窗）
+ 13. /api/open（v0.4.0 起白名单收敛：任意路径 → ok=false；本软件日志文件 → ok=true）
  14. 中文路径（dry-run 与 run 全链路）
  15. `--cli` 自我重入（冻结版靠它跑提取，必须不启 HTTP、参数透传给 extract.py）
  16. 启动时的孤儿目录清扫：已死 pid 的 `jinghe-run-<pid>-<seq>` 被清、
@@ -99,6 +99,7 @@ import app  # noqa: E402
 os.startfile = lambda path: None  # 只在本测试子进程里生效
 app._open_document = lambda p: "startfile"  # 禁止真弹记事本 / 切换窗口
 app.webbrowser.open = lambda *a, **kw: True  # 一键更新测试不真弹浏览器
+app._download_release_asset = lambda url, version: {"ok": False, "error": "测试替身：禁止联网下载"}
 raise SystemExit(app.main(["--no-browser", "--port", "0"]))
 '''
 
@@ -741,28 +742,34 @@ class AppContractTest(unittest.TestCase):
         self.assert_temp_clean(pid)
 
     # ------------------------------------------------------------------ #
-    # 14) /api/open（用打补丁的启动器，避免真弹窗）
+    # 14) /api/open（v0.4.0：白名单收敛，不再接受任意路径）
     # ------------------------------------------------------------------ #
     def test_14_open_api(self):
         srv = self.start(patch_open=True)
-        status, obj = srv.post_json("/api/open", {"path": str(self.tmp / "no-such-path")})
-        self.assertEqual(status, 200)
-        self.assertIs(obj.get("ok"), False, "不存在的路径竟返回 ok=true")
-        self.assertIn("不存在", obj.get("error") or "",
-                      "错误文案未说明路径不存在：%s" % obj.get("error"))
 
         status, obj = srv.post_json("/api/open", {"path": ""})
+        self.assertEqual(status, 200)
         self.assertIs(obj.get("ok"), False, "空路径应失败")
         self.assertTrue(obj.get("error"), "空路径缺 error 文案")
 
-        # 本子进程内 os.startfile 已被替换为空函数，下面的 ok=true 不会弹出窗口
-        target = self.tmp / "存在 的文件.txt"
-        target.write_text("x", encoding="utf-8")
-        status, obj = srv.post_json("/api/open", {"path": str(target)})
-        self.assertIs(obj.get("ok"), True, "已存在的文件应可打开：%s" % obj)
+        # 任意路径（文件 / 目录 / 不存在）一律拒绝：不再把任意程序交给 startfile
+        outside = self.tmp / "存在 的文件.txt"
+        outside.write_text("x", encoding="utf-8")
+        for p in (str(self.tmp), str(outside), str(self.tmp / "no-such-path")):
+            status, obj = srv.post_json("/api/open", {"path": p})
+            self.assertIs(obj.get("ok"), False,
+                          "白名单外的路径竟可打开：%s -> %s" % (p, obj))
+            self.assertIn("只允许", obj.get("error") or "",
+                          "拒绝原因不明确：%s" % obj)
 
-        status, obj = srv.post_json("/api/open", {"path": str(self.tmp)})
-        self.assertIs(obj.get("ok"), True, "已存在的目录应可打开：%s" % obj)
+        # 白名单内：后端自报的日志文件应能打开（启动器已把打开器替换为空操作）
+        status, st = srv.get_json("/api/state")
+        self.assertEqual(status, 200)
+        log_path = str(st.get("log_file") or "")
+        self.assertTrue(log_path, "/api/state 未返回 log_file")
+        status, obj = srv.post_json("/api/open", {"path": log_path})
+        self.assertIs(obj.get("ok"), True,
+                      "本软件日志文件应可打开：%s" % obj)
 
     # ------------------------------------------------------------------ #
     # 15) 中文路径
@@ -1519,8 +1526,8 @@ class AppContractTest(unittest.TestCase):
             self.assertIs(upd.get("opened"), False,
                           "v0.3.9：离线不应再自动弹浏览器")
         else:
-            self.assertIs(upd.get("opened"), True,
-                          "发现新版本时未自动打开下载页")
+            self.assertTrue(upd.get("opened") or upd.get("downloaded"),
+                            "发现新版本时既未下载安装包，也未打开下载页")
 
         # ⑥ 保留的旧端点仍可用（后端能力不删，UI 不再单独暴露）
         status, chk = srv.get_json("/api/check-update")
@@ -1596,6 +1603,100 @@ class AppContractTest(unittest.TestCase):
             self.assertNotIn("无法连接 GitHub", upd.get("message") or "",
                              "离线提示仍含被清除的文案：%s" % upd.get("message"))
             self.assertIsNone(upd.get("latest"), "离线不应伪造最新版本号")
+
+    # ------------------------------------------------------------------ #
+    # 32) v0.4.0：工程化交付闭环（CI / CHANGELOG / 发版门禁 / 更新资产 / 安全边界）
+    # ------------------------------------------------------------------ #
+    def test_32_engineering_delivery_and_update_asset(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        wf = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        version = re.search(
+            r'^__version__\s*=\s*"([^"]+)"',
+            (ROOT / "extract.py").read_text(encoding="utf-8"), re.M).group(1)
+
+        # ① 构建 / 发布阶段：测试门禁 + tag 触发构建并上传 exe 资产
+        for token in ("windows-latest", "python -m unittest", "pyinstaller",
+                      "tags:", "python build.py", "gh release",
+                      "dist/Jinghe.exe", "check_release.py"):
+            self.assertIn(token, wf, "CI workflow 缺少：%s" % token)
+        self.assertIn("needs: test", wf, "发布前必须先通过测试门禁")
+
+        # ② 发布管理：CHANGELOG 与版本单一来源（HTML 不再硬编码）
+        self.assertIn("## [%s]" % version, changelog,
+                      "CHANGELOG.md 缺少当前版本条目")
+        self.assertIn("Jinghe.exe", changelog)
+        self.assertIsNone(re.search(r'>\s*v\d+\.\d+\.\d+\s*<', html),
+                          "ui/index.html 仍硬编码版本号")
+        self.assertIn('id="headerTag"', html)
+        self.assertIn("headerTag.textContent", js,
+                      "版本号未由 /api/state 动态注入")
+        # 防回归：loadAbout() 只在切到关于页时才跑，页头标签必须在启动分支注入
+        boot = js[js.index('document.title = "精核 · 文件提取 v"'):]
+        self.assertIn("el.headerTag", boot[:500],
+                      "页头版本号挂在 loadAbout 里，首页会一直显示占位符")
+
+        # ③ 发版门禁脚本可独立运行且判定通过
+        gate = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "check_release.py"), "--no-exe"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=90)
+        self.assertEqual(gate.returncode, 0,
+                         "发版门禁未通过：%s" % (gate.stdout + gate.stderr)[-800:])
+
+        # ④ 更新闭环：解析 assets、URL 白名单、大小上限、下载结果字段
+        for token in ("RELEASES_DOWNLOAD_PREFIX", "MAX_UPDATE_BYTES",
+                      "_download_release_asset", 'data.get("assets")',
+                      "has_asset", "asset_url", "downloaded", "download_path",
+                      "_current_version", "extract.__version__"):
+            self.assertIn(token, src, "后端缺少 v0.4.0 更新闭环实现：%s" % token)
+        self.assertIn("dl.startswith(RELEASES_DOWNLOAD_PREFIX)", src,
+                      "资产直链未做白名单收敛")
+        self.assertIn('"/api/update", {}, 60000', js,
+                      "前端未放宽下载场景的请求超时")
+
+        # ⑤ unknown 版本回退 + 下载地址白名单（直接测模块函数，不联网）
+        sys.path.insert(0, str(ROOT))
+        try:
+            import app as app_mod
+            cur = app_mod._current_version()
+            self.assertTrue(re.match(r"^\d+\.\d+\.\d+", cur),
+                            "current 版本回退失败：%s" % cur)
+            bad = app_mod._download_release_asset(
+                "https://evil.example.com/Jinghe.exe", "9.9.9")
+            self.assertIs(bad.get("ok"), False, "白名单外地址竟允许下载")
+            self.assertIn("白名单", bad.get("error") or "")
+            self.assertGreaterEqual(app_mod.MAX_UPDATE_BYTES, 8 * 1024 * 1024,
+                                    "安装包大小上限过小")
+        finally:
+            sys.path.remove(str(ROOT))
+
+        # ⑥ 安全边界：/api/open 不再接受任意路径
+        self.assertIn("只允许打开本软件的日志文件与设置文件", src)
+        self.assertIn("target not in allowed", src)
+        srv = self.start(patch_open=True)
+        outside = self.tmp / "outside-40.txt"
+        outside.write_text("x", encoding="utf-8")
+        status, obj = srv.post_json("/api/open", {"path": str(outside)})
+        self.assertIs(obj.get("ok"), False, "任意路径仍可打开：%s" % obj)
+
+        # ⑦ 真实 HTTP：检查更新返回资产字段；离线不下载、不弹浏览器
+        status, chk = srv.get_json("/api/check-update")
+        self.assertEqual(status, 200)
+        for key in ("has_asset", "asset_name", "asset_size", "asset_url", "current"):
+            self.assertIn(key, chk, "/api/check-update 缺少资产字段 %s" % key)
+        self.assertTrue(re.match(r"^\d+\.\d+\.\d+", str(chk.get("current"))),
+                        "current 不应是 unknown：%s" % chk.get("current"))
+        status, upd = srv.post_json("/api/update", {})
+        self.assertEqual(status, 200)
+        self.assertIn("downloaded", upd)
+        self.assertIn("download_path", upd)
+        if upd.get("offline"):
+            self.assertIs(upd.get("downloaded"), False,
+                          "离线时不应触发下载：%s" % upd)
+            self.assertIs(upd.get("opened"), False,
+                          "离线时不应自动弹浏览器：%s" % upd)
 
 
 def print_summary(result=None) -> None:

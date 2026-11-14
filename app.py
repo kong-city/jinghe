@@ -63,6 +63,16 @@ DRY_RUN_TIMEOUT = 30
 # 合并文档固定文件名：专用端点只认这个名字，不接受任意文件路径
 MERGED_NAME = "MERGED.md"
 
+# --------------------------------------------------------------------------- #
+# v0.4.0 更新闭环：release 资产下载约束
+# --------------------------------------------------------------------------- #
+# GitHub release 的二进制直链形如
+#   https://github.com/kong-city/jinghe/releases/download/v0.4.0/Jinghe.exe
+# 只接受本仓库该前缀，杜绝把 /api/update 变成任意地址下载器。
+RELEASES_DOWNLOAD_PREFIX = REPO_URL + "/releases/download/"
+UPDATE_DOWNLOAD_TIMEOUT = 30.0
+MAX_UPDATE_BYTES = 120 * 1024 * 1024
+
 
 # --------------------------------------------------------------------------- #
 # 路径与子进程
@@ -85,6 +95,70 @@ LOG_FILE = LOG_DIR / "app.log"
 # 日志封顶：超过就轮转为 app.log.1（只留 1 份历史）。桌面端长期运行 +
 # 高频请求会让日志无限增长，不封顶迟早撑爆磁盘。
 LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _current_version() -> str:
+    """软件版本唯一来源 extract.py，且绝不返回 "unknown"。
+
+    capabilities() 走子进程探测，失败时返回 "unknown"（本文件下方）；
+    若直接拿它比较，_version_tuple("unknown") == () 会被判成最旧版本，
+    于是「已是最新」被误判为「发现新版本」并弹出浏览器。v0.4.0 统一收敛。
+    """
+    ver = str(capabilities().get("version") or "")
+    if not re.match(r"^\d+\.\d+\.\d+", ver):
+        return extract.__version__
+    return ver
+
+
+def _download_release_asset(url: str, version: str) -> dict:
+    """把 release 里的新版 exe 下载到用户「下载」文件夹。
+
+    约束：URL 必须落在本仓库 releases/download/ 白名单内；流式写入 .part
+    临时文件；超过 MAX_UPDATE_BYTES 立即中止并清理；成功后原子替换。
+    文件名带版本号，绝不覆盖正在运行的 Jinghe.exe（替换由用户自行完成）。
+    返回 ok / path / bytes / error，供 /api/update 诚实回显。
+    """
+    if not isinstance(url, str) or not url.startswith(RELEASES_DOWNLOAD_PREFIX):
+        return {"ok": False, "error": "下载地址不在仓库 release 白名单内"}
+    safe = re.sub(r"[^0-9A-Za-z._-]", "_", str(version or "").strip())[:40]
+    safe = (safe or "latest").lstrip("vV") or "latest"
+    base = Path.home() / "Downloads"
+    if not base.is_dir():
+        base = LOG_DIR / "updates"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"ok": False, "error": "下载目录不可用：%s" % exc}
+    dest = base / ("Jinghe-v%s.exe" % safe)
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "jinghe-desktop"})
+        with urllib.request.urlopen(req, timeout=UPDATE_DOWNLOAD_TIMEOUT) as resp:
+            declared = resp.headers.get("Content-Length")
+            if declared and str(declared).isdigit() and int(declared) > MAX_UPDATE_BYTES:
+                return {"ok": False, "error": "安装包超过大小上限"}
+            total = 0
+            with tmp.open("wb") as fh:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_UPDATE_BYTES:
+                        fh.close()
+                        tmp.unlink(missing_ok=True)
+                        return {"ok": False, "error": "安装包超过大小上限"}
+                    fh.write(chunk)
+            if total < 1024 * 1024:
+                tmp.unlink(missing_ok=True)
+                return {"ok": False, "error": "下载内容不完整（小于 1 MB）"}
+        tmp.replace(dest)
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        return {"ok": False, "error": "下载失败：%s" % exc}
+    _append_log("[INFO] 新版本安装包已下载：%s（%d 字节）" % (dest, total))
+    return {"ok": True, "path": str(dest), "bytes": total}
+
 
 # 全局唯一的日志 sink：_append_log 与 stdout/stderr 共用，
 # 保证轮转时不会有第二个句柄把文件锁住（Windows 上 rename 会被拒）。
@@ -1804,7 +1878,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_state(self) -> dict:
         _reap_dead_job()
-        cap = capabilities()
         with _JOB_LOCK:
             job = _JOB
         running = bool(job and job.running)
@@ -1813,7 +1886,8 @@ class Handler(BaseHTTPRequestHandler):
             # app 标记：让「占用端口的是不是精核自己」可以被外部判定
             # （单实例保护据此区分「已有实例」与「端口被别的程序占用」）
             "app": "jinghe",
-            "version": cap["version"],
+            # v0.4.0：capabilities() 子进程探测失败会返回 unknown，统一回退到 extract.py
+            "version": _current_version(),
             "python": platform.python_version(),
             "platform": platform.platform(),
             "running": running,
@@ -1973,18 +2047,30 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True}
 
     def _api_open(self, path: str) -> dict:
+        """v0.4.0：只打开本软件自身的日志文件 / 设置文件。
+
+        旧实现把任意绝对路径交给 os.startfile，相当于给本机页面留了一个
+        「启动任意程序」的入口。前端两处调用（关于页打开日志、设置页打开
+        设置文件）的路径都由后端给出，这里用白名单 + 目录归属双重收敛，
+        并复用 _open_document 保证「点了一定看得见」。
+        """
         if not path:
             return {"ok": False, "error": "请提供要打开的路径"}
-        if not os.path.exists(path):
-            return {"ok": False, "error": "路径不存在：%s" % path}
         try:
-            if hasattr(os, "startfile"):
-                os.startfile(path)  # type: ignore[attr-defined]
-            else:
-                webbrowser.open(Path(path).as_uri())
+            target = Path(path).expanduser().resolve()
+            allowed = {LOG_FILE.resolve(), SETTINGS_FILE.resolve()}
+            root = LOG_DIR.resolve()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": "路径无效：%s" % exc}
+        if target not in allowed or root not in target.parents:
+            return {"ok": False, "error": "只允许打开本软件的日志文件与设置文件"}
+        if not target.is_file():
+            return {"ok": False, "error": "文件不存在：%s" % target}
+        try:
+            _open_document(target)
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % exc}
-        return {"ok": True}
+        return {"ok": True, "path": str(target)}
 
     def _api_merged_status(self, outdir: str) -> dict:
         """探测输出目录里是否已有 MERGED.md（重启后恢复「打开合并文档」入口）。"""
@@ -2025,8 +2111,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------- 关于页：版本更新 / 运行日志 ---------------------------- #
     def _api_check_update(self) -> dict:
-        """查询 GitHub 最新 release。断网/超时诚实降级，下载链接始终指向仓库最新版。"""
-        current = capabilities().get("version", "unknown")
+        """查询 GitHub 最新 release，含 exe 资产信息；断网/超时诚实降级。
+
+        v0.4.0：旧实现只取 tag_name / html_url，完全没看 assets[]，
+        而 release 又从未上传 exe，导致「检查更新」拿到的是一个没有安装包
+        可下的网页。这里解析出 Jinghe*.exe 资产的直链、大小，供 /api/update
+        直接下载；URL 必须落在 RELEASES_DOWNLOAD_PREFIX 白名单内。
+        """
+        current = _current_version()
         out = {
             "ok": True,
             "current": current,
@@ -2036,6 +2128,10 @@ class Handler(BaseHTTPRequestHandler):
             "up_to_date": None,
             "offline": False,
             "error": None,
+            "has_asset": False,
+            "asset_name": None,
+            "asset_size": 0,
+            "asset_url": None,
         }
         try:
             req = urllib.request.Request(
@@ -2052,6 +2148,21 @@ class Handler(BaseHTTPRequestHandler):
                 out["up_to_date"] = _version_tuple(current) >= _version_tuple(tag.lstrip("vV"))
                 if html_url.startswith(REPO_URL):
                     out["latest_url"] = html_url
+            for asset in (data.get("assets") or []):
+                if not isinstance(asset, dict):
+                    continue
+                name = str(asset.get("name") or "")
+                dl = str(asset.get("browser_download_url") or "")
+                if not (name.lower().startswith("jinghe") and name.lower().endswith(".exe")):
+                    continue
+                if not dl.startswith(RELEASES_DOWNLOAD_PREFIX):
+                    continue
+                size = asset.get("size")
+                out["has_asset"] = True
+                out["asset_name"] = name
+                out["asset_size"] = size if isinstance(size, int) and size > 0 else 0
+                out["asset_url"] = dl
+                break
         except Exception as exc:
             out["offline"] = True
             out["error"] = "检查更新请求失败：%s" % exc
@@ -2059,14 +2170,13 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def _api_update(self) -> dict:
-        """v0.3.9 一键检查更新：只做「查询 GitHub 仓库最新版本」这一件事。
+        """v0.4.0 一键检查更新：查版本 + 真正拿到安装包。
 
-        关于页按需求清除了说明文字、仓库链接显示与离线长文案：
-          · 已是最新 → 简短提示，不弹浏览器；
-          · 发现新版本 → 自动用系统浏览器打开下载页；
-          · 离线 → 诚实降级，不弹浏览器，也不再输出离线长文案，
-            由前端隐藏状态条（按钮从「检查中…」恢复即是已完成反馈）。
-        打开的 URL 仍收敛在仓库 releases 之下，不接受任意跳转。
+        v0.3.9 只打开一个网页（而 release 当时连 exe 资产都没有），
+        等于空功能。现在发现新版本时优先自动下载 release 里的 Jinghe.exe
+        到用户「下载」文件夹；无资产 / 下载失败才退回打开下载页。
+        离线仍按既定要求：不弹浏览器、不下载、不显示状态条。
+        界面不显示任何 URL，状态文案保持简短。
         """
         info = self._api_check_update()
         out = dict(info)
@@ -2075,23 +2185,34 @@ class Handler(BaseHTTPRequestHandler):
             url = RELEASES_LATEST_URL
         out["url"] = url
         out["opened"] = False
+        out["downloaded"] = False
+        out["download_path"] = None
 
-        # 只有「确实发现新版本」才自动打开下载页；离线按需求不再弹浏览器
         if info.get("up_to_date") is False:
-            try:
-                # webbrowser.open 返回 False 表示系统没有可用浏览器，不能谎报已打开
-                result = webbrowser.open(url)
-                out["opened"] = bool(result)
-                if result:
-                    _append_log("[INFO] 检查更新已打开最新版本页面：%s" % url)
-                else:
+            if info.get("has_asset") and info.get("asset_url"):
+                got = _download_release_asset(info["asset_url"],
+                                              info.get("latest") or "")
+                out["downloaded"] = bool(got.get("ok"))
+                out["download_path"] = got.get("path")
+                if not got.get("ok"):
                     out["error"] = ((out.get("error") or "") +
-                                    "；系统未找到可用浏览器")
-            except Exception as exc:
-                _log_error("API:/api/update", "打开最新版本页面失败", exc,
-                           request="url=%s" % url)
-                out["error"] = ((out.get("error") or "") +
-                                "；打开下载页失败：%s" % exc)
+                                    "；" + (got.get("error") or "下载失败"))
+            # 没拿到安装包才退回打开下载页；下载成功时不再多弹一个窗口
+            if not out["downloaded"]:
+                try:
+                    # webbrowser.open 返回 False 表示系统没有可用浏览器，不能谎报已打开
+                    result = webbrowser.open(url)
+                    out["opened"] = bool(result)
+                    if result:
+                        _append_log("[INFO] 检查更新已打开最新版本页面：%s" % url)
+                    else:
+                        out["error"] = ((out.get("error") or "") +
+                                        "；系统未找到可用浏览器")
+                except Exception as exc:
+                    _log_error("API:/api/update", "打开最新版本页面失败", exc,
+                               request="url=%s" % url)
+                    out["error"] = ((out.get("error") or "") +
+                                    "；打开下载页失败：%s" % exc)
 
         if info.get("up_to_date") is True:
             out["status"] = "up_to_date"
@@ -2099,13 +2220,13 @@ class Handler(BaseHTTPRequestHandler):
                 info.get("latest") or info.get("current"))
         elif info.get("offline") or not info.get("latest"):
             out["status"] = "offline"
-            # v0.3.9：按需求清除离线长文案，只保留极短的排查说明（UI 不展示）
+            # v0.3.9 起清除离线长文案，只保留极短排查说明（UI 不展示）
             out["message"] = "检查更新失败，请检查网络后重试"
         else:
             out["status"] = "new_version"
-            out["message"] = ("发现新版本 %s，" % info["latest"] +
-                              ("已打开下载页" if out["opened"]
-                               else "但打开下载页失败"))
+            tail = ("已下载到下载文件夹" if out["downloaded"] else
+                    "已打开下载页" if out["opened"] else "但未取得安装包")
+            out["message"] = "发现新版本 %s，%s" % (info["latest"], tail)
         return out
 
     def _api_open_latest(self) -> dict:

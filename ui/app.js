@@ -366,7 +366,9 @@
     el.btnCheckUpdate.textContent = "检查中…";
     setUpdateStatus("", "");  // 检查期间不显示冗余文字
 
-    api("/api/update", {}, 15000).then(function (r) {
+    // v0.4.0：发现新版本时后端会顺便下载 exe（最多 30 秒），超时放宽到 60 秒，
+    // 避免下载还没结束前端就先报「检查更新失败」。
+    api("/api/update", {}, 60000).then(function (r) {
       var status = (r && r.status) || "";
       if (status === "offline") {
         // 按需求清除离线长文案：既不显示状态条，也不自动弹浏览器
@@ -1188,9 +1190,13 @@
         var v = (st.version && st.version !== "unknown") ? "精核 " + st.version + " · " : "";
         el.pyLabel.textContent = v + "Python " + st.python;
       }
-      // 窗口标题带版本号：多开时一眼认出是哪个精核
+      // 窗口标题 / 页头 / 侧栏版本标签：v0.4.0 起版本号唯一来源是后端 /api/state，
+      // 必须在启动时注入。loadAbout() 只在切到「关于」页时才跑，不能让它负责
+      // 全局标签，否则首页的 headerTag 会一直停留在占位符「—」。
       if (st.version && st.version !== "unknown") {
         document.title = "精核 · 文件提取 v" + st.version;
+        if (el.headerTag) el.headerTag.textContent = "v" + st.version;
+        if (el.sideVersion) el.sideVersion.textContent = "v" + st.version;
       }
       if (st.log_file) {
         logFile = st.log_file;
