@@ -1118,6 +1118,26 @@ class AppContractTest(unittest.TestCase):
         self.assertIs(state["running"], False,
                       "_build_summary 抛异常后 /api/state.running 仍为 true")
 
+    # ------------------------------------------------------------------ #
+    # 25) 桌面端「关窗即退」契约：心跳端点形状 + 前后端钩子必须存在
+    # ------------------------------------------------------------------ #
+    def test_25_heartbeat_contract(self):
+        srv = self.start()
+        status, obj = srv.get_json("/api/heartbeat")
+        self.assertEqual(status, 200, "/api/heartbeat 未返回 200")
+        self.assertIsInstance(obj, dict, "/api/heartbeat 应返回 JSON 对象")
+        self.assertIs(obj.get("ok"), True, "/api/heartbeat 应返回 {ok: true}")
+        # 前端必须有周期心跳（真实窗口关闭行为自动化无法断言，见文件尾注）；
+        # 缺了它，窗口关闭后服务端看门狗永远等不到「最后心跳」。
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('"/api/heartbeat"', js,
+                      "app.js 缺少 /api/heartbeat 周期心跳")
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("_start_window_watchdog(httpd)", src,
+                      "app.py 未在窗口模式下挂看门狗：关窗不会自动退出")
+        self.assertIn("HEARTBEAT_GRACE", src,
+                      "app.py 缺少心跳宽限期常量")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

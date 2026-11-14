@@ -773,6 +773,13 @@
     setState("idle");
     updateFeatureButtons();
 
+    // 桌面端「关窗即退」心跳：每 2 秒上报一次「窗口还开着」。
+    // 窗口关闭后心跳停止，服务端看门狗在宽限期后自动退出，
+    // 不再留无界面的后台进程。请求失败静默忽略（服务已退出时亦然）。
+    setInterval(function () {
+      api("/api/heartbeat", undefined, 5000).catch(function () {});
+    }, 2000);
+
     api("/api/state", undefined, 10000).then(function (st) {
       if (st.python) {
         var v = (st.version && st.version !== "unknown") ? "精核 " + st.version + " · " : "";

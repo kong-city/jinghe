@@ -577,6 +577,49 @@ _LAST_INPUT = ""
 _LAST_INPUTS: list[str] = []
 _LAST_OUTDIR = ""
 
+# ---- 桌面端「关窗即退」：页面心跳 + 看门狗 --------------------------------
+# 页面每 2 秒打一次 /api/heartbeat；窗口被关闭后心跳停止。看门狗在宽限期
+# 内没见到心跳且没有任务在跑，就让 serve_forever 退出、进程随之结束——
+# 桌面软件的直觉是「关了窗口程序就该退」，而不是留一个无界面的后台进程。
+# 宽限期取 90s：Edge 最小化超过 5 分钟会把页面定时器节流到约 1 次/分钟，
+# 60s < 90s 保证最小化不会被误判为关窗。
+_LAST_SEEN = time.time()
+_SEEN_LOCK = threading.Lock()
+HEARTBEAT_GRACE = 90.0   # 无心跳宽限期（秒）
+HEARTBEAT_CHECK = 15.0   # 看门狗巡检周期（秒）
+
+
+def _touch_heartbeat() -> None:
+    global _LAST_SEEN
+    with _SEEN_LOCK:
+        _LAST_SEEN = time.time()
+
+
+def _start_window_watchdog(httpd: ThreadingHTTPServer) -> None:
+    """仅「打开过窗口」的实例启动看门狗；--no-browser（测试/手动）永不自动退出。"""
+
+    def _watch() -> None:
+        while True:
+            time.sleep(HEARTBEAT_CHECK)
+            with _SEEN_LOCK:
+                idle = time.time() - _LAST_SEEN
+            if idle <= HEARTBEAT_GRACE:
+                continue
+            with _JOB_LOCK:
+                job = _JOB
+                running = bool(job and job.running)
+            if running:
+                # 任务运行中不打断；窗口若已关闭，任务结束后下一轮巡检再退出
+                continue
+            _append_log("[INFO] 窗口已关闭（%.0f 秒无心跳），精核自动退出" % idle)
+            try:
+                httpd.shutdown()  # 看门狗线程调用，serve_forever 会正常返回
+            except Exception:
+                os._exit(0)  # shutdown 失败也不能留死进程
+            return
+
+    threading.Thread(target=_watch, name="window-watchdog", daemon=True).start()
+
 
 def _reap_dead_job() -> None:
     """僵尸 job 兜底：任务线程已退出但 running 仍为 true 时强制复位。
@@ -1426,10 +1469,17 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/ui/"):
                 self._serve_static(unquote(path[len("/ui/"):]))
                 return
+            if path == "/api/heartbeat":
+                # 页面存活信号：窗口开着才有的请求，刷新看门狗计时
+                _touch_heartbeat()
+                self._send_json({"ok": True})
+                return
             if path == "/api/state":
+                _touch_heartbeat()
                 self._send_json(self._api_state())
                 return
             if path == "/api/progress":
+                _touch_heartbeat()
                 qs = parse_qs(parsed.query)
                 try:
                     since = int((qs.get("since") or ["0"])[0])
@@ -1714,12 +1764,36 @@ def find_edge() -> str | None:
     return shutil.which("msedge") or shutil.which("msedge.exe")
 
 
+def _window_position(width: int = 1060, height: int = 720) -> str | None:
+    """按主屏分辨率计算让窗口居中的 --window-position 参数。
+
+    用未开 DPI 感知的 GetSystemMetrics（虚拟化坐标），与 Chromium 对
+    --window-position 的解读在主屏上基本一致；偏上 1/3 更符合桌面窗口习惯。
+    任何异常都返回 None——居中只是锦上添花，绝不能影响启动。
+    """
+    try:
+        user32 = ctypes.windll.user32
+        sw = user32.GetSystemMetrics(0)   # SM_CXSCREEN
+        sh = user32.GetSystemMetrics(1)   # SM_CYSCREEN
+        if sw <= 0 or sh <= 0:
+            return None
+        x = max(0, (sw - width) // 2)
+        y = max(0, (sh - height) // 3)
+        return "--window-position=%d,%d" % (x, y)
+    except Exception:
+        return None
+
+
 def open_window(url: str) -> None:
     edge = find_edge()
     if edge:
         try:
+            cmd = [edge, "--app=%s" % url, "--window-size=1060,720"]
+            pos = _window_position()
+            if pos:
+                cmd.append(pos)
             subprocess.Popen(
-                [edge, "--app=%s" % url, "--window-size=1060,720"],
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -1805,6 +1879,8 @@ def main(argv: list[str] | None = None) -> int:
     print("[INFO] 精核 UI: %s" % url, flush=True)
     if not args.no_browser:
         open_window(url)
+        # 关窗即退：窗口实例才有看门狗；--no-browser（测试/手动调试）永不自动退出
+        _start_window_watchdog(httpd)
     try:
         httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
