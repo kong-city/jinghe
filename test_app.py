@@ -62,6 +62,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -96,6 +97,7 @@ sys.path.insert(0, sys.argv[1])
 import app  # noqa: E402
 
 os.startfile = lambda path: None  # 只在本测试子进程里生效
+app._open_document = lambda p: "startfile"  # 禁止真弹记事本 / 切换窗口
 raise SystemExit(app.main(["--no-browser", "--port", "0"]))
 '''
 
@@ -1340,12 +1342,96 @@ class AppContractTest(unittest.TestCase):
                       "后端缺少打开下载页路由")
 
 
+    # ------------------------------------------------------------------ #
+    # 29) v0.3.7：首页文案 / 按钮精简 + 「打开合并文档」按钮失效修复
+    # ------------------------------------------------------------------ #
+    def test_29_home_ui_slim_and_open_merged(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 卡片标题与「打开」按钮文案
+        self.assertIn('<div class="card-title">输入</div>', html,
+                      "首页卡片标题未改为「输入」")
+        self.assertIn('<div class="card-title">输出</div>', html,
+                      "首页卡片标题未改为「输出」")
+        self.assertNotIn("输入来源", html, "首页仍残留「输入来源」")
+        self.assertNotIn("输出与选项", html, "首页仍残留「输出与选项」")
+        pick = re.search(r'<button[^>]*id="btnPickFiles"[^>]*>(.*?)</button>', html)
+        self.assertIsNotNone(pick, "index.html 缺少 btnPickFiles 按钮")
+        self.assertEqual(pick.group(1), "打开",
+                         "「选择文件」按钮未改名为「打开」：%s" % pick.group(1))
+
+        # ② 取消「选择文件夹」「打开输出目录」按钮与两条冗余提示
+        for gone in ('id="btnBrowseInput"', "选择文件夹",
+                     'id="btnOpenOut"', "打开输出目录",
+                     "仅预览分流只盘点分类", "运行日志已移到", "meta-hint"):
+            self.assertNotIn(gone, html, "首页仍残留已取消元素：%s" % gone)
+        for gone_js in ("btnBrowseInput", "btnOpenOut", "openOutputDir",
+                        'path: base + "/MERGED.md"'):
+            self.assertNotIn(gone_js, js, "app.js 仍残留旧实现：%s" % gone_js)
+        self.assertIn('id="btnOpenMerged"', html, "「打开合并文档」按钮不能一并删掉")
+
+        # ③ 前端：专用端点 + 结果回显 + 重启后按产物恢复入口
+        self.assertIn("/api/open-merged", js, "前端未调用专用打开端点")
+        self.assertIn("/api/merged-status", js, "前端未做产物探测")
+        self.assertIn("refreshMergedButton", js, "缺少重启后的按钮恢复逻辑")
+        self.assertIn("showNotice(\"已打开合并文档", js,
+                      "打开成功未给可见反馈（旧版静默吞结果的根因）")
+
+        # ④ 后端：固定文件名、显式回传 via、无关联时回退记事本
+        self.assertIn('elif path == "/api/open-merged"', src,
+                      "后端缺少 /api/open-merged 路由")
+        self.assertIn('if path == "/api/merged-status"', src,
+                      "后端缺少 /api/merged-status 路由")
+        self.assertIn("MERGED_NAME", src, "后端未固定合并文档文件名")
+        self.assertIn('"via": via', src, "打开结果未回传打开方式")
+        self.assertIn("_open_document", src, "缺少统一的可见打开器")
+        self.assertIn("notepad.exe", src, "缺少系统记事本兜底")
+
+        # ⑤ 真实 HTTP：探测端点不谎报、专用打开端点各分支形状正确
+        srv = self.start(patch_open=True)
+        status, st = srv.get_json("/api/merged-status?outdir=")
+        self.assertEqual(status, 200, "/api/merged-status 未返回 200")
+        self.assertIs(st.get("exists", True), False, "空 outdir 不应谎报存在")
+
+        empty = self.tmp / "out-empty-37"
+        empty.mkdir()
+        q = urllib.parse.quote(str(empty), safe="")
+        status, st = srv.get_json("/api/merged-status?outdir=" + q)
+        self.assertEqual(status, 200)
+        self.assertIs(st.get("exists", True), False, "空目录不应谎报已有 MERGED.md")
+
+        status, obj = srv.post_json("/api/open-merged", {"outdir": ""})
+        self.assertIs(obj.get("ok"), False, "空 outdir 应判失败")
+        self.assertTrue(obj.get("error"), "空 outdir 缺错误文案")
+
+        status, obj = srv.post_json("/api/open-merged", {"outdir": str(empty)})
+        self.assertIs(obj.get("ok"), False, "没有 MERGED.md 却返回 ok=true")
+        self.assertIn("未找到", obj.get("error") or "",
+                      "缺产物时错误文案不明确：%s" % obj.get("error"))
+
+        good = self.tmp / "out-good-37"
+        good.mkdir()
+        (good / "MERGED.md").write_text("# 合并文档\n\n正文\n", encoding="utf-8")
+        status, st = srv.get_json("/api/merged-status?outdir=" +
+                                 urllib.parse.quote(str(good), safe=""))
+        self.assertIs(st.get("exists"), True, "已有 MERGED.md 未探测到")
+        status, obj = srv.post_json("/api/open-merged", {"outdir": str(good)})
+        self.assertIs(obj.get("ok"), True,
+                      "已存在的 MERGED.md 应能打开：%s" % obj)
+        self.assertTrue((obj.get("path") or "").endswith("MERGED.md"),
+                        "未回传合并文档路径：%s" % obj)
+        self.assertIn(obj.get("via"), ("startfile", "notepad", "browser"),
+                      "打开方式回传异常：%s" % obj.get("via"))
+
+
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
     print("\n=== 界面 / API 契约数字摘要 ===")
     # 口径与 SPEC §8.3 对齐：8 个 /api/* 业务端点（v2.7 加入 /api/pick-files），
     # favicon 是短路由，不把 favicon 算进 API 计数（早先的口误）。
-    print("被测对象            : app.py（ThreadingHTTPServer + 8 个 /api/* 端点 + favicon 短路 + 2 静态路由）")
+    print("被测对象            : app.py（ThreadingHTTPServer + 多个 /api/* 端点 + favicon 短路 + 2 静态路由）")
     print("样例契约            : %d 文件 / 候选 %d / 成功 %d / 未成功 %d / 阶段3预留 %d"
           % (EXPECT_TOTAL, EXPECT_CANDIDATES, EXPECT_SUCCESS, EXPECT_FAILED, EXPECT_DEFERRED))
     print("降级契约            : %d 条（5 加密 + 1 无效容器，不含音视频）" % EXPECT_DEGRADED)

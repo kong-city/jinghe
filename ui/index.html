@@ -63,23 +63,21 @@
           <p id="pageSub">阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
         </div>
       </div>
-      <div class="header-tag" id="headerTag">v0.3.6</div>
+      <div class="header-tag" id="headerTag">v0.3.7</div>
     </header>
 
     <!-- ==================== 首页 ==================== -->
     <section class="page" id="page-home">
       <section class="cards">
         <div class="card">
-          <div class="card-title">输入来源</div>
+          <div class="card-title">输入</div>
           <div class="row">
             <input id="inputPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
-                   placeholder="粘贴或浏览选择文件 / 文件夹路径">
-            <button id="btnPickFiles" class="btn btn-ghost" type="button">选择文件…</button>
-            <button id="btnBrowseInput" class="btn btn-ghost" type="button">选择文件夹…</button>
+                   placeholder="粘贴文件 / 文件夹路径，或点击「打开」选择文件">
+            <button id="btnPickFiles" class="btn btn-ghost" type="button">打开</button>
             <button id="btnPreviewInline" class="btn btn-ghost" type="button">预览分流</button>
           </div>
           <div id="inputMeta" class="meta">未选择输入</div>
-          <div class="meta-hint">仅预览分流只盘点分类，不生成文件、不打开文档</div>
           <div id="fileListWrap" class="file-list-wrap" hidden>
             <div class="file-list-head">
               <span id="fileListTitle">已识别 0 个文件</span>
@@ -90,7 +88,7 @@
         </div>
 
         <div class="card">
-          <div class="card-title">输出与选项</div>
+          <div class="card-title">输出</div>
           <div class="row">
             <input id="outPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
                    placeholder="输出目录">
@@ -101,10 +99,8 @@
             <span>完成后打开合并文档</span>
           </label>
           <div class="row">
-            <button id="btnOpenOut" class="btn btn-ghost" type="button" disabled>打开输出目录</button>
             <button id="btnOpenMerged" class="btn btn-ghost" type="button" disabled>打开合并文档</button>
           </div>
-          <div class="meta-hint">运行日志已移到「关于 · 运行日志」，可打开文件或生成到指定位置</div>
         </div>
       </section>
 

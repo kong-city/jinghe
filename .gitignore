@@ -14,3 +14,8 @@ out-*/
 .DS_Store
 *.bak
 Thumbs.db
+
+# ---- 本地验收产物（不随源码/安装包发布） ----
+.edge-probe*/
+ui/__probe*.html
+v3*.png

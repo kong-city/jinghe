@@ -11,7 +11,9 @@
     python app.py --port 8765      # 指定端口
 
 设计约束：零第三方依赖；打包（PyInstaller onefile）后资源通过 sys._MEIPASS 解析。
-服务提供 8 个 /api/* 业务端点：state / pick-folder / pick-files / dry-run / run / progress / cancel / open。
+服务提供若干 /api/* 业务端点：state / pick-folder / pick-files / dry-run / run /
+progress / cancel / open / open-merged / merged-status / settings / check-update /
+open-latest / pick-log-dest / export-log / summarize / transcribe 等。
 """
 
 from __future__ import annotations
@@ -57,6 +59,9 @@ UPDATE_TIMEOUT = 4.0
 # 超大目录会显著拖慢；600 秒对「预览」不可接受，收敛到 30 秒并给前端准确文案，
 # 避免长时间停在「预览中…」却无任何反馈。
 DRY_RUN_TIMEOUT = 30
+
+# 合并文档固定文件名：专用端点只认这个名字，不接受任意文件路径
+MERGED_NAME = "MERGED.md"
 
 
 # --------------------------------------------------------------------------- #
@@ -1570,6 +1575,45 @@ def _prepare_outdir(raw: str) -> tuple[str | None, str | None]:
     return path, None
 
 
+def _open_document(path: Path) -> str:
+    """用「一定看得见」的编辑器打开文档，返回打开方式标记。
+
+    v0.3.7 实测：本机 `.md` 的用户级关联（HKCU UserChoice）指向单实例程序，
+    `os.startfile` 不抛错却可能只把别的窗口切到前台，页面里毫无反应。
+    桌面端因此固定用系统记事本打开合并文档；记事本缺失 / 非 Windows 时
+    依次降级到系统关联与浏览器。测试启动器会把本函数替换为空操作。
+    """
+    notepad = (Path(os.environ.get("WINDIR", r"C:\Windows"))
+               / "System32" / "notepad.exe")
+    if os.name == "nt" and notepad.is_file():
+        try:
+            subprocess.Popen([str(notepad), str(path)])
+            return "notepad"
+        except Exception:
+            pass  # 落到下面的系统关联 / 浏览器
+    if hasattr(os, "startfile"):
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return "startfile"
+    webbrowser.open(path.as_uri())
+    return "browser"
+
+
+def _merged_path(outdir: str) -> Path | None:
+    """按输出目录解析 MERGED.md；端点只认固定文件名，不接受任意文件路径。
+
+    v0.3.7：旧实现由前端拼 `outdir + "/MERGED.md"` 再交给通用 /api/open，
+    Windows 上会产生混合分隔符；且 .md 常无系统关联，os.startfile 抛错后
+    又被前端静默吞掉，表现成「按钮点了没反应」。这里统一由后端解析。
+    """
+    if not outdir:
+        return None
+    try:
+        base = Path(os.path.abspath(os.path.expanduser(outdir)))
+    except (OSError, ValueError):
+        return None
+    return base / MERGED_NAME
+
+
 # --------------------------------------------------------------------------- #
 # 阶段 2 / 3 后处理（纯标准库实现，守住「零第三方依赖 / 单文件 exe」设计不变量）
 # --------------------------------------------------------------------------- #
@@ -1682,6 +1726,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/check-update":
                 _touch_heartbeat()
                 self._send_json(self._api_check_update())
+                return
+            if path == "/api/merged-status":
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                self._send_json(self._api_merged_status(
+                    (qs.get("outdir") or [""])[0]))
                 return
             if path == "/api/settings":
                 _touch_heartbeat()
@@ -1837,6 +1887,9 @@ class Handler(BaseHTTPRequestHandler):
                                  "settings_file": str(SETTINGS_FILE)})
             elif path == "/api/open":
                 self._send_json(self._api_open(str(data.get("path") or "").strip()))
+            elif path == "/api/open-merged":
+                self._send_json(self._api_open_merged(
+                    str(data.get("outdir") or "").strip()))
             elif path == "/api/open-latest":
                 self._send_json(self._api_open_latest())
             elif path == "/api/pick-log-dest":
@@ -1930,6 +1983,43 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % exc}
         return {"ok": True}
+
+    def _api_merged_status(self, outdir: str) -> dict:
+        """探测输出目录里是否已有 MERGED.md（重启后恢复「打开合并文档」入口）。"""
+        merged = _merged_path(outdir)
+        if merged is None:
+            return {"ok": True, "exists": False, "outdir": outdir, "path": None}
+        return {
+            "ok": True,
+            "exists": merged.is_file(),
+            "outdir": str(merged.parent),
+            "path": str(merged),
+        }
+
+    def _api_open_merged(self, outdir: str) -> dict:
+        """打开本次提取的合并文档 MERGED.md，并把结果显式回给前端。
+
+        与通用 /api/open 的区别：只认「输出目录 + 固定文件名」；
+        用 _open_document 固定走系统记事本（避免 .md 的单实例关联
+        让「打开」变成静默切换窗口）；打开结果 ok / path / via 全部回传，
+        前端据此显示成功路径或明确错误，绝不再静默吞掉。
+        """
+        merged = _merged_path(outdir)
+        if merged is None:
+            return {"ok": False, "error": "请先完成一次提取，再打开合并文档"}
+        if not merged.is_file():
+            return {"ok": False,
+                    "error": "未找到合并文档：%s（请先完成提取）" % merged,
+                    "path": str(merged)}
+        try:
+            via = _open_document(merged)
+        except Exception as exc:
+            _log_error("API:/api/open-merged", "打开合并文档失败", exc,
+                       request="path=%s" % merged)
+            return {"ok": False, "error": "打开失败：%s" % exc,
+                    "path": str(merged)}
+        _append_log("[INFO] 已打开合并文档（%s）：%s" % (via, merged))
+        return {"ok": True, "path": str(merged), "via": via}
 
     # ---------------------------- 关于页：版本更新 / 运行日志 ---------------------------- #
     def _api_check_update(self) -> dict:

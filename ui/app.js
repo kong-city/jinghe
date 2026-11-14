@@ -9,14 +9,12 @@
     inputPath: $("inputPath"),
     outPath: $("outPath"),
     btnPickFiles: $("btnPickFiles"),
-    btnBrowseInput: $("btnBrowseInput"),
     btnBrowseOut: $("btnBrowseOut"),
     btnPreview: $("btnPreview"),
     btnPreviewInline: $("btnPreviewInline"),
     btnRun: $("btnRun"),
     btnCancel: $("btnCancel"),
     btnOpenMerged: $("btnOpenMerged"),
-    btnOpenOut: $("btnOpenOut"),
     optOpenMerged: $("optOpenMerged"),
     errorBar: $("errorBar"),
     runStatus: $("runStatus"),
@@ -453,7 +451,7 @@
 
   function updateControls() {
     var lock = running || previewing;
-    var ids = ["inputPath", "outPath", "btnPickFiles", "btnBrowseInput", "btnBrowseOut",
+    var ids = ["inputPath", "outPath", "btnPickFiles", "btnBrowseOut",
       "btnRun", "btnPreview", "btnPreviewInline"];
     ids.forEach(function (id) { $(id).disabled = lock; });
     el.btnCancel.disabled = !running;
@@ -585,22 +583,21 @@
     });
   }
 
-  /* ------------------------------ 文件夹选择 ------------------------------ */
-  function browse(target) {
+  /* ------------------------------ 输出目录选择 ------------------------------ */
+  // v0.3.7：首页取消「选择文件夹」入口后，本函数只服务输出目录；
+  // 输入路径改为粘贴，或用「打开」多选文件，不再弹原生目录选择框。
+  function browseOutput() {
     if (running || previewing) return;
-    var btn = target === el.inputPath ? el.btnBrowseInput : el.btnBrowseOut;
+    var btn = el.btnBrowseOut;
     var old = btn.textContent;
     btn.disabled = true;
     btn.textContent = "选择中…";
     // pick-folder 要等用户操作原生对话框，第三参数传 0 = 绝不 abort。
-    api("/api/pick-folder", { initial: target.value.trim() }, 0).then(function (r) {
+    api("/api/pick-folder", { initial: el.outPath.value.trim() }, 0).then(function (r) {
       if (r && r.path) {
-        target.value = r.path;
-        if (target === el.inputPath) {
-          sel.inputs = [];
-          clearFileList();
-          doPreview();
-        }
+        el.outPath.value = r.path;
+        rememberPaths();
+        refreshMergedButton();
       }
     }).catch(function (err) {
       showError("打开文件夹选择框失败：" + (err.message || err));
@@ -616,7 +613,7 @@
     var btn = el.btnPickFiles;
     var old = btn.textContent;
     btn.disabled = true;
-    btn.textContent = "选择中…";
+    btn.textContent = "打开中…";
     // 多选后输入框里是展示文案（「C:\a\x.pdf 等 3 个文件」），不能当 initial 传给后端；
     // 有已选路径时用第一条真实路径定位。
     var initial = sel.inputs.length ? sel.inputs[0] : el.inputPath.value.trim();
@@ -667,7 +664,6 @@
     el.degradedBadge.hidden = true;
     el.degradedBadge.textContent = "0";
     el.btnOpenMerged.disabled = true;
-    el.btnOpenOut.disabled = true;
     lastDoneOutdir = null;
     updateFeatureButtons();
   }
@@ -881,15 +877,44 @@
     el.degradedBadge.classList.remove("zero");
   }
 
+  /* v0.3.7：「打开合并文档」不再由前端拼路径后丢给通用 /api/open。
+     改用专用端点 /api/open-merged：
+     ① 后端 os.path.join 拼 MERGED.md 并校验存在，避免混合分隔符；
+     ② .md 常无系统关联，os.startfile 抛错时后端回退记事本；
+     ③ 结果必须回显给用户，绝不静默吞掉（旧版「点了没反应」的根因）。*/
   function openMerged(outdir) {
-    if (!outdir) return;
-    var base = String(outdir).replace(/[\\/]+$/, "");
-    api("/api/open", { path: base + "/MERGED.md" }, 10000).catch(function () { /* 静默 */ });
+    var dir = outdir || lastDoneOutdir || el.outPath.value.trim();
+    if (!dir) { showError("请先完成一次提取，再打开合并文档"); return; }
+    clearBar();
+    api("/api/open-merged", { outdir: dir }, 10000).then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.error) || "打开合并文档失败");
+      var via = r.via === "notepad" ? "（已用系统记事本打开）" : "";
+      showNotice("已打开合并文档：" + (r.path || "MERGED.md") + via + " · " + nowHMS());
+    }).catch(function (err) {
+      showError("打开合并文档失败：" + (err.message || String(err)));
+    });
   }
 
-  function openOutputDir(outdir) {
-    if (!outdir) return;
-    api("/api/open", { path: String(outdir).replace(/[\\/]+$/, "") }, 10000).catch(function () { /* 静默 */ });
+  // 启动时 / 改输出目录后探测 MERGED.md 是否已存在：软件重启后 summary 为空，
+  // 旧实现会让「打开合并文档」一直灰着，看起来同样像按钮失效。
+  function refreshMergedButton() {
+    var dir = el.outPath.value.trim();
+    if (!dir) {
+      lastDoneOutdir = null;
+      el.btnOpenMerged.disabled = true;
+      return;
+    }
+    api("/api/merged-status?outdir=" + encodeURIComponent(dir), undefined, 10000)
+      .then(function (r) {
+        if (r && r.ok && r.exists) {
+          lastDoneOutdir = r.outdir || dir;
+          el.btnOpenMerged.disabled = false;
+        } else {
+          lastDoneOutdir = null;
+          el.btnOpenMerged.disabled = true;
+        }
+        updateFeatureButtons();
+      }).catch(function () { /* 探测失败保持现状，不误开入口 */ });
   }
 
   function finish(r) {
@@ -915,7 +940,6 @@
     // 该按钮绝不进 updateControls() 的 ids，产物查看不被 running/previewing 锁住。
     if (st === "done" && summary && summary.outdir) {
       el.btnOpenMerged.disabled = false;
-      el.btnOpenOut.disabled = false;
       lastDoneOutdir = summary.outdir;
       updateFeatureButtons();
     }
@@ -1028,14 +1052,8 @@
     el.btnPreviewInline.addEventListener("click", doPreview);
     el.btnRun.addEventListener("click", doRun);
     el.btnCancel.addEventListener("click", doCancel);
-    el.btnOpenMerged.addEventListener("click", function () {
-      openMerged(summary && summary.outdir);
-    });
-    el.btnBrowseInput.addEventListener("click", function () { browse(el.inputPath); });
-    el.btnBrowseOut.addEventListener("click", function () { browse(el.outPath); });
-    el.btnOpenOut.addEventListener("click", function () {
-      openOutputDir(summary && summary.outdir);
-    });
+    el.btnOpenMerged.addEventListener("click", function () { openMerged(); });
+    el.btnBrowseOut.addEventListener("click", browseOutput);
     el.btnPickFiles.addEventListener("click", pickFiles);
     el.btnSummarize.addEventListener("click", doSummarize);
     el.btnExportDocx.addEventListener("click", function () {
@@ -1064,6 +1082,7 @@
       rememberPaths();
     });
     el.outPath.addEventListener("input", rememberPaths);
+    el.outPath.addEventListener("change", refreshMergedButton);
 
     // 左侧导航：折叠/展开 + 页面切换（点开才显示对应内容）
     if (el.btnToggleNav) {
@@ -1157,7 +1176,10 @@
     api("/api/settings", undefined, 10000).then(function (r) {
       if (!r || !r.ok) return;
       applySettings(r.settings);
-      if (settings.default_outdir) el.outPath.value = settings.default_outdir;
+      if (settings.default_outdir) {
+        el.outPath.value = settings.default_outdir;
+        refreshMergedButton();
+      }
     }).catch(function () { /* 读不到设置就用默认值，不影响使用 */ });
 
     // 桌面端「关窗即退」心跳：每 2 秒上报一次「窗口还开着」。
@@ -1202,6 +1224,8 @@
       }
       if (st.outdir) el.outPath.value = st.outdir;
       else if (savedOut) el.outPath.value = savedOut;
+      // 重启后按实际产物恢复「打开合并文档」入口，不再依赖内存里的 summary
+      refreshMergedButton();
       if (st.running) {
         // 后端残留 running=true 不能直接 startRunning()（会把前端永久锁死）：
         // 先带超时确认 /api/progress 确实仍在运行，确认失败则保持解锁并提示。
