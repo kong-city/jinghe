@@ -46,7 +46,11 @@
     prepWrap: $("prepWrap"),
     prepNote: $("prepNote"),
     producedWrap: $("producedWrap"),
-    producedNote: $("producedNote")
+    producedNote: $("producedNote"),
+    btnSummarize: $("btnSummarize"),
+    btnExportDocx: $("btnExportDocx"),
+    btnTranscribe: $("btnTranscribe"),
+    btnKnowledgeBase: $("btnKnowledgeBase")
   };
 
   var running = false;
@@ -57,6 +61,7 @@
   var summary = null;
   var lastTotal = 0;
   var stateName = "idle";
+  var lastDoneOutdir = null;
 
   /* 多选文件路径；空数组表示单选（输入框路径）或文件夹模式 */
   var sel = { inputs: [] };
@@ -361,6 +366,8 @@
     el.degradedBadge.textContent = "0";
     el.btnOpenMerged.disabled = true;
     el.btnOpenOut.disabled = true;
+    lastDoneOutdir = null;
+    updateFeatureButtons();
   }
 
   function startRunning() {
@@ -606,6 +613,8 @@
     if (st === "done" && summary && summary.outdir) {
       el.btnOpenMerged.disabled = false;
       el.btnOpenOut.disabled = false;
+      lastDoneOutdir = summary.outdir;
+      updateFeatureButtons();
     }
     if (st === "done" && el.optOpenMerged.checked && summary && summary.outdir) {
       openMerged(summary.outdir);
@@ -631,6 +640,53 @@
       el.btnCancel.textContent = "取消";
       el.btnCancel.disabled = false;
     });
+  }
+
+  /* ------------------------------ 阶段 2 / 3 后处理 ------------------------------ */
+  // 仅在「本次运行成功且有产物目录」时点亮后处理按钮；运行/预览中不点亮。
+  function updateFeatureButtons() {
+    var on = !!lastDoneOutdir && !running && !previewing;
+    el.btnSummarize.disabled = !on;
+    el.btnExportDocx.disabled = true;  // 导出 Word 为后续计划，恒禁用
+    el.btnTranscribe.disabled = !on;
+  }
+
+  // 统一的后端动作：调用 /api/*，成功给带时间戳的常驻文案，失败显式报错。
+  // 复用 api() 的 AbortController 超时与 .finally 复位机制（与预览同构）。
+  function callFeature(path, body, btn, doingLabel) {
+    if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
+    var old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = doingLabel;
+    clearBar();
+    api(path, body, 30000).then(function (r) {
+      if (!r.ok) throw new Error(r.error || (path + " 失败"));
+      var msg = r.path ? "已生成：" + r.path : "完成";
+      if (r.chars) msg += "（" + r.chars + " 字）";
+      if (r.bytes) msg += "（" + Math.round((r.bytes || 0) / 1024) + " KB）";
+      showNotice(msg + " · " + nowHMS());
+    }).catch(function (err) {
+      showError(err.message || String(err));
+    }).finally(function () {
+      btn.textContent = old;
+      updateFeatureButtons();
+    });
+  }
+
+  function doSummarize() {
+    var outdir = (summary && summary.outdir) || el.outPath.value.trim();
+    if (!outdir) { showError("请先完成提取以生成输出目录"); return; }
+    callFeature("/api/summarize", { outdir: outdir }, el.btnSummarize, "提炼中…");
+  }
+
+  function doTranscribe() {
+    var inputs = currentInputs();
+    if (!inputs.length) {
+      var v = el.inputPath.value.trim();
+      if (v) inputs = [v];
+    }
+    if (!inputs.length) { showError("请先选择音视频文件"); return; }
+    callFeature("/api/transcribe", { inputs: inputs }, el.btnTranscribe, "转写中…");
   }
 
   /* ------------------------------ Tabs ------------------------------ */
@@ -675,6 +731,14 @@
       openOutputDir(summary && summary.outdir);
     });
     el.btnPickFiles.addEventListener("click", pickFiles);
+    el.btnSummarize.addEventListener("click", doSummarize);
+    el.btnExportDocx.addEventListener("click", function () {
+      showNotice("导出 Word 为后续计划（阶段 2 二期），当前输出格式为 Markdown（MERGED.md）。");
+    });
+    el.btnTranscribe.addEventListener("click", doTranscribe);
+    el.btnKnowledgeBase.addEventListener("click", function () {
+      showNotice("阶段 4 知识库 / 自动化规划中，敬请期待。");
+    });
     el.btnToggleFiles.addEventListener("click", function () {
       var willHide = !el.fileList.hidden;
       el.fileList.hidden = willHide;
@@ -695,6 +759,7 @@
 
     updateControls();
     setState("idle");
+    updateFeatureButtons();
 
     api("/api/state", undefined, 10000).then(function (st) {
       if (st.python) {

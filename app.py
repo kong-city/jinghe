@@ -1212,6 +1212,49 @@ def _prepare_outdir(raw: str) -> tuple[str | None, str | None]:
     return path, None
 
 
+# --------------------------------------------------------------------------- #
+# 阶段 2 / 3 后处理（纯标准库实现，守住「零第三方依赖 / 单文件 exe」设计不变量）
+# --------------------------------------------------------------------------- #
+_STAGE3_AUDIO_EXT = {
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma", ".amr",
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm",
+}
+
+
+
+def _extractive_summary(md_text: str) -> str:
+    """抽取式摘要（阶段 2 v1）：保留各级标题，并取每个小节首段前 2 行。
+
+    深度语义提炼需接入 LLM，此处只做结构化抽取，绝不编造内容。
+    """
+    out: list[str] = []
+    heading = None
+    taken = 0
+    for raw in md_text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            level = 0
+            for ch in s:
+                if ch == "#":
+                    level += 1
+                else:
+                    break
+            text = s[level:].strip()
+            if level <= 3:
+                out.append(("#" * level) + " " + text)
+                heading = text
+                taken = 0
+            continue
+        if heading and taken < 2:
+            out.append(s)
+            taken += 1
+        elif not heading:
+            out.append(s)
+    return "\n".join(out)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "JingheUI/%s" % extract.__version__
     protocol_version = "HTTP/1.1"
@@ -1394,6 +1437,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(self._api_cancel())
             elif path == "/api/open":
                 self._send_json(self._api_open(str(data.get("path") or "").strip()))
+            elif path == "/api/summarize":
+                self._send_json(
+                    self._api_summarize(str(data.get("outdir") or "").strip()))
+            elif path == "/api/transcribe":
+                self._send_json(self._api_transcribe(_norm_inputs(data)))
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面
@@ -1466,6 +1514,57 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % exc}
         return {"ok": True}
+
+    # ---------------------------- 阶段 2 / 3 后处理 ---------------------------- #
+    def _api_summarize(self, outdir: str) -> dict:
+        if not outdir:
+            return {"ok": False, "error": "请先完成提取并指定输出目录"}
+        out_abs = Path(outdir)
+        if not out_abs.is_dir():
+            return {"ok": False, "error": "输出目录不存在：%s" % outdir}
+        merged = out_abs / "MERGED.md"
+        if not merged.is_file():
+            return {"ok": False, "error": "未找到 MERGED.md，请先完成提取"}
+        try:
+            text = merged.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"ok": False, "error": "读取 MERGED.md 失败：%s" % exc}
+        summary = _extractive_summary(text)
+        header = ("<!-- 精核 · 抽取式摘要（阶段 2 v1） -->\n"
+                  "<!-- 生成时间 %s -->\n\n"
+                  % time.strftime("%Y-%m-%d %H:%M:%S"))
+        prov = out_abs / "provenance.json"
+        if prov.is_file():
+            try:
+                data = json.loads(prov.read_text(encoding="utf-8"))
+                entries = data.get("entries") or []
+                if isinstance(entries, list):
+                    success = sum(1 for e in entries
+                                  if isinstance(e, dict) and e.get("status") == "成功")
+                    total = len(entries)
+                    header += ("> 来源：%d 个源文件，成功抽出 %d 份；本摘要为抽取式（取各节首段），"
+                               "深度语义提炼需接入 LLM。\n\n" % (total, success))
+            except Exception:
+                pass
+        out_path = out_abs / "SUMMARY.md"
+        try:
+            out_path.write_text(header + summary, encoding="utf-8")
+        except OSError as exc:
+            return {"ok": False, "error": "写入 SUMMARY.md 失败：%s" % exc}
+        return {"ok": True, "path": str(out_path), "chars": len(header) + len(summary)}
+
+    def _api_transcribe(self, inputs: list[str]) -> dict:
+        if not inputs:
+            return {"ok": False, "error": "请先选择音视频文件（阶段 3 预留格式）"}
+        found = [p for p in inputs
+                 if Path(p).suffix.lower() in _STAGE3_AUDIO_EXT and os.path.exists(p)]
+        if not found:
+            return {"ok": False, "error": "未找到可转写的音视频文件（支持 mp3/wav/mp4/mov 等）"}
+        # 阶段 3 音视频转写：当前零依赖运行环境未内置专用转写器（刻意不引入重依赖），
+        # 此处只诚实标记、绝不产出伪转写；接入转写后端后在此调用。
+        return {"ok": False, "error":
+                "阶段 3 音视频转写需专用转写器，当前零依赖运行环境未启用；"
+                "已识别 %d 个音视频文件，请在启用转写后端后重试。" % len(found)}
 
 
 # --------------------------------------------------------------------------- #

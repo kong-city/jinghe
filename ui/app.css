@@ -5,11 +5,11 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: #FFFFFF;
+  background: #F4F6F8;
 }
 
 body {
-  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  font-family: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
   font-size: 13px;
   line-height: 1.5;
   color: #1F1F1D;
@@ -21,10 +21,9 @@ button, input { font-family: inherit; }
 .wrap {
   width: 1040px;
   max-width: calc(100% - 40px);
-  height: 100vh;
-  min-height: 560px;
+  min-height: 100vh;
   margin: 0 auto;
-  padding: 20px 0 16px;
+  padding: 18px 0 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -32,7 +31,53 @@ button, input { font-family: inherit; }
 
 .mono { font-family: Consolas, "Courier New", monospace; }
 
-/* ---------- 顶部卡片 ---------- */
+/* ---------- 顶部品牌栏 ---------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 4px 2px;
+}
+
+.brand { display: flex; align-items: center; gap: 12px; }
+
+.brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #185FA5;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brand-text h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+.brand-text p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #6B6A65;
+}
+
+.header-tag {
+  font-size: 12px;
+  color: #185FA5;
+  background: #EAF1F8;
+  border: 1px solid #CFE0F1;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+/* ---------- 卡片网格 ---------- */
 .cards {
   display: grid;
   grid-template-columns: 1.15fr 1fr;
@@ -40,9 +85,9 @@ button, input { font-family: inherit; }
 }
 
 .card {
-  background: #F6F6F4;
+  background: #FFFFFF;
   border: 1px solid #E5E3DC;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 14px 16px;
 }
 
@@ -50,6 +95,12 @@ button, input { font-family: inherit; }
   font-size: 15px;
   font-weight: 500;
   margin-bottom: 10px;
+}
+
+.card-sub {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  color: #9A9890;
 }
 
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -99,40 +150,38 @@ button, input { font-family: inherit; }
   border-color: #134C85;
 }
 
-.meta {
-  margin-top: 10px;
-  min-height: 18px;
-  font-size: 12px;
-  color: #6B6A65;
+.btn-ghost { background: #FFFFFF; }
+
+/* ---------- 后处理功能区 ---------- */
+.features { background: #FBFCFE; border-color: #D8E4F1; }
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
 }
 
-.meta.filled { color: #1F1F1D; }
-
-/* U2：预览功能说明小字 */
-.meta-hint {
-  margin-top: 4px;
-  font-size: 11px;
-  color: #9A9890;
-}
-
-/* O5：产物入口按钮与上方复选框拉开间距 */
-#btnOpenMerged { margin-top: 10px; }
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 14px;
+.feature-btn {
+  height: 44px;
+  padding: 0 12px;
   font-size: 13px;
+  font-weight: 500;
+  color: #185FA5;
+  background: #FFFFFF;
+  border: 1px solid #CFE0F1;
+  border-radius: 10px;
   cursor: pointer;
-  user-select: none;
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
-.check input {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: #185FA5;
+.feature-btn:hover:not(:disabled) { background: #EAF1F8; border-color: #185FA5; }
+.feature-btn:disabled { opacity: 0.45; cursor: default; }
+
+.feature-btn.is-soon {
+  color: #9A9890;
+  border-style: dashed;
+  border-color: #D9D7CE;
+  background: #FAFAF8;
 }
 
 /* ---------- 提示条 ---------- */
@@ -257,9 +306,9 @@ button, input { font-family: inherit; }
 }
 
 .metric {
-  background: #FFFFFF;
-  border: 1px solid #E5E3DC;
-  border-radius: 8px;
+  background: #F7F9FB;
+  border: 1px solid #EAECEF;
+  border-radius: 10px;
   padding: 12px 14px;
 }
 
@@ -384,8 +433,10 @@ button, input { font-family: inherit; }
 .state.cancelled { color: #854F0B; }
 .state.failed { color: #A32D2D; }
 
-@media (max-height: 700px) {
-  .wrap { height: auto; }
+@import url("");
+
+@media (max-height: 760px) {
+  .wrap { min-height: auto; }
   .result { height: 340px; flex: 0 0 auto; }
 }
 
@@ -464,7 +515,7 @@ button, input { font-family: inherit; }
 
 .file-more {
   padding: 6px 0;
-  font-size: 12px;
+  font-size:12px;
   color: #6B6A65;
   text-align: center;
   border-bottom: none;

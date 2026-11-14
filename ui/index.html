@@ -10,6 +10,17 @@
 <body>
 <main class="wrap">
 
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark">精</div>
+      <div class="brand-text">
+        <h1>精核 · 文件提取</h1>
+        <p>阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
+      </div>
+    </div>
+    <div class="header-tag">v0.2.6</div>
+  </header>
+
   <section class="cards">
     <div class="card">
       <div class="card-title">输入来源</div>
@@ -49,6 +60,19 @@
     </div>
   </section>
 
+  <section class="card features">
+    <div class="card-title">后处理 · 阶段 2 / 3</div>
+    <p class="card-sub">基于本次提取产物（MERGED.md，现行输出格式为 Markdown）进一步加工；Word 导出列为后续计划。</p>
+    <div class="feature-grid">
+      <button id="btnSummarize" class="feature-btn" type="button" disabled>核心提炼（摘要）</button>
+      <button id="btnExportDocx" class="feature-btn is-soon" type="button" disabled
+              title="阶段 2 二期，后续计划，暂不实现">导出 Word（规划中）</button>
+      <button id="btnTranscribe" class="feature-btn" type="button" disabled>音视频转写</button>
+      <button id="btnKnowledgeBase" class="feature-btn is-soon" type="button" disabled
+              title="阶段 4 知识库 / 自动化，规划中">知识库（规划中）</button>
+    </div>
+  </section>
+
   <div id="errorBar" class="bar bar-error" hidden></div>
 
   <div class="actions">
@@ -79,15 +103,15 @@
         </div>
         <div class="metric">
           <div id="mFailed" class="metric-value">—</div>
-          <div class="metric-label">未成功</div>
+          <div id="mFailedLabel" class="metric-label">未成功</div>
         </div>
         <div class="metric">
           <div id="mDeferred" class="metric-value">—</div>
-          <div class="metric-label">阶段 3 预留</div>
+          <div id="mDeferredLabel" class="metric-label">阶段 3 预留</div>
         </div>
         <div class="metric">
           <div id="mElapsed" class="metric-value">—</div>
-          <div class="metric-label">耗时(s)</div>
+          <div id="mElapsedLabel" class="metric-label">耗时(s)</div>
         </div>
       </div>
       <div id="overviewHint" class="hint">尚未运行。选择输入后点击「开始提取」。</div>
