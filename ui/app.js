@@ -132,6 +132,27 @@
       "-" + pad(d.getHours()) + pad(d.getMinutes());
   }
 
+  // ---- 桌面端便利：跨重启记住路径 ------------------------------------- //
+  // 服务端的「上次输入/输出」只活在本次进程内，退出软件就没了；
+  // localStorage 让桌面软件像桌面软件那样记住上次的输入与输出目录。
+  var LS_INPUT = "jinghe.input";
+  var LS_OUTDIR = "jinghe.outdir";
+
+  function lsGet(key) {
+    try { return window.localStorage.getItem(key) || ""; }
+    catch (e) { return ""; }   // 隐私模式 / 存储被禁用：静默降级
+  }
+
+  function lsSet(key, value) {
+    try { window.localStorage.setItem(key, value || ""); }
+    catch (e) { /* 存不了就算了，不影响主流程 */ }
+  }
+
+  function rememberPaths() {
+    lsSet(LS_INPUT, el.inputPath.value.trim());
+    lsSet(LS_OUTDIR, el.outPath.value.trim());
+  }
+
   function showBar(kind, message) {
     el.errorBar.className = "bar " + (kind === "notice" ? "bar-notice" : "bar-error");
     el.errorBar.textContent = message;
@@ -241,6 +262,7 @@
     var input = el.inputPath.value.trim();
     if (!input) { showError("请先填写输入路径"); return; }
     if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
+    rememberPaths();
     clearBar();
     previewing = true;
     updateControls();
@@ -388,6 +410,7 @@
     if (!input) { showError("请先填写输入路径"); return; }
     if (!outdir) { showError("请先填写输出目录"); return; }
     if (running) return;
+    rememberPaths();
     clearBar();
     resetRunUI();
     var runBody = { outdir: outdir };
@@ -715,6 +738,9 @@
     previewing = false;
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     el.outPath.value = defaultOutdir();
+    // 记住上次用过的输出目录（服务端状态优先，见下面的 /api/state 处理）
+    var savedOut = lsGet(LS_OUTDIR);
+    if (savedOut) el.outPath.value = savedOut;
     var tabs = document.querySelectorAll(".tab");
     for (var i = 0; i < tabs.length; i += 1) {
       tabs[i].addEventListener("click", function () {
@@ -767,6 +793,21 @@
       el.inputMeta.classList.remove("filled");
       sel.inputs = [];
       clearFileList();
+      rememberPaths();
+    });
+    el.outPath.addEventListener("input", rememberPaths);
+
+    // 桌面端快捷键：Ctrl+Enter 开始提取、Esc 取消运行中的任务
+    document.addEventListener("keydown", function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (!running && !previewing) doRun();
+        return;
+      }
+      if (e.key === "Escape" && running) {
+        e.preventDefault();
+        doCancel();
+      }
     });
 
     updateControls();
@@ -785,6 +826,10 @@
         var v = (st.version && st.version !== "unknown") ? "精核 " + st.version + " · " : "";
         el.pyLabel.textContent = v + "Python " + st.python;
       }
+      // 窗口标题带版本号：多开时一眼认出是哪个精核
+      if (st.version && st.version !== "unknown") {
+        document.title = "精核 · 文件提取 v" + st.version;
+      }
       if (st.log_file) {
         logFile = st.log_file;
         el.btnOpenLog.disabled = false;
@@ -802,8 +847,16 @@
       } else if (Array.isArray(st.inputs) && st.inputs.length === 1) {
         el.inputPath.value = st.inputs[0];
         el.inputMeta.textContent = "上次使用的输入，点击「预览分流」查看件数";
+      } else {
+        // 服务端没有上次记录（软件重启过）：用 localStorage 里的路径顶上
+        var savedIn = lsGet(LS_INPUT);
+        if (savedIn) {
+          el.inputPath.value = savedIn;
+          el.inputMeta.textContent = "已记住上次的输入路径，点击「预览分流」查看件数";
+        }
       }
       if (st.outdir) el.outPath.value = st.outdir;
+      else if (savedOut) el.outPath.value = savedOut;
       if (st.running) {
         // 后端残留 running=true 不能直接 startRunning()（会把前端永久锁死）：
         // 先带超时确认 /api/progress 确实仍在运行，确认失败则保持解锁并提示。

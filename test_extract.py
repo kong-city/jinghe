@@ -1125,6 +1125,76 @@ class ExtractQualityTest(unittest.TestCase):
                             "解码失败未落到「需专用解析器」，实得：%s" % status)
             self.assertNotEqual(status, "成功", "乱码被记为成功")
 
+    def test_28_streaming_encoding_equivalence(self):
+        # v0.3.4 优化：编码前置层改为「流式判编码、utf-8 零读全文」。
+        # 判定逻辑必须与历史实现逐字等价——这是本用例存在的全部理由：
+        # 优化的是内存占用，不能动编码判定与产物内容。
+        sys.path.insert(0, str(EXTRACT.parent))
+        import extract as EX  # noqa: E402
+
+        cn = "中文内容测试ABC\n第二行\n"
+        samples = [
+            ("utf8", cn.encode("utf-8")),
+            ("utf8-bom", b"\xef\xbb\xbf" + cn.encode("utf-8")),
+            ("utf16le-bom", b"\xff\xfe" + cn.encode("utf-16-le")),
+            ("utf16be-bom", b"\xfe\xff" + cn.encode("utf-16-be")),
+            ("utf32le-bom", b"\xff\xfe\x00\x00" + cn.encode("utf-32-le")),
+            ("gbk", cn.encode("gbk")),
+            ("gb18030", ("中文汉字€").encode("gb18030")),
+            ("big5", ("繁體中文測試").encode("big5")),
+            ("latin1-junk", b"\x81\x82\x83\xfe\xff\x00binary"),
+            ("empty", b""),
+        ]
+
+        def legacy_preprocess(path, workdir, slot):
+            """历史实现：整块读 + decode_text_bytes（对拍基准）。"""
+            data = path.read_bytes()
+            text, enc, why = EX.decode_text_bytes(data)
+            info = {"encoding": enc, "basis": why, "bytes": len(data),
+                    "converted": False, "feed": path}
+            if enc == "utf-8" or workdir is None:
+                return path, info
+            slot_dir = workdir / ("%04d" % slot)
+            slot_dir.mkdir(parents=True, exist_ok=True)
+            feed = slot_dir / path.name
+            feed.write_text(text, encoding="utf-8")
+            info.update(converted=True, feed=feed)
+            return feed, info
+
+        with tempfile.TemporaryDirectory(prefix="jinghe-enc-stream-") as td:
+            root = Path(td)
+            for name, data in samples:
+                src = root / (name + ".txt")
+                src.write_bytes(data)
+                # ① 判定等价：编码名、判定依据、字节数三项都要一致
+                old = EX.decode_text_bytes(src.read_bytes())
+                new = EX.detect_encoding_of_file(src)
+                self.assertEqual(new[0], old[1],
+                                 "%s：流式判定编码名与历史实现不一致" % name)
+                self.assertEqual(new[1], old[2],
+                                 "%s：流式判定依据与历史实现不一致" % name)
+                self.assertEqual(new[2], len(data),
+                                 "%s：流式统计字节数与实际不符" % name)
+                # ② 产物等价：dry-run（不落副本）与落副本两种模式都要逐字节一致
+                for wd in (None, root / ("wd_" + name)):
+                    o_feed, o_info = legacy_preprocess(src, wd, 0)
+                    n_feed, n_info = EX.preprocess_text_encoding(src, wd, 0)
+                    self.assertEqual(
+                        {k: v for k, v in o_info.items() if k != "feed"},
+                        {k: v for k, v in n_info.items() if k != "feed"},
+                        "%s：前置层留痕信息与历史实现不一致" % name)
+                    if o_feed.is_file():
+                        self.assertEqual(o_feed.read_bytes(), n_feed.read_bytes(),
+                                         "%s：UTF-8 副本内容与历史实现不一致" % name)
+
+            # ③ 流式字节搜索：跨 1MB 块边界的 /Encrypt 不能漏检
+            big = root / "big.bin"
+            big.write_bytes(b"x" * (1 << 20) + b"/Encrypt" + b"y" * 32)
+            self.assertTrue(EX._file_contains(big, b"/Encrypt"),
+                            "跨块边界的 /Encrypt 被漏检（会漏判加密 PDF）")
+            self.assertFalse(EX._file_contains(big, b"/EncryptX"),
+                             "流式字节搜索出现误命中")
+
     def test_17_artifact_dir_reconciliation(self):
         # spec 规格条款「产物目录实盘对账」：① 写入前清空/重建 outdir/md/；
         # ② 交付前自检的件数对账须含第三项 md/*.md 实盘数 == 成功记录数（双向核对）；

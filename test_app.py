@@ -1138,6 +1138,40 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("HEARTBEAT_GRACE", src,
                       "app.py 缺少心跳宽限期常量")
 
+    # ------------------------------------------------------------------ #
+    # 26) v0.3.4 优化契约：身份标记 / 日志封顶 / 连接重置不刷栈 /
+    #     高频端点不记访问日志 / 端口占用者身份校验
+    # ------------------------------------------------------------------ #
+    def test_26_optimization_contracts(self):
+        srv = self.start()
+        # ① /api/state 带 app 标记：单实例保护据此区分「自己」与「别的程序」
+        _, state = srv.get_json("/api/state")
+        self.assertEqual(state.get("app"), "jinghe",
+                         "/api/state 缺少 app 标记：无法识别端口占用者身份")
+
+        # ② 高频内部端点不写访问日志（心跳每 2 秒一次，逐条记录会淹没日志）
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('"/api/heartbeat"', src, "访问日志过滤列表缺少心跳端点")
+        log_fn = src.split("def log_message", 1)[1].split("def ", 1)[0]
+        for noisy in ("/api/heartbeat", "/api/state", "/api/progress"):
+            self.assertIn('"%s"' % noisy, log_fn,
+                          "log_message 未过滤 %s：桌面端日志会被高频请求刷屏" % noisy)
+
+        # ③ 日志必须封顶（轮转），否则长期使用会无限膨胀
+        self.assertIn("LOG_MAX_BYTES", src, "app.py 缺少日志上限常量")
+        self.assertIn("_rotate_if_needed", src, "app.py 缺少日志轮转实现")
+
+        # ④ 连接类异常静默：Edge 关窗时的预连接重置不该刷一整页栈回溯
+        self.assertIn("handle_error", src, "app.py 未自定义 handle_error")
+        self.assertIn("ConnectionResetError", src,
+                      "handle_error 未区分连接重置：关窗会刷屏栈回溯")
+
+        # ⑤ 端口被别的程序占用时要能识别，而不是当成「已有实例」弹陌生页面
+        self.assertIn("_probe_running_instance", src,
+                      "app.py 缺少端口占用者身份校验")
+        self.assertIn('"app": "jinghe"', src,
+                      "/api/state 未提供 app 标记，身份校验无从判断")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

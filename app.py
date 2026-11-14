@@ -30,6 +30,7 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -68,13 +69,25 @@ INDEX_FILE = UI_DIR / "index.html"
 # 冻结后没有控制台，所有异常必须落盘，否则用户只能看到「双击没反应」
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA") or str(Path.home())) / "Jinghe"
 LOG_FILE = LOG_DIR / "app.log"
+# 日志封顶：超过就轮转为 app.log.1（只留 1 份历史）。桌面端长期运行 +
+# 高频请求会让日志无限增长，不封顶迟早撑爆磁盘。
+LOG_MAX_BYTES = 2 * 1024 * 1024
+
+# 全局唯一的日志 sink：_append_log 与 stdout/stderr 共用，
+# 保证轮转时不会有第二个句柄把文件锁住（Windows 上 rename 会被拒）。
+_SINK: "_LogSink | None" = None
+
+
+def _get_sink() -> "_LogSink":
+    global _SINK
+    if _SINK is None:
+        _SINK = _LogSink(LOG_FILE)
+    return _SINK
 
 
 def _append_log(text: str) -> None:
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as fh:
-            fh.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), text.rstrip()))
+        _get_sink().write_block(text)
     except Exception:
         pass
 
@@ -89,11 +102,46 @@ def _reconfigure_streams() -> None:
 
 
 class _LogSink:
-    """共享一个 app.log 文件句柄，按行加时间戳（stdout/stderr 共用一个 sink）。"""
+    """共享一个 app.log 文件句柄，按行加时间戳（stdout/stderr 共用一个 sink）。
 
-    def __init__(self, fh) -> None:
-        self._fh = fh
+    自己持有文件句柄（而不是外部传入已打开的 fh），这样才能在 Windows 上
+    安全轮转：先关闭旧句柄再改名，否则 rename 会被「文件正在使用」拒绝。
+    超过 LOG_MAX_BYTES 就把 app.log 轮转为 app.log.1（只保留 1 份），
+    避免桌面端长期使用把日志撑成几十 MB。
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._fh = None
         self._lock = threading.Lock()
+
+    def _ensure_open(self) -> None:
+        if self._fh is not None:
+            return
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = open(self._path, "a", encoding="utf-8", buffering=1)
+        except Exception:
+            self._fh = None
+
+    def _rotate_if_needed(self) -> None:
+        try:
+            if not self._path.exists():
+                return
+            if self._path.stat().st_size <= LOG_MAX_BYTES:
+                return
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except Exception:
+                    pass
+                self._fh = None
+            bak = self._path.with_name(self._path.name + ".1")
+            if bak.exists():
+                bak.unlink()
+            self._path.replace(bak)
+        except Exception:
+            pass
 
     def write(self, text: str) -> None:
         if not text:
@@ -102,8 +150,28 @@ class _LogSink:
         body = text[:-1] if text.endswith("\n") else text
         with self._lock:
             try:
+                self._rotate_if_needed()
+                self._ensure_open()
+                if self._fh is None:
+                    return
                 for line in body.split("\n"):
                     self._fh.write("[%s] %s\n" % (stamp, line))
+                self._fh.flush()
+            except Exception:
+                pass
+
+    def write_block(self, text: str) -> None:
+        """整块写入，只在块首打一个时间戳（报错现场的多行记录用这个）。"""
+        if not text:
+            return
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            try:
+                self._rotate_if_needed()
+                self._ensure_open()
+                if self._fh is None:
+                    return
+                self._fh.write("[%s] %s\n" % (stamp, text.rstrip()))
                 self._fh.flush()
             except Exception:
                 pass
@@ -200,20 +268,15 @@ def _prepare_runtime() -> None:
 
     frozen = bool(getattr(sys, "frozen", False))
     if frozen or sys.stdout is None or sys.stderr is None:
-        try:
-            fh = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
-        except Exception:
-            fh = None
-        if fh is not None:
-            sink = _LogSink(fh)
-            if sys.stdout is None:
-                sys.stdout = _TeeStream(sink, None)
-            elif frozen:
-                sys.stdout = _TeeStream(sink, sys.stdout)
-            if sys.stderr is None:
-                sys.stderr = _TeeStream(sink, None)
-            elif frozen:
-                sys.stderr = _TeeStream(sink, sys.stderr)
+        sink = _get_sink()
+        if sys.stdout is None:
+            sys.stdout = _TeeStream(sink, None)
+        elif frozen:
+            sys.stdout = _TeeStream(sink, sys.stdout)
+        if sys.stderr is None:
+            sys.stderr = _TeeStream(sink, None)
+        elif frozen:
+            sys.stderr = _TeeStream(sink, sys.stderr)
     sys.excepthook = _excepthook
     threading.excepthook = _thread_excepthook
 
@@ -1454,7 +1517,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         path = self.path.split("?", 1)[0]
-        if path in ("/api/progress", "/api/state"):
+        # 高频内部端点不记访问日志：心跳每 2 秒一次，progress/state 是轮询，
+        # 逐条记录会把 app.log 变成噪音墙（实测半小时就 900 行心跳）。
+        if path in ("/api/progress", "/api/state", "/api/heartbeat",
+                    "/favicon.ico"):
             return
         sys.stderr.write("[HTTP] %s %s\n" % (self.command, path))
 
@@ -1543,6 +1609,9 @@ class Handler(BaseHTTPRequestHandler):
         running = bool(job and job.running)
         converter = (job.converter if job and job.converter else _CONVERTER)
         return {
+            # app 标记：让「占用端口的是不是精核自己」可以被外部判定
+            # （单实例保护据此区分「已有实例」与「端口被别的程序占用」）
+            "app": "jinghe",
             "version": cap["version"],
             "python": platform.python_version(),
             "running": running,
@@ -1819,6 +1888,78 @@ def open_window(url: str) -> None:
         pass
 
 
+class _Server(ThreadingHTTPServer):
+    """把「客户端正常断开」与「真正的异常」分开处理。
+
+    Edge 关闭窗口时会把预连接（浏览器 socket 预热）直接断开，socketserver
+    默认会为每个这种 ConnectionResetError 打印一整页栈回溯——桌面端既刷屏，
+    又把日志冲成噪音。连接类异常静默丢弃，其余异常走统一落盘
+    （组件 + 环境状态 + 任务上下文），符合「报错要能定位」的要求。
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def handle_error(self, request, client_address) -> None:  # noqa: D102
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError,
+                            ConnectionAbortedError, TimeoutError)):
+            return
+        _log_error("HTTP-连接", "请求处理线程异常",
+                   exc if isinstance(exc, BaseException) else None,
+                   request="%s:%s" % (client_address[0], client_address[1]))
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    """端口是否已被占用。
+
+    用 connect 探测而不是「bind 抛 10048」：ThreadingHTTPServer 开了
+    SO_REUSEADDR，Windows 下重复 bind 同一端口不报错，但会让两个实例抢同一
+    端口，其中一个在会话结束后变死端口，前端就会 Failed to fetch。
+    """
+    import socket as _sock
+    probe = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _probe_running_instance(port: int) -> bool | None:
+    """判断占用本机端口的是不是「精核自己」。
+
+    True  = 确认是精核实例；False = 确认不是（端口被别的程序占用）；
+    None  = 无法判定（对方不响应 / 返回不是本服务的 JSON），
+            按「可能是自己」处理，保持旧行为不回归。
+    """
+    for _ in range(2):
+        try:
+            with urllib.request.urlopen(
+                    "http://%s:%d/api/state" % (HOST, port), timeout=1.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data.get("app") == "jinghe"
+        except Exception:
+            time.sleep(0.3)
+    return None
+
+
+def _show_error_box(title: str, text: str) -> None:
+    """桌面端弹窗告知用户。
+
+    仅冻结态（windowed，无控制台）且非 --cli 时弹窗——--cli 会被父进程当
+    子进程调用，弹窗会卡住自动化。源码模式由调用方打印到终端。
+    """
+    try:
+        if getattr(sys, "frozen", False) and "--cli" not in sys.argv:
+            ctypes.windll.user32.MessageBoxW(None, text, title, 0x00000010)
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     # 必须在任何 print 之前：管道默认 cp936 会把中文写成 GBK 乱码
     _reconfigure_streams()
@@ -1844,24 +1985,26 @@ def main(argv: list[str] | None = None) -> int:
     # Windows 下重复 bind 同一端口不报错，但会让两个实例抢同一端口，其中一个
     # 在工具会话结束后变死端口，前端就会 Failed to fetch。connect 能真实探到
     # 是否有实例在 listen，比 bind 异常可靠。
-    if args.port != 0:
-        import socket as _sock
-        _probe = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-        _probe.settimeout(0.5)
-        try:
-            _probe.connect((HOST, args.port))
-            _append_log("[INFO] 端口 %d 已有实例在运行" % args.port)
-            if args.no_browser:
-                print("[INFO] 端口 %d 已有实例在运行（请勿重复启动）" % args.port, flush=True)
-            else:
-                # 界面实例已在运行：再次唤起浏览器窗口，避免「双击无反应」
-                open_window("http://127.0.0.1:%d/" % args.port)
-                _append_log("[INFO] 已尝试唤起已有实例的窗口")
-            return 0
-        except OSError:
-            pass
-        finally:
-            _probe.close()
+    if args.port != 0 and _port_in_use(HOST, args.port):
+        # 端口有人占：必须区分「精核自己已在运行」与「被别的程序占用」。
+        # 误判成前者会弹出陌生页面，用户只会觉得软件坏了。
+        who = _probe_running_instance(args.port)
+        if who is False:
+            msg = ("端口 %d 已被其他程序占用（不是精核）。\n\n"
+                   "请关闭占用该端口的程序后重新启动精核。" % args.port)
+            _append_log("[WARN] 端口 %d 被其他程序占用（非精核），拒绝启动" % args.port)
+            print("[WARN] 端口 %d 被其他程序占用（非精核），请关闭占用程序后重试。"
+                  % args.port, flush=True)
+            _show_error_box("精核无法启动", msg)
+            return 1
+        _append_log("[INFO] 端口 %d 已有实例在运行" % args.port)
+        if args.no_browser:
+            print("[INFO] 端口 %d 已有实例在运行（请勿重复启动）" % args.port, flush=True)
+        else:
+            # 界面实例已在运行：再次唤起浏览器窗口，避免「双击无反应」
+            open_window("http://127.0.0.1:%d/" % args.port)
+            _append_log("[INFO] 已尝试唤起已有实例的窗口")
+        return 0
 
     _sweep_run_dirs()  # 清掉上次异常退出遗留的本 pid 编码副本目录
     try:
@@ -1872,7 +2015,7 @@ def main(argv: list[str] | None = None) -> int:
         _append_log("启动清理孤儿目录失败（不影响使用）：%r" % (exc,))
     capabilities()  # 预热：探测 extract.py 的 --version / --progress
 
-    httpd = ThreadingHTTPServer((HOST, args.port), Handler)
+    httpd = _Server((HOST, args.port), Handler)
     httpd.daemon_threads = True
     port = httpd.server_address[1]
     url = "http://127.0.0.1:%d/" % port

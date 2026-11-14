@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import codecs
 import csv
 import datetime as dt
 import hashlib
@@ -47,7 +48,7 @@ from pathlib import Path
 
 # 软件版本（语义化）。注意与 SPEC.md 的「规格版本」（v2.x）区分：
 # 规格版本随文档修订递增，软件版本随功能交付递增，两者不同步。
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 # 转换器依赖解析顺序（打包调整，让依赖真正跟着包走）：
 #   1) 随包分发的 vendor/md_convert.py —— 相对本脚本位置解析，整个目录可移动到任意机器
@@ -322,6 +323,62 @@ def _enc_workdir() -> Path:
     return d
 
 
+def _stream_strict_ok(path: Path, enc: str) -> tuple[bool, int]:
+    """流式严格解码校验：整个文件能否用 enc 解开。
+
+    与 `data.decode(enc)` 的成功/失败判定等价（增量解码器 + errors="strict"），
+    但内存占用恒为 1MB 级别，与文件大小无关——几百 MB 的日志/CSV 不再
+    整体读进内存。返回 (是否成功, 实际读到的字节数)。
+    """
+    try:
+        decoder = codecs.getincrementaldecoder(enc)(errors="strict")
+    except LookupError:
+        return False, 0
+    total = 0
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                block = fh.read(1 << 20)
+                if not block:
+                    break
+                total += len(block)
+                decoder.decode(block)
+            decoder.decode(b"", True)   # 收尾：把解码器里未决的字节算完
+    except UnicodeDecodeError:
+        return False, total
+    except OSError:
+        return False, total
+    return True, total
+
+
+def detect_encoding_of_file(path: Path) -> tuple[str, str, int]:
+    """只判定编码，不保留全文：返回 (编码名, 判定依据, 字节数)。
+
+    判定顺序与 decode_text_bytes 完全一致（BOM 优先 → 严格链 → Latin-1 兜底），
+    但不把整个文件读进内存。utf-8 命中时直接返回原文路径，零拷贝、零内存。
+    """
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return ("latin-1(低置信)", "文件不可读，按 Latin-1 兜底", 0)
+
+    for bom, enc, why in _BOMS:
+        if head.startswith(bom):
+            ok, total = _stream_strict_ok(path, enc)
+            if ok:
+                return enc, why, total
+            break  # BOM 不可信，交给下面的严格链
+
+    for enc in _STRICT_CHAIN:
+        ok, total = _stream_strict_ok(path, enc)
+        if ok:
+            return enc, "严格解码命中 %s" % enc, total
+
+    return ("latin-1(低置信)", "严格解码链全部失败，Latin-1 兜底（可能损失原文）", size)
+
+
 def preprocess_text_encoding(path: Path, workdir: Path | None,
                              slot: int) -> tuple[Path, dict]:
     """编码前置处理：返回 (喂给转换器的路径, 留痕信息)。
@@ -334,14 +391,20 @@ def preprocess_text_encoding(path: Path, workdir: Path | None,
 
     本函数只读原文件，任何情况下都不写回原路径。
     """
-    data = path.read_bytes()
-    text, enc, why = decode_text_bytes(data)
-    info = {"encoding": enc, "basis": why, "bytes": len(data),
+    # 先只判编码（流式，不留全文）：utf-8 是绝大多数文件的结局，
+    # 这条路径既不读全文也不生成副本，内存占用与文件大小无关。
+    enc, why, size = detect_encoding_of_file(path)
+    info = {"encoding": enc, "basis": why, "bytes": size,
             "converted": False, "feed": path}
     if enc == "utf-8":
         return path, info
     if workdir is None:  # dry-run 等只读场景：不落副本，仅留痕
         return path, info
+    # 非 utf-8：确实需要全文来生成 UTF-8 副本，这时才把文件读进来。
+    # 仍复用 decode_text_bytes，保证文本与判定依据与历史版本逐字一致。
+    data = path.read_bytes()
+    text, enc2, why2 = decode_text_bytes(data)
+    info.update(encoding=enc2, basis=why2, bytes=len(data))
     slot_dir = workdir / ("%04d" % slot)
     slot_dir.mkdir(parents=True, exist_ok=True)
     feed = slot_dir / path.name
@@ -1510,6 +1573,29 @@ def _builtin_rich_extract(path: Path) -> tuple[str | None, str]:
     return title + body.strip() + "\n", "成功（内置零依赖解析）"
 
 
+def _file_contains(path: Path, needle: bytes, chunk_size: int = 1 << 20) -> bool:
+    """流式判断文件是否包含指定字节串。
+
+    与 `needle in path.read_bytes()` 的判定结果完全一致（分块之间保留
+    重叠区，跨块的匹配不会被漏掉），但内存峰值从「整个文件」降到 1MB：
+    几百 MB 的 PDF 不会再被整体读进内存。
+    """
+    overlap = len(needle) - 1
+    tail = b""
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                block = fh.read(chunk_size)
+                if not block:
+                    return False
+                buf = tail + block
+                if needle in buf:
+                    return True
+                tail = buf[-overlap:] if overlap > 0 else b""
+    except OSError:
+        return False
+
+
 def _probe_protection(path: Path) -> str | None:
     """加密/受保护文档预检；命中返回「待人工授权」，绝不破译或盲重试（FM-06）。"""
     ext = path.suffix.lower()
@@ -1517,7 +1603,7 @@ def _probe_protection(path: Path) -> str | None:
         with open(path, "rb") as fh:
             head = fh.read(8)
         if ext == ".pdf":
-            if b"/Encrypt" in path.read_bytes():
+            if _file_contains(path, b"/Encrypt"):
                 return "待人工授权：PDF 已加密/设置用户密码，需人工提供口令"
             return None
         if ext in (".zip", ".epub", ".docx", ".pptx", ".xlsx"):
