@@ -229,6 +229,119 @@ def _log_startup_banner() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 运行时报错落盘：组件 + 环境状态 + 任务上下文
+# --------------------------------------------------------------------------- #
+def _env_snapshot() -> dict:
+    """采集当前运行时环境状态，报错时一并落盘，便于定位。"""
+    snap: dict = {}
+    try:
+        snap["version"] = extract.__version__
+    except Exception:
+        snap["version"] = "?"
+    snap["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    snap["python"] = platform.python_version()
+    snap["platform"] = platform.platform()
+    snap["system"] = platform.system()
+    snap["machine"] = platform.machine()
+    try:
+        snap["cwd"] = os.getcwd()
+    except Exception:
+        snap["cwd"] = "?"
+    snap["executable"] = sys.executable
+    snap["frozen"] = bool(getattr(sys, "frozen", False))
+    try:
+        snap["pid"] = os.getpid()
+    except Exception:
+        snap["pid"] = "?"
+    snap["thread"] = threading.current_thread().name
+    try:
+        snap["cpu_count"] = os.cpu_count()
+    except Exception:
+        snap["cpu_count"] = None
+    try:
+        snap["thread_count"] = threading.active_count()
+    except Exception:
+        snap["thread_count"] = None
+    # 可用物理内存（仅 Windows 尽力而为，失败不影响主流程）
+    if platform.system() == "Windows":
+        try:
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            ms = _MEMORYSTATUSEX()
+            ms.dwLength = ctypes.sizeof(ms)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                snap["mem_avail_mb"] = ms.ullAvailPhys // (1024 * 1024)
+                snap["mem_total_mb"] = ms.ullTotalPhys // (1024 * 1024)
+        except Exception:
+            pass
+    return snap
+
+
+def _job_context() -> str:
+    """当前后台任务（组件）上下文，报错时标注当时任务状态。"""
+    try:
+        _reap_dead_job()
+        with _JOB_LOCK:
+            job = _JOB
+        if job is None:
+            return "无运行任务"
+        with job.lock:
+            return ("任务 input=%s outdir=%s state=%s running=%s rc=%s "
+                    "current=%s/%s current_name=%s cancelled=%s"
+                    % (job.inputs, job.outdir, job.state, job.running,
+                       getattr(job, "rc", None), job.current, job.total,
+                       job.current_name, job.cancelled))
+    except Exception as exc:
+        return "任务上下文采集失败：%r" % (exc,)
+
+
+def _log_error(component: str, message: str,
+               exc: BaseException | None = None,
+               request: str | None = None) -> None:
+    """统一报错落盘：组件 + 消息 + 环境状态 + 任务上下文 + 异常栈。
+
+    这是「运行时报错记录在日志」的核心入口：任何未处理异常都应通过本函数
+    记录当时的涉及组件与环境状态，而非仅留一句 traceback。
+    """
+    snap = _env_snapshot()
+    lines = ["[ERROR] 组件=%s 消息=%s" % (component, message)]
+    if request:
+        lines.append("请求上下文=%s" % request)
+    lines.append("环境状态:")
+    for key in ("timestamp", "version", "python", "platform", "system", "machine",
+                "cwd", "executable", "frozen", "pid", "thread", "cpu_count",
+                "thread_count", "mem_avail_mb", "mem_total_mb"):
+        if key in snap and snap[key] is not None:
+            lines.append("    %s=%s" % (key, snap[key]))
+    lines.append("任务上下文=%s" % _job_context())
+    if exc is not None:
+        lines.append("异常类型=%s" % type(exc).__name__)
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        lines.append(tb.rstrip())
+    for ln in lines:
+        _append_log(ln)
+
+
+def _excepthook(exc_type, exc, tb) -> None:
+    _log_error("主线程未捕获异常", "进程级未捕获异常", exc)
+
+
+def _thread_excepthook(args) -> None:
+    name = args.thread.name if getattr(args, "thread", None) else "?"
+    _log_error("线程未捕获异常(%s)" % name, "线程级未捕获异常", args.exc_value)
+
+
+# --------------------------------------------------------------------------- #
 # 子进程编码副本目录：父进程持有、父进程清理
 # extract.py 的 atexit 在 terminate() 时不会执行，取消强杀会把用户文档的
 # UTF-8 副本留在 %TEMP%。所以由这里创建、经 JINGHE_ENCDIR 传入，finally 必删。
@@ -696,6 +809,7 @@ def _run_job_inner(job: Job, enc_dir: Path) -> None:
             msg = "无法启动 extract.py：%s" % exc
             job.add("log", msg, raw=msg)
             tail.append(msg)
+            _log_error("提取任务-启动子进程", msg, exc)
 
         elapsed = time.time() - job.started
         job.summary = _build_summary(job, elapsed)
@@ -713,8 +827,7 @@ def _run_job_inner(job: Job, enc_dir: Path) -> None:
         job.state = "failed"
         job.error = "任务异常：%s" % exc
         job.add("log", job.error, raw=job.error)
-        _append_log("[ERROR] 任务线程异常，状态强制置为 failed：%s\n%s" % (
-            exc, traceback.format_exc()))
+        _log_error("提取任务", "任务线程未捕获异常", exc)
     finally:
         with job.lock:
             job.running = False
@@ -1306,33 +1419,38 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
-        if path == "/":
-            self._serve_index()
-            return
-        if path.startswith("/ui/"):
-            self._serve_static(unquote(path[len("/ui/"):]))
-            return
-        if path == "/api/state":
-            self._send_json(self._api_state())
-            return
-        if path == "/api/progress":
-            qs = parse_qs(parsed.query)
-            try:
-                since = int((qs.get("since") or ["0"])[0])
-            except (TypeError, ValueError):
-                since = 0
-            self._send_json(self._api_progress(since))
-            return
-        if path == "/favicon.ico":
-            self._send_bytes(b"", "image/x-icon", 204)
-            return
-        # 未知 /api/* 一律回 JSON，与 do_POST 保持同一形态：
-        # 前端对接口响应的处理是统一的（res.json()），若这里回纯文本，
-        # 未来新增端点写错路径时前端会抛 SyntaxError 而不是拿到可读 error。
-        if path.startswith("/api/"):
-            self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
-            return
-        self._send_text("404 Not Found", 404)
+        try:
+            if path == "/":
+                self._serve_index()
+                return
+            if path.startswith("/ui/"):
+                self._serve_static(unquote(path[len("/ui/"):]))
+                return
+            if path == "/api/state":
+                self._send_json(self._api_state())
+                return
+            if path == "/api/progress":
+                qs = parse_qs(parsed.query)
+                try:
+                    since = int((qs.get("since") or ["0"])[0])
+                except (TypeError, ValueError):
+                    since = 0
+                self._send_json(self._api_progress(since))
+                return
+            if path == "/favicon.ico":
+                self._send_bytes(b"", "image/x-icon", 204)
+                return
+            # 未知 /api/* 一律回 JSON，与 do_POST 保持同一形态：
+            # 前端对接口响应的处理是统一的（res.json()），若这里回纯文本，
+            # 未来新增端点写错路径时前端会抛 SyntaxError 而不是拿到可读 error。
+            if path.startswith("/api/"):
+                self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
+                return
+            self._send_text("404 Not Found", 404)
+        except Exception as exc:  # 兜底：把组件 + 环境状态一并落盘，再回 500
+            _log_error("HTTP-GET:%s" % path, "请求处理异常", exc,
+                       request=parsed.query or None)
+            self._send_json({"ok": False, "error": "服务器内部错误：%s" % exc}, 500)
 
     def _serve_index(self) -> None:
         if not INDEX_FILE.is_file():
@@ -1383,6 +1501,7 @@ class Handler(BaseHTTPRequestHandler):
             "outdir": job.outdir if job else _LAST_OUTDIR,
             "converter": converter,
             "cwd": os.getcwd(),
+            "log_file": str(LOG_FILE),
         }
 
     def _api_progress(self, since: int) -> dict:
@@ -1444,7 +1563,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(self._api_transcribe(_norm_inputs(data)))
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
-        except Exception as exc:  # 兜底，避免 500 页面
+        except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态
+            req = ""
+            try:
+                req = json.dumps(data, ensure_ascii=False)[:500]
+            except Exception:
+                req = ""
+            _log_error("HTTP-POST:%s" % path, "请求处理异常", exc,
+                       request=req or None)
             self._send_json({"ok": False, "error": "服务器内部错误：%s" % exc}, 500)
 
     def _api_dry_run(self, inputs: list[str]) -> dict:

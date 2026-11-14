@@ -50,8 +50,12 @@
     btnSummarize: $("btnSummarize"),
     btnExportDocx: $("btnExportDocx"),
     btnTranscribe: $("btnTranscribe"),
-    btnKnowledgeBase: $("btnKnowledgeBase")
+    btnKnowledgeBase: $("btnKnowledgeBase"),
+    btnOpenLog: $("btnOpenLog")
   };
+
+  // 后端 app.log 路径（来自 /api/state.log_file）；启动即可用，按钮常亮
+  var logFile = "";
 
   var running = false;
   var previewing = false;
@@ -730,6 +734,14 @@
     el.btnOpenOut.addEventListener("click", function () {
       openOutputDir(summary && summary.outdir);
     });
+    el.btnOpenLog.addEventListener("click", function () {
+      if (!logFile) { showNotice("日志路径尚未就绪，请稍候重试。"); return; }
+      api("/api/open", { path: logFile }, 10000)
+        .then(function (r) {
+          if (!r || !r.ok) showError("打开日志失败：" + ((r && r.error) || "未知"));
+        })
+        .catch(function (err) { showError("打开日志失败：" + (err.message || err)); });
+    });
     el.btnPickFiles.addEventListener("click", pickFiles);
     el.btnSummarize.addEventListener("click", doSummarize);
     el.btnExportDocx.addEventListener("click", function () {
@@ -765,6 +777,10 @@
       if (st.python) {
         var v = (st.version && st.version !== "unknown") ? "精核 " + st.version + " · " : "";
         el.pyLabel.textContent = v + "Python " + st.python;
+      }
+      if (st.log_file) {
+        logFile = st.log_file;
+        el.btnOpenLog.disabled = false;
       }
       if (st.converter) el.convLabel.textContent = "转换器 " + st.converter;
       if (Array.isArray(st.inputs) && st.inputs.length > 1) {
