@@ -1172,6 +1172,77 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('"app": "jinghe"', src,
                       "/api/state 未提供 app 标记，身份校验无从判断")
 
+    # ------------------------------------------------------------------ #
+    # 27) v0.3.5 界面改版契约：左侧可折叠导航 + 三页面 + 设置持久化接口
+    # ------------------------------------------------------------------ #
+    def test_27_sidebar_nav_and_settings(self):
+        srv = self.start()
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+
+        # ① 左侧导航栏结构：首页 / 设置 / 关于三个入口
+        self.assertIn('class="sidebar"', html, "index.html 缺少左侧导航栏")
+        self.assertIn('id="btnToggleNav"', html, "缺少折叠/展开按钮")
+        for page in ("home", "settings", "about"):
+            self.assertIn('data-page="%s"' % page, html,
+                          "导航栏缺少 %s 入口" % page)
+            self.assertIn('id="page-%s"' % page, html,
+                          "缺少 %s 页面容器" % page)
+
+        # ② 图标是导航的主要线索：折叠后只剩图标，文字标签隐藏
+        self.assertIn("nav-collapsed", css, "样式里没有折叠态定义")
+        self.assertIn(".nav-label", css, "折叠态未隐藏文字标签")
+        self.assertIn(".nav-item svg", css, "导航项缺少图标样式")
+
+        # ③ 页面切换逻辑：同一时刻只显示一个页面
+        self.assertIn("activatePage", js, "app.js 缺少页面切换逻辑")
+        self.assertIn(".nav-item", js, "app.js 未绑定导航点击事件")
+
+        # ④ 设置接口：GET 返回默认值，POST 能持久化，非法值被收敛
+        status, got = srv.get_json("/api/settings")
+        self.assertEqual(status, 200, "/api/settings 未返回 200")
+        self.assertIs(got.get("ok"), True, "/api/settings 缺少 ok=true")
+        cfg = got.get("settings")
+        self.assertIsInstance(cfg, dict, "/api/settings 未返回 settings 对象")
+        for key in ("auto_exit", "exit_grace_seconds", "remember_paths",
+                    "default_outdir"):
+            self.assertIn(key, cfg, "设置项缺少 %s" % key)
+        self.assertIsInstance(cfg["auto_exit"], bool, "auto_exit 应为布尔")
+
+        status, saved = srv.post_json("/api/settings", {"settings": {
+            "auto_exit": False, "exit_grace_seconds": 45,
+            "remember_paths": False, "default_outdir": "probe-out"}})
+        self.assertEqual(status, 200, "POST /api/settings 未返回 200")
+        self.assertIs(saved["settings"]["auto_exit"], False, "auto_exit 未保存")
+        self.assertEqual(saved["settings"]["exit_grace_seconds"], 45,
+                         "exit_grace_seconds 未保存")
+        self.assertEqual(saved["settings"]["default_outdir"], "probe-out",
+                         "default_outdir 未保存")
+
+        # 越界值必须被收敛（不能把任意数字直接写进配置）
+        _, clamped = srv.post_json("/api/settings", {"settings": {
+            "exit_grace_seconds": 999999, "default_outdir": 123}})
+        self.assertEqual(clamped["settings"]["exit_grace_seconds"], 600,
+                         "超范围宽限期未被收敛到 600")
+        self.assertEqual(clamped["settings"]["default_outdir"], "",
+                         "非字符串目录未被清空")
+
+        # 复原默认，避免影响后续用例
+        srv.post_json("/api/settings", {"settings": {
+            "auto_exit": True, "exit_grace_seconds": 90,
+            "remember_paths": True, "default_outdir": ""}})
+
+        # ⑤ 设置确实落盘到本地文件（桌面软件的设置必须活过进程重启）
+        self.assertTrue(got.get("settings_file"), "/api/settings 未返回设置文件路径")
+        self.assertTrue(Path(got["settings_file"]).is_file(),
+                        "设置文件未落盘：%s" % got["settings_file"])
+
+        # ⑥ 设置页表单字段与后端键名一一对应
+        for fid in ("setAutoExit", "setExitGrace", "setRememberPaths",
+                    "setDefaultOutdir"):
+            self.assertIn('id="%s"' % fid, html, "设置页缺少 %s 控件" % fid)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

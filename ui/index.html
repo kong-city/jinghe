@@ -8,146 +8,289 @@
 <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
-<main class="wrap">
+<div class="app" id="appShell">
 
-  <header class="app-header">
-    <div class="brand">
-      <div class="brand-mark">精</div>
-      <div class="brand-text">
-        <h1>精核 · 文件提取</h1>
-        <p>阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
-      </div>
-    </div>
-    <div class="header-tag">v0.3.4</div>
-  </header>
-
-  <section class="cards">
-    <div class="card">
-      <div class="card-title">输入来源</div>
-      <div class="row">
-        <input id="inputPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
-               placeholder="粘贴或浏览选择文件 / 文件夹路径">
-        <button id="btnPickFiles" class="btn btn-ghost" type="button">选择文件…</button>
-        <button id="btnBrowseInput" class="btn btn-ghost" type="button">选择文件夹…</button>
-        <button id="btnPreviewInline" class="btn btn-ghost" type="button">预览分流</button>
-      </div>
-      <div id="inputMeta" class="meta">未选择输入</div>
-      <div class="meta-hint">仅预览分流只盘点分类，不生成文件、不打开文档</div>
-      <div id="fileListWrap" class="file-list-wrap" hidden>
-        <div class="file-list-head">
-          <span id="fileListTitle">已识别 0 个文件</span>
-          <button id="btnToggleFiles" class="link-btn" type="button">收起</button>
-        </div>
-        <ul id="fileList" class="file-list"></ul>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">输出与选项</div>
-      <div class="row">
-        <input id="outPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
-               placeholder="输出目录">
-        <button id="btnBrowseOut" class="btn btn-ghost" type="button">更改</button>
-      </div>
-      <label class="check">
-        <input id="optOpenMerged" type="checkbox" checked>
-        <span>完成后打开合并文档</span>
-      </label>
-      <div class="row">
-        <button id="btnOpenOut" class="btn btn-ghost" type="button" disabled>打开输出目录</button>
-        <button id="btnOpenMerged" class="btn btn-ghost" type="button" disabled>打开合并文档</button>
-        <button id="btnOpenLog" class="btn btn-ghost" type="button">打开日志文件</button>
-      </div>
-    </div>
-  </section>
-
-  <section class="card features">
-    <div class="card-title">后处理 · 阶段 2 / 3</div>
-    <p class="card-sub">基于本次提取产物（MERGED.md，现行输出格式为 Markdown）进一步加工；Word 导出列为后续计划。</p>
-    <div class="feature-grid">
-      <button id="btnSummarize" class="feature-btn" type="button" disabled>核心提炼（摘要）</button>
-      <button id="btnExportDocx" class="feature-btn is-soon" type="button" disabled
-              title="阶段 2 二期，后续计划，暂不实现">导出 Word（规划中）</button>
-      <button id="btnTranscribe" class="feature-btn" type="button" disabled>音视频转写</button>
-      <button id="btnKnowledgeBase" class="feature-btn is-soon" type="button" disabled
-              title="阶段 4 知识库 / 自动化，规划中">知识库（规划中）</button>
-    </div>
-  </section>
-
-  <div id="errorBar" class="bar bar-error" hidden></div>
-
-  <div class="actions">
-    <button id="btnRun" class="btn btn-primary" type="button">开始提取</button>
-    <button id="btnPreview" class="btn btn-ghost" type="button">仅预览分流</button>
-    <button id="btnCancel" class="btn btn-ghost" type="button" disabled>取消</button>
-    <span id="runStatus" class="run-status"></span>
-  </div>
-
-  <div class="progress" aria-hidden="true">
-    <div id="progressBar" class="progress-bar"></div>
-  </div>
-
-  <section class="card result">
-    <div class="tabs" role="tablist">
-      <button class="tab active" type="button" data-tab="overview" role="tab">概览</button>
-      <button class="tab" type="button" data-tab="degraded" role="tab">
-        降级明细<span id="degradedBadge" class="badge" hidden>0</span>
+  <!-- 左侧可折叠导航：折叠时只显图标，展开显示图标 + 文字 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="side-top">
+      <div class="brand-mark" title="精核">精</div>
+      <button id="btnToggleNav" class="nav-toggle" type="button"
+              title="展开 / 收起导航栏" aria-label="展开或收起导航栏">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M15 6l-6 6 6 6"/>
+        </svg>
       </button>
-      <button class="tab" type="button" data-tab="log" role="tab">运行日志</button>
     </div>
 
-    <div id="tab-overview" class="panel active" role="tabpanel">
-      <div class="metrics">
-        <div class="metric">
-          <div id="mSuccess" class="metric-value">—</div>
-          <div id="mSuccessLabel" class="metric-label">成功产出</div>
-        </div>
-        <div class="metric">
-          <div id="mFailed" class="metric-value">—</div>
-          <div id="mFailedLabel" class="metric-label">未成功</div>
-        </div>
-        <div class="metric">
-          <div id="mDeferred" class="metric-value">—</div>
-          <div id="mDeferredLabel" class="metric-label">阶段 3 预留</div>
-        </div>
-        <div class="metric">
-          <div id="mElapsed" class="metric-value">—</div>
-          <div id="mElapsedLabel" class="metric-label">耗时(s)</div>
+    <nav class="nav" aria-label="主导航">
+      <button class="nav-item active" type="button" data-page="home" title="首页">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3.5 10.6L12 3.6l8.5 7v8.9a1 1 0 0 1-1 1h-4.6v-6H9.1v6H4.5a1 1 0 0 1-1-1z"/>
+        </svg>
+        <span class="nav-label">首页</span>
+      </button>
+      <button class="nav-item" type="button" data-page="settings" title="设置">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.2"/>
+          <path d="M12 2.8v2.3M12 18.9v2.3M21.2 12h-2.3M5.1 12H2.8M18.5 5.5l-1.6 1.6M7.1 16.9l-1.6 1.6M18.5 18.5l-1.6-1.6M7.1 7.1L5.5 5.5"/>
+        </svg>
+        <span class="nav-label">设置</span>
+      </button>
+      <button class="nav-item" type="button" data-page="about" title="关于">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.6"/>
+          <path d="M12 11.2v5.1"/>
+          <circle cx="12" cy="7.9" r="0.95" fill="currentColor" stroke="none"/>
+        </svg>
+        <span class="nav-label">关于</span>
+      </button>
+    </nav>
+
+    <div class="side-foot">
+      <span class="side-version mono" id="sideVersion">—</span>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-text">
+          <h1 id="pageTitle">精核 · 文件提取</h1>
+          <p id="pageSub">阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
         </div>
       </div>
-      <div id="overviewHint" class="hint">尚未运行。选择输入后点击「开始提取」。</div>
-    </div>
+      <div class="header-tag" id="headerTag">v0.3.5</div>
+    </header>
 
-    <div id="tab-degraded" class="panel" role="tabpanel">
-      <table class="table" id="degradedTable" hidden>
-        <thead>
-          <tr><th class="col-file">文件</th><th class="col-status">状态</th><th>处置说明</th></tr>
-        </thead>
-        <tbody id="degradedBody"></tbody>
-      </table>
-      <div id="degradedEmpty" class="hint center">本次运行没有降级项</div>
-    </div>
+    <!-- ==================== 首页 ==================== -->
+    <section class="page" id="page-home">
+      <section class="cards">
+        <div class="card">
+          <div class="card-title">输入来源</div>
+          <div class="row">
+            <input id="inputPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="粘贴或浏览选择文件 / 文件夹路径">
+            <button id="btnPickFiles" class="btn btn-ghost" type="button">选择文件…</button>
+            <button id="btnBrowseInput" class="btn btn-ghost" type="button">选择文件夹…</button>
+            <button id="btnPreviewInline" class="btn btn-ghost" type="button">预览分流</button>
+          </div>
+          <div id="inputMeta" class="meta">未选择输入</div>
+          <div class="meta-hint">仅预览分流只盘点分类，不生成文件、不打开文档</div>
+          <div id="fileListWrap" class="file-list-wrap" hidden>
+            <div class="file-list-head">
+              <span id="fileListTitle">已识别 0 个文件</span>
+              <button id="btnToggleFiles" class="link-btn" type="button">收起</button>
+            </div>
+            <ul id="fileList" class="file-list"></ul>
+          </div>
+        </div>
 
-    <div id="tab-log" class="panel log-panel" role="tabpanel">
-      <pre id="logBox" class="log"></pre>
-    </div>
-  </section>
+        <div class="card">
+          <div class="card-title">输出与选项</div>
+          <div class="row">
+            <input id="outPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="输出目录">
+            <button id="btnBrowseOut" class="btn btn-ghost" type="button">更改</button>
+          </div>
+          <label class="check">
+            <input id="optOpenMerged" type="checkbox" checked>
+            <span>完成后打开合并文档</span>
+          </label>
+          <div class="row">
+            <button id="btnOpenOut" class="btn btn-ghost" type="button" disabled>打开输出目录</button>
+            <button id="btnOpenMerged" class="btn btn-ghost" type="button" disabled>打开合并文档</button>
+            <button id="btnOpenLog" class="btn btn-ghost" type="button">打开日志文件</button>
+          </div>
+        </div>
+      </section>
 
-  <footer class="statusbar">
-    <div class="status-left">
-      <span id="pyLabel" class="mono">Python —</span>
-      <span class="sep">·</span>
-      <span id="convLabel">转换器 待首次预览</span>
-      <span class="sep">·</span>
-      <span id="verdictLabel">验收 —</span>
-      <span id="selfCheckWrap" hidden><span class="sep">·</span><span id="selfCheck">空文件 0</span></span>
-      <span id="prepWrap" hidden><span class="sep">·</span><span id="prepNote" class="prep">需预处理 0</span></span>
-      <span id="producedWrap" hidden><span class="sep">·</span><span id="producedNote">已产出 0 / 0</span></span>
-    </div>
-    <div id="stateLabel" class="state idle">就绪</div>
-  </footer>
+      <section class="card features">
+        <div class="card-title">后处理 · 阶段 2 / 3</div>
+        <p class="card-sub">基于本次提取产物（MERGED.md，现行输出格式为 Markdown）进一步加工；Word 导出列为后续计划。</p>
+        <div class="feature-grid">
+          <button id="btnSummarize" class="feature-btn" type="button" disabled>核心提炼（摘要）</button>
+          <button id="btnExportDocx" class="feature-btn is-soon" type="button" disabled
+                  title="阶段 2 二期，后续计划，暂不实现">导出 Word（规划中）</button>
+          <button id="btnTranscribe" class="feature-btn" type="button" disabled>音视频转写</button>
+          <button id="btnKnowledgeBase" class="feature-btn is-soon" type="button" disabled
+                  title="阶段 4 知识库 / 自动化，规划中">知识库（规划中）</button>
+        </div>
+      </section>
 
-</main>
+      <div id="errorBar" class="bar bar-error" hidden></div>
+
+      <div class="actions">
+        <button id="btnRun" class="btn btn-primary" type="button">开始提取</button>
+        <button id="btnPreview" class="btn btn-ghost" type="button">仅预览分流</button>
+        <button id="btnCancel" class="btn btn-ghost" type="button" disabled>取消</button>
+        <span id="runStatus" class="run-status"></span>
+      </div>
+
+      <div class="progress" aria-hidden="true">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+
+      <section class="card result">
+        <div class="tabs" role="tablist">
+          <button class="tab active" type="button" data-tab="overview" role="tab">概览</button>
+          <button class="tab" type="button" data-tab="degraded" role="tab">
+            降级明细<span id="degradedBadge" class="badge" hidden>0</span>
+          </button>
+          <button class="tab" type="button" data-tab="log" role="tab">运行日志</button>
+        </div>
+
+        <div id="tab-overview" class="panel active" role="tabpanel">
+          <div class="metrics">
+            <div class="metric">
+              <div id="mSuccess" class="metric-value">—</div>
+              <div id="mSuccessLabel" class="metric-label">成功产出</div>
+            </div>
+            <div class="metric">
+              <div id="mFailed" class="metric-value">—</div>
+              <div id="mFailedLabel" class="metric-label">未成功</div>
+            </div>
+            <div class="metric">
+              <div id="mDeferred" class="metric-value">—</div>
+              <div id="mDeferredLabel" class="metric-label">阶段 3 预留</div>
+            </div>
+            <div class="metric">
+              <div id="mElapsed" class="metric-value">—</div>
+              <div id="mElapsedLabel" class="metric-label">耗时(s)</div>
+            </div>
+          </div>
+          <div id="overviewHint" class="hint">尚未运行。选择输入后点击「开始提取」。</div>
+        </div>
+
+        <div id="tab-degraded" class="panel" role="tabpanel">
+          <table class="table" id="degradedTable" hidden>
+            <thead>
+              <tr><th class="col-file">文件</th><th class="col-status">状态</th><th>处置说明</th></tr>
+            </thead>
+            <tbody id="degradedBody"></tbody>
+          </table>
+          <div id="degradedEmpty" class="hint center">本次运行没有降级项</div>
+        </div>
+
+        <div id="tab-log" class="panel log-panel" role="tabpanel">
+          <pre id="logBox" class="log"></pre>
+        </div>
+      </section>
+    </section>
+
+    <!-- ==================== 设置 ==================== -->
+    <section class="page" id="page-settings" hidden>
+      <section class="card">
+        <div class="card-title">常规</div>
+        <div class="card-sub">设置只保存在本机，不上传任何数据；改动即时生效，无需重启软件。</div>
+
+        <div class="set-list">
+          <label class="set-row">
+            <input type="checkbox" id="setAutoExit">
+            <span class="set-text">
+              <b>关闭窗口后自动退出</b>
+              <em>关掉软件窗口后，后台进程在宽限期结束自动退出，不残留在后台</em>
+            </span>
+          </label>
+
+          <label class="set-row">
+            <span class="set-text">
+              <b>自动退出宽限期</b>
+              <em>窗口关闭后等待多少秒再退出（30–600）。窗口最小化不算关闭</em>
+            </span>
+            <input class="text-input set-num" type="number" id="setExitGrace"
+                   min="30" max="600" step="10" inputmode="numeric">
+          </label>
+
+          <label class="set-row">
+            <input type="checkbox" id="setRememberPaths">
+            <span class="set-text">
+              <b>记住上次的路径</b>
+              <em>下次启动自动填回上次的输入路径与输出目录</em>
+            </span>
+          </label>
+
+          <label class="set-row">
+            <span class="set-text">
+              <b>默认输出目录</b>
+              <em>留空则按「out-日期-时间」自动生成；填写后每次提取都用它</em>
+            </span>
+            <input class="text-input set-wide" type="text" id="setDefaultOutdir"
+                   spellcheck="false" autocomplete="off" placeholder="留空 = 自动生成">
+          </label>
+        </div>
+
+        <div class="row set-actions">
+          <button id="btnSaveSettings" class="btn btn-primary" type="button">保存设置</button>
+          <button id="btnResetSettings" class="btn btn-ghost" type="button">恢复默认</button>
+          <span id="settingsStatus" class="run-status"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">日志与数据</div>
+        <div class="card-sub">运行时报错会记录涉及的组件与环境状态，便于事后定位。</div>
+        <div class="row">
+          <span class="mono set-path" id="settingsLogPath">—</span>
+          <button id="btnOpenLogSettings" class="btn btn-ghost" type="button">打开日志文件</button>
+        </div>
+        <div class="row">
+          <span class="mono set-path" id="settingsFilePath">—</span>
+          <button id="btnOpenSettingsFile" class="btn btn-ghost" type="button">打开设置文件</button>
+        </div>
+      </section>
+    </section>
+
+    <!-- ==================== 关于 ==================== -->
+    <section class="page" id="page-about" hidden>
+      <section class="card">
+        <div class="card-title">精核 · 文件提取</div>
+        <div class="card-sub">把一批文件丢进来，得到结构化 Markdown、一份带来源标注的合并文档、一份工程对账清单。</div>
+        <div class="about-grid">
+          <div class="about-item"><span>软件版本</span><b id="aboutVersion">—</b></div>
+          <div class="about-item"><span>Python</span><b id="aboutPython">—</b></div>
+          <div class="about-item"><span>运行平台</span><b id="aboutPlatform">—</b></div>
+          <div class="about-item"><span>规格版本</span><b id="aboutSpec">v2.x（SPEC.md，独立编号）</b></div>
+          <div class="about-item"><span>界面形态</span><b>Edge 应用窗口（本地服务 + 零第三方依赖）</b></div>
+          <div class="about-item"><span>运行日志</span><b class="mono" id="aboutLog">—</b></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">功能路线</div>
+        <ul class="road-list">
+          <li><span class="road-tag done">已交付</span>阶段 1：文件内容提取 + 合并文档 + 工程对账</li>
+          <li><span class="road-tag done">已交付</span>阶段 2（一期）：核心提炼（抽取式摘要）</li>
+          <li><span class="road-tag plan">规划中</span>阶段 2（二期）：Word 导出（当前输出格式固定为 Markdown）</li>
+          <li><span class="road-tag done">已交付</span>阶段 3：音视频转写（外部 ASR，未内置时诚实降级）</li>
+          <li><span class="road-tag plan">规划中</span>阶段 4：知识库 / 自动化</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <div class="card-title">隐私与依赖</div>
+        <p class="card-sub">全部处理都在本机完成，不上传任何文件内容；软件只依赖 Python 标准库，打包后是单个可执行文件。</p>
+        <div class="row">
+          <span class="mono set-path">https://github.com/kong-city/jinghe</span>
+          <button id="btnOpenAboutLog" class="btn btn-ghost" type="button">打开日志文件</button>
+        </div>
+      </section>
+    </section>
+
+    <footer class="statusbar">
+      <div class="status-left">
+        <span id="pyLabel" class="mono">Python —</span>
+        <span class="sep">·</span>
+        <span id="convLabel">转换器 待首次预览</span>
+        <span class="sep">·</span>
+        <span id="verdictLabel">验收 —</span>
+        <span id="selfCheckWrap" hidden><span class="sep">·</span><span id="selfCheck">空文件 0</span></span>
+        <span id="prepWrap" hidden><span class="sep">·</span><span id="prepNote" class="prep">需预处理 0</span></span>
+        <span id="producedWrap" hidden><span class="sep">·</span><span id="producedNote">已产出 0 / 0</span></span>
+      </div>
+      <div id="stateLabel" class="state idle">就绪</div>
+    </footer>
+  </main>
+</div>
 <script defer src="/ui/app.js"></script>
 </body>
 </html>

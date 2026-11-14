@@ -648,8 +648,76 @@ _LAST_OUTDIR = ""
 # 60s < 90s 保证最小化不会被误判为关窗。
 _LAST_SEEN = time.time()
 _SEEN_LOCK = threading.Lock()
-HEARTBEAT_GRACE = 90.0   # 无心跳宽限期（秒）
+HEARTBEAT_GRACE = 90.0   # 无心跳宽限期（秒，可被设置项覆盖）
 HEARTBEAT_CHECK = 15.0   # 看门狗巡检周期（秒）
+
+# ---- 设置项：本地持久化 ---------------------------------------------------
+# 桌面软件的设置必须活过进程重启，所以落盘到 %LOCALAPPDATA%\Jinghe\settings.json。
+# 全部设置都在本机，不上传任何数据。
+SETTINGS_FILE = LOG_DIR / "settings.json"
+DEFAULT_SETTINGS = {
+    "auto_exit": True,           # 关闭窗口后自动退出
+    "exit_grace_seconds": 90,    # 自动退出宽限期（秒）
+    "remember_paths": True,      # 记住上次的输入/输出路径
+    "default_outdir": "",        # 默认输出目录；留空 = 按时间自动生成
+}
+_SETTINGS_LOCK = threading.Lock()
+_SETTINGS_CACHE: dict | None = None
+
+
+def _validate_settings(data: object) -> dict:
+    """把外部输入收敛成合法设置：非法值退回默认，绝不因脏数据崩掉。"""
+    out = dict(DEFAULT_SETTINGS)
+    if not isinstance(data, dict):
+        return out
+    for key in ("auto_exit", "remember_paths"):
+        if key in data:
+            out[key] = bool(data[key])
+    if "exit_grace_seconds" in data:
+        try:
+            val = int(data["exit_grace_seconds"])
+        except (TypeError, ValueError):
+            val = int(DEFAULT_SETTINGS["exit_grace_seconds"])
+        out["exit_grace_seconds"] = max(30, min(600, val))
+    if "default_outdir" in data:
+        val = data["default_outdir"]
+        out["default_outdir"] = val.strip() if isinstance(val, str) else ""
+    return out
+
+
+def _load_settings() -> dict:
+    """读取设置（带缓存）。文件损坏或缺失时静默回退默认值。"""
+    global _SETTINGS_CACHE
+    with _SETTINGS_LOCK:
+        if _SETTINGS_CACHE is not None:
+            return dict(_SETTINGS_CACHE)
+        data: dict = {}
+        try:
+            if SETTINGS_FILE.is_file():
+                raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    data = raw
+        except (OSError, ValueError) as exc:
+            _append_log("[WARN] 读取设置文件失败，按默认设置启动：%r" % (exc,))
+        _SETTINGS_CACHE = _validate_settings(data)
+        return dict(_SETTINGS_CACHE)
+
+
+def _save_settings(data: object) -> dict:
+    """保存设置：先写临时文件再原子替换，避免写一半损坏配置。"""
+    global _SETTINGS_CACHE
+    clean = _validate_settings(data)
+    with _SETTINGS_LOCK:
+        _SETTINGS_CACHE = clean
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
+            tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(SETTINGS_FILE)
+        except OSError as exc:
+            _append_log("[ERROR] 保存设置失败：%r" % (exc,))
+    return dict(clean)
 
 
 def _touch_heartbeat() -> None:
@@ -664,9 +732,17 @@ def _start_window_watchdog(httpd: ThreadingHTTPServer) -> None:
     def _watch() -> None:
         while True:
             time.sleep(HEARTBEAT_CHECK)
+            # 每次巡检读一次设置：用户在「设置」页改完立即生效，无需重启
+            cfg = _load_settings()
+            if not cfg.get("auto_exit", True):
+                continue
+            try:
+                grace = float(cfg.get("exit_grace_seconds") or HEARTBEAT_GRACE)
+            except (TypeError, ValueError):
+                grace = HEARTBEAT_GRACE
             with _SEEN_LOCK:
                 idle = time.time() - _LAST_SEEN
-            if idle <= HEARTBEAT_GRACE:
+            if idle <= grace:
                 continue
             with _JOB_LOCK:
                 job = _JOB
@@ -1540,6 +1616,14 @@ class Handler(BaseHTTPRequestHandler):
                 _touch_heartbeat()
                 self._send_json({"ok": True})
                 return
+            if path == "/api/settings":
+                _touch_heartbeat()
+                self._send_json({
+                    "ok": True,
+                    "settings": _load_settings(),
+                    "settings_file": str(SETTINGS_FILE),
+                })
+                return
             if path == "/api/state":
                 _touch_heartbeat()
                 self._send_json(self._api_state())
@@ -1614,6 +1698,7 @@ class Handler(BaseHTTPRequestHandler):
             "app": "jinghe",
             "version": cap["version"],
             "python": platform.python_version(),
+            "platform": platform.platform(),
             "running": running,
             "input": job.input if job else _LAST_INPUT,
             "inputs": job.inputs if job else _LAST_INPUTS,
@@ -1673,6 +1758,16 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/cancel":
                 self._send_json(self._api_cancel())
+            elif path == "/api/settings":
+                # 保存设置：非法值由 _validate_settings 收敛，不接受前端直接落盘
+                merged = dict(_load_settings())
+                incoming = data.get("settings")
+                if isinstance(incoming, dict):
+                    merged.update(incoming)
+                saved = _save_settings(merged)
+                _append_log("[INFO] 设置已保存：%s" % json.dumps(saved, ensure_ascii=False))
+                self._send_json({"ok": True, "settings": saved,
+                                 "settings_file": str(SETTINGS_FILE)})
             elif path == "/api/open":
                 self._send_json(self._api_open(str(data.get("path") or "").strip()))
             elif path == "/api/summarize":

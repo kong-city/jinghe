@@ -51,7 +51,37 @@
     btnExportDocx: $("btnExportDocx"),
     btnTranscribe: $("btnTranscribe"),
     btnKnowledgeBase: $("btnKnowledgeBase"),
-    btnOpenLog: $("btnOpenLog")
+    btnOpenLog: $("btnOpenLog"),
+    // 左侧导航与页面
+    appShell: $("appShell"),
+    btnToggleNav: $("btnToggleNav"),
+    sideVersion: $("sideVersion"),
+    pageTitle: $("pageTitle"),
+    pageSub: $("pageSub"),
+    headerTag: $("headerTag"),
+    pages: {
+      home: $("page-home"),
+      settings: $("page-settings"),
+      about: $("page-about")
+    },
+    // 设置页
+    setAutoExit: $("setAutoExit"),
+    setExitGrace: $("setExitGrace"),
+    setRememberPaths: $("setRememberPaths"),
+    setDefaultOutdir: $("setDefaultOutdir"),
+    btnSaveSettings: $("btnSaveSettings"),
+    btnResetSettings: $("btnResetSettings"),
+    settingsStatus: $("settingsStatus"),
+    settingsLogPath: $("settingsLogPath"),
+    settingsFilePath: $("settingsFilePath"),
+    btnOpenLogSettings: $("btnOpenLogSettings"),
+    btnOpenSettingsFile: $("btnOpenSettingsFile"),
+    // 关于页
+    aboutVersion: $("aboutVersion"),
+    aboutPython: $("aboutPython"),
+    aboutPlatform: $("aboutPlatform"),
+    aboutLog: $("aboutLog"),
+    btnOpenAboutLog: $("btnOpenAboutLog")
   };
 
   // 后端 app.log 路径（来自 /api/state.log_file）；启动即可用，按钮常亮
@@ -127,6 +157,7 @@
   }
 
   function defaultOutdir() {
+    if (settings.default_outdir) return settings.default_outdir;
     var d = new Date();
     return ".\\out-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
       "-" + pad(d.getHours()) + pad(d.getMinutes());
@@ -139,11 +170,14 @@
   var LS_OUTDIR = "jinghe.outdir";
 
   function lsGet(key) {
+    // 「记住路径」关掉后，路径类记录一律不读不写
+    if ((key === LS_INPUT || key === LS_OUTDIR) && settings.remember_paths === false) return "";
     try { return window.localStorage.getItem(key) || ""; }
     catch (e) { return ""; }   // 隐私模式 / 存储被禁用：静默降级
   }
 
   function lsSet(key, value) {
+    if ((key === LS_INPUT || key === LS_OUTDIR) && settings.remember_paths === false) return;
     try { window.localStorage.setItem(key, value || ""); }
     catch (e) { /* 存不了就算了，不影响主流程 */ }
   }
@@ -151,6 +185,101 @@
   function rememberPaths() {
     lsSet(LS_INPUT, el.inputPath.value.trim());
     lsSet(LS_OUTDIR, el.outPath.value.trim());
+  }
+
+  // ---- 左侧导航：折叠状态 + 页面切换 ------------------------------------- //
+  var LS_NAV = "jinghe.nav.collapsed";
+  var currentPage = "home";
+
+  // 后端设置（来自 /api/settings）；remember_paths 决定路径要不要记
+  var settings = {
+    auto_exit: true,
+    exit_grace_seconds: 90,
+    remember_paths: true,
+    default_outdir: ""
+  };
+
+  var PAGE_META = {
+    home: { title: "精核 · 文件提取", sub: "阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪" },
+    settings: { title: "设置", sub: "只保存在本机，改动即时生效" },
+    about: { title: "关于", sub: "版本、路线与隐私说明" }
+  };
+
+  function setNavCollapsed(collapsed) {
+    if (!el.appShell) return;
+    el.appShell.classList.toggle("nav-collapsed", !!collapsed);
+    lsSet(LS_NAV, collapsed ? "1" : "");
+  }
+
+  function activatePage(name) {
+    if (!el.pages[name]) name = "home";
+    currentPage = name;
+    Object.keys(el.pages).forEach(function (key) {
+      if (el.pages[key]) el.pages[key].hidden = (key !== name);
+    });
+    var items = document.querySelectorAll(".nav-item");
+    for (var i = 0; i < items.length; i += 1) {
+      var on = items[i].getAttribute("data-page") === name;
+      items[i].classList.toggle("active", on);
+    }
+    var meta = PAGE_META[name] || PAGE_META.home;
+    if (el.pageTitle) el.pageTitle.textContent = meta.title;
+    if (el.pageSub) el.pageSub.textContent = meta.sub;
+    if (name === "settings") loadSettingsIntoForm();
+    if (name === "about") loadAbout();
+  }
+
+  function applySettings(cfg) {
+    if (cfg && typeof cfg === "object") settings = cfg;
+    if (el.setAutoExit) el.setAutoExit.checked = settings.auto_exit !== false;
+    if (el.setExitGrace) el.setExitGrace.value = settings.exit_grace_seconds;
+    if (el.setRememberPaths) el.setRememberPaths.checked = settings.remember_paths !== false;
+    if (el.setDefaultOutdir) el.setDefaultOutdir.value = settings.default_outdir || "";
+  }
+
+  function loadSettingsIntoForm() {
+    api("/api/settings", undefined, 10000).then(function (r) {
+      if (!r || !r.ok) return;
+      applySettings(r.settings);
+      if (el.settingsLogPath) el.settingsLogPath.textContent = logFile || "—";
+      if (el.settingsFilePath) el.settingsFilePath.textContent = r.settings_file || "—";
+    }).catch(function () { /* 设置读不到时保持现状，不打断使用 */ });
+  }
+
+  function saveSettings(payload, okText) {
+    el.settingsStatus.textContent = "保存中…";
+    api("/api/settings", { settings: payload }, 10000).then(function (r) {
+      if (!r || !r.ok) {
+        el.settingsStatus.textContent = "保存失败：" + ((r && r.error) || "未知错误");
+        return;
+      }
+      applySettings(r.settings);
+      el.settingsStatus.textContent = okText || "已保存";
+      if (settings.default_outdir) el.outPath.value = settings.default_outdir;
+    }).catch(function (err) {
+      el.settingsStatus.textContent = "保存失败：" + (err.message || err);
+    });
+  }
+
+  function readSettingsForm() {
+    return {
+      auto_exit: el.setAutoExit.checked,
+      exit_grace_seconds: parseInt(el.setExitGrace.value, 10) || 90,
+      remember_paths: el.setRememberPaths.checked,
+      default_outdir: el.setDefaultOutdir.value.trim()
+    };
+  }
+
+  function loadAbout() {
+    api("/api/state", undefined, 10000).then(function (st) {
+      if (!st) return;
+      if (el.aboutVersion) el.aboutVersion.textContent = st.version || "—";
+      if (el.aboutPython) el.aboutPython.textContent = st.python || "—";
+      if (el.aboutPlatform) el.aboutPlatform.textContent = st.platform || "—";
+      if (el.aboutLog) el.aboutLog.textContent = st.log_file || "—";
+      if (el.sideVersion) el.sideVersion.textContent = "v" + (st.version || "—");
+      if (el.headerTag) el.headerTag.textContent = "v" + (st.version || "—");
+    }).catch(function () { /* 读不到就保持占位符 */ });
   }
 
   function showBar(kind, message) {
@@ -162,6 +291,15 @@
   function showError(message) { showBar("error", message); }
   function showNotice(message) { showBar("notice", message); }
   function clearBar() { el.errorBar.hidden = true; el.errorBar.textContent = ""; }
+
+  function openLogFile() {
+    if (!logFile) { showNotice("日志路径尚未就绪，请稍候重试。"); return; }
+    api("/api/open", { path: logFile }, 10000)
+      .then(function (r) {
+        if (!r || !r.ok) showError("打开日志失败：" + ((r && r.error) || "未知"));
+      })
+      .catch(function (err) { showError("打开日志失败：" + (err.message || err)); });
+  }
 
   function setState(name) {
     stateName = name;
@@ -761,12 +899,7 @@
       openOutputDir(summary && summary.outdir);
     });
     el.btnOpenLog.addEventListener("click", function () {
-      if (!logFile) { showNotice("日志路径尚未就绪，请稍候重试。"); return; }
-      api("/api/open", { path: logFile }, 10000)
-        .then(function (r) {
-          if (!r || !r.ok) showError("打开日志失败：" + ((r && r.error) || "未知"));
-        })
-        .catch(function (err) { showError("打开日志失败：" + (err.message || err)); });
+      openLogFile();
     });
     el.btnPickFiles.addEventListener("click", pickFiles);
     el.btnSummarize.addEventListener("click", doSummarize);
@@ -797,6 +930,56 @@
     });
     el.outPath.addEventListener("input", rememberPaths);
 
+    // 左侧导航：折叠/展开 + 页面切换（点开才显示对应内容）
+    if (el.btnToggleNav) {
+      el.btnToggleNav.addEventListener("click", function () {
+        setNavCollapsed(!el.appShell.classList.contains("nav-collapsed"));
+      });
+    }
+    var navItems = document.querySelectorAll(".nav-item");
+    for (var n = 0; n < navItems.length; n += 1) {
+      navItems[n].addEventListener("click", function () {
+        activatePage(this.getAttribute("data-page"));
+      });
+    }
+    if (el.btnSaveSettings) {
+      el.btnSaveSettings.addEventListener("click", function () {
+        saveSettings(readSettingsForm(), "已保存");
+      });
+    }
+    if (el.btnResetSettings) {
+      el.btnResetSettings.addEventListener("click", function () {
+        saveSettings({
+          auto_exit: true,
+          exit_grace_seconds: 90,
+          remember_paths: true,
+          default_outdir: ""
+        }, "已恢复默认");
+      });
+    }
+    if (el.btnOpenLogSettings) {
+      el.btnOpenLogSettings.addEventListener("click", function () { openLogFile(); });
+    }
+    if (el.btnOpenAboutLog) {
+      el.btnOpenAboutLog.addEventListener("click", function () { openLogFile(); });
+    }
+    if (el.btnOpenSettingsFile) {
+      el.btnOpenSettingsFile.addEventListener("click", function () {
+        api("/api/settings", undefined, 10000).then(function (r) {
+          if (!r || !r.settings_file) { showNotice("设置文件路径尚未就绪。"); return; }
+          api("/api/open", { path: r.settings_file }, 10000)
+            .then(function (res) {
+              if (!res || !res.ok) showError("打开设置文件失败：" + ((res && res.error) || "未知"));
+            })
+            .catch(function (err) { showError("打开设置文件失败：" + (err.message || err)); });
+        }).catch(function (err) {
+          showError("读取设置文件路径失败：" + (err.message || err));
+        });
+      });
+    }
+    setNavCollapsed(lsGet(LS_NAV) === "1");
+    activatePage("home");
+
     // 桌面端快捷键：Ctrl+Enter 开始提取、Esc 取消运行中的任务
     document.addEventListener("keydown", function (e) {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
@@ -813,6 +996,13 @@
     updateControls();
     setState("idle");
     updateFeatureButtons();
+
+    // 启动即读后端设置：决定「默认输出目录」与「是否记住路径」
+    api("/api/settings", undefined, 10000).then(function (r) {
+      if (!r || !r.ok) return;
+      applySettings(r.settings);
+      if (settings.default_outdir) el.outPath.value = settings.default_outdir;
+    }).catch(function () { /* 读不到设置就用默认值，不影响使用 */ });
 
     // 桌面端「关窗即退」心跳：每 2 秒上报一次「窗口还开着」。
     // 窗口关闭后心跳停止，服务端看门狗在宽限期后自动退出，
