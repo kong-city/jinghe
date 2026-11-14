@@ -63,13 +63,13 @@
           <p id="pageSub">阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
         </div>
       </div>
-      <div class="header-tag" id="headerTag">v0.3.7</div>
+      <div class="header-tag" id="headerTag">v0.3.8</div>
     </header>
 
     <!-- ==================== 首页 ==================== -->
     <section class="page" id="page-home">
       <section class="cards">
-        <div class="card">
+        <div class="card card-input">
           <div class="card-title">输入</div>
           <div class="row">
             <input id="inputPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
@@ -78,16 +78,9 @@
             <button id="btnPreviewInline" class="btn btn-ghost" type="button">预览分流</button>
           </div>
           <div id="inputMeta" class="meta">未选择输入</div>
-          <div id="fileListWrap" class="file-list-wrap" hidden>
-            <div class="file-list-head">
-              <span id="fileListTitle">已识别 0 个文件</span>
-              <button id="btnToggleFiles" class="link-btn" type="button">收起</button>
-            </div>
-            <ul id="fileList" class="file-list"></ul>
-          </div>
         </div>
 
-        <div class="card">
+        <div class="card card-output">
           <div class="card-title">输出</div>
           <div class="row">
             <input id="outPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
@@ -101,6 +94,17 @@
           <div class="row">
             <button id="btnOpenMerged" class="btn btn-ghost" type="button" disabled>打开合并文档</button>
           </div>
+        </div>
+
+        <!-- v0.3.8：已识别清单从输入卡片移出，放到原来输出所在的右列 -->
+        <div class="card card-files" id="fileListWrap">
+          <div class="card-title">已识别</div>
+          <div class="file-list-head">
+            <span id="fileListTitle">已识别 0 个文件</span>
+            <button id="btnToggleFiles" class="link-btn" type="button" hidden>收起</button>
+          </div>
+          <ul id="fileList" class="file-list" hidden></ul>
+          <div id="fileListEmpty" class="file-empty">尚未识别文件。填写输入路径后点击「打开」或「预览分流」，清单会显示在这里。</div>
         </div>
       </section>
 
@@ -244,16 +248,12 @@
     <section class="page" id="page-about" hidden>
       <section class="card">
         <div class="card-title">版本更新</div>
-        <div class="card-sub">检查 GitHub 仓库是否有新版本；下载按钮始终指向仓库<strong>最新版本</strong>页面（离线也可直接打开）。</div>
-        <div class="about-grid">
+        <div class="card-sub">点击「检查更新」即可完成更新：查询 GitHub 最新版本，发现新版本时自动打开最新版本下载页；已是最新则直接提示，离线时也会打开仓库最新发布页供手动确认。</div>
+        <div class="about-grid about-grid-update">
           <div class="about-item"><span>当前版本</span><b class="mono" id="aboutVersion">—</b></div>
-          <div class="about-item"><span>最新版本</span><b class="mono" id="aboutLatest">尚未检查</b></div>
+          <button id="btnCheckUpdate" class="btn btn-primary about-check-btn" type="button">检查更新</button>
         </div>
-        <div class="row set-actions">
-          <button id="btnCheckUpdate" class="btn btn-ghost" type="button">检查更新</button>
-          <button id="btnDownloadLatest" class="btn btn-primary" type="button">下载最新版本</button>
-          <span id="updateStatus" class="run-status"></span>
-        </div>
+        <div id="updateStatus" class="update-status">尚未检查更新</div>
         <div class="row">
           <a id="repoLink" class="repo-link mono" href="https://github.com/kong-city/jinghe/releases/latest"
              target="_blank" rel="noopener noreferrer">https://github.com/kong-city/jinghe/releases/latest</a>

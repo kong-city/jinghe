@@ -98,6 +98,7 @@ import app  # noqa: E402
 
 os.startfile = lambda path: None  # 只在本测试子进程里生效
 app._open_document = lambda p: "startfile"  # 禁止真弹记事本 / 切换窗口
+app.webbrowser.open = lambda *a, **kw: True  # 一键更新测试不真弹浏览器
 raise SystemExit(app.main(["--no-browser", "--port", "0"]))
 '''
 
@@ -1270,15 +1271,18 @@ class AppContractTest(unittest.TestCase):
         self.assertIn(".app.nav-collapsed .sidebar { width: 58px; }", css,
                       "折叠态宽度未固定为 58px")
 
-        # ② 关于页「版本更新」：按钮 + 下载链接指向仓库最新版
+        # ② 关于页「版本更新」：v0.3.8 起只保留一个「检查更新」按钮（本段按新版契约更新）
         self.assertIn('id="btnCheckUpdate"', html, "关于页缺少检查更新按钮")
-        self.assertIn('id="btnDownloadLatest"', html, "关于页缺少下载最新版本按钮")
+        self.assertNotIn('id="btnDownloadLatest"', html,
+                         "v0.3.8 已取消「下载最新版本」按钮")
+        self.assertNotIn('id="aboutLatest"', html,
+                         "v0.3.8 已把「最新版本」信息格换成检查更新按钮")
         self.assertIn('id="repoLink"', html, "关于页缺少仓库链接")
         self.assertIn("https://github.com/kong-city/jinghe/releases/latest", html,
                       "下载链接未指向 GitHub 仓库最新版本页")
         self.assertIn("RELEASES_LATEST_URL", src, "后端未定义最新版本链接常量")
-        self.assertIn("/api/check-update", js, "前端未调用检查更新接口")
-        self.assertIn("/api/open-latest", js, "前端未调用打开下载页接口")
+        self.assertIn("/api/update", js, "前端未调用一键更新接口")
+        self.assertIn("/api/update", src, "后端缺少一键更新路由")
 
         # ③ 首页「输出与选项」移除打开日志按钮，功能迁到关于页运行日志区
         self.assertNotIn('id="btnOpenLog"', html,
@@ -1424,6 +1428,98 @@ class AppContractTest(unittest.TestCase):
                         "未回传合并文档路径：%s" % obj)
         self.assertIn(obj.get("via"), ("startfile", "notepad", "browser"),
                       "打开方式回传异常：%s" % obj.get("via"))
+
+    # ------------------------------------------------------------------ #
+    # 30) v0.3.8：关于页一键检查更新 + 首页上下布局 / 已识别移到原输出位
+    # ------------------------------------------------------------------ #
+    def test_30_one_click_update_and_home_layout(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 关于页：保留「当前版本」，「最新版本」信息格换成检查更新按钮
+        self.assertIn("<span>当前版本</span>", html, "关于页缺少「当前版本」")
+        self.assertIn('class="about-grid about-grid-update"', html,
+                      "版本更新卡片未改为 about-grid-update")
+        self.assertIn('id="btnCheckUpdate"', html, "缺少检查更新按钮")
+        self.assertIn('class="btn btn-primary about-check-btn"', html,
+                      "检查更新按钮未放到「最新版本」原来的格子里")
+        self.assertNotIn("<span>最新版本</span>", html, "「最新版本」信息格未移除")
+        self.assertNotIn('id="aboutLatest"', html, "仍残留 aboutLatest 元素")
+        self.assertNotIn('id="btnDownloadLatest"', html, "「下载最新版本」按钮未取消")
+        self.assertIn('id="updateStatus" class="update-status"', html,
+                      "缺少独立可见的更新状态条")
+        p_ver = html.index("<span>当前版本</span>")
+        p_btn = html.index('id="btnCheckUpdate"')
+        p_st = html.index('id="updateStatus"')
+        self.assertLess(p_ver, p_btn, "检查更新按钮未取代「最新版本」格")
+        self.assertLess(p_btn, p_st, "更新状态条位置异常")
+
+        # ② 前端：一键端点、状态回显、旧按钮 / 旧函数彻底清理
+        self.assertIn("/api/update", js, "前端未调用 /api/update")
+        self.assertIn("setUpdateStatus", js, "前端缺少更新结果回显")
+        self.assertNotIn("downloadLatest", js, "仍残留 downloadLatest 实现")
+        self.assertNotIn("aboutLatest", js, "仍残留 aboutLatest 引用")
+        self.assertNotIn("/api/open-latest", js,
+                         "前端不应再单独调用下载页接口")
+        self.assertNotIn("/api/check-update", js,
+                         "前端不应再单独调用检查接口（已合并到 /api/update）")
+
+        # ③ 后端：一键端点 + URL 白名单 + 结果形状
+        self.assertIn('elif path == "/api/update"', src, "后端缺少 /api/update 路由")
+        self.assertIn("def _api_update", src, "后端缺少 _api_update 实现")
+        self.assertIn('url.startswith(REPO_URL + "/releases")', src,
+                      "一键更新未做 URL 白名单收敛")
+        self.assertIn("webbrowser.open(url)", src,
+                      "一键更新未自动打开最新版本页面")
+
+        # ④ 首页：输入 / 输出上下堆叠，已识别移到原输出的右列
+        self.assertIn('class="card card-input"', html, "首页缺少输入卡片标记")
+        self.assertIn('class="card card-output"', html, "首页缺少输出卡片标记")
+        self.assertIn('class="card card-files" id="fileListWrap"', html,
+                      "已识别清单未做成独立卡片")
+        p_in = html.index('class="card card-input"')
+        p_out = html.index('class="card card-output"')
+        p_files = html.index('class="card card-files"')
+        self.assertLess(p_in, p_out, "输出卡片未放在输入下面")
+        self.assertLess(p_out, p_files, "已识别卡片未放在原输出的位置（右列）")
+        self.assertIn('"input files"', css, "CSS 未把已识别放到右列")
+        self.assertIn('"output files"', css, "CSS 未让输出在输入下方")
+        self.assertIn("grid-template-areas", css, "首页未改用 grid 区域布局")
+        self.assertIn("[hidden] { display: none !important; }", css,
+                      "缺少 hidden 强制隐藏，列表空态会留下空列")
+        self.assertIn('id="fileListEmpty"', html, "已识别卡片缺少空态提示")
+        self.assertNotIn("fileListWrap.hidden", js,
+                         "已识别卡片应常显，不再整体 hidden")
+
+        # ⑤ 真实 HTTP：一键更新返回完整形状，离线不伪造版本号
+        srv = self.start(patch_open=True)
+        status, upd = srv.post_json("/api/update", {})
+        self.assertEqual(status, 200, "/api/update 未返回 200：%s" % upd)
+        self.assertIs(upd.get("ok"), True, "一键更新未返回 ok=true")
+        for key in ("current", "latest", "latest_url", "url", "opened",
+                    "status", "message", "offline"):
+            self.assertIn(key, upd, "/api/update 缺少字段 %s" % key)
+        self.assertIn(upd.get("status"),
+                      ("up_to_date", "new_version", "offline"),
+                      "一键更新状态取值异常：%s" % upd.get("status"))
+        self.assertTrue((upd.get("url") or "").startswith(
+            "https://github.com/kong-city/jinghe/releases"),
+            "打开链接不是仓库 releases 页：%s" % upd.get("url"))
+        self.assertTrue(upd.get("message"), "一键更新缺少可读结果说明")
+        if upd.get("offline"):
+            self.assertIsNone(upd.get("latest"), "离线时不应伪造最新版本号")
+        if upd.get("status") == "up_to_date":
+            self.assertIs(upd.get("opened"), False, "已是最新却仍弹了下载页")
+        else:
+            self.assertIs(upd.get("opened"), True,
+                          "发现新版本 / 离线时未自动打开最新版本页")
+
+        # ⑥ 保留的旧端点仍可用（后端能力不删，UI 不再单独暴露）
+        status, chk = srv.get_json("/api/check-update")
+        self.assertEqual(status, 200, "/api/check-update 兼容端点不可用")
+        self.assertIs(chk.get("ok"), True)
 
 
 def print_summary(result=None) -> None:

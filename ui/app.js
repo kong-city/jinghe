@@ -20,9 +20,9 @@
     runStatus: $("runStatus"),
     progressBar: $("progressBar"),
     inputMeta: $("inputMeta"),
-    fileListWrap: $("fileListWrap"),
     fileListTitle: $("fileListTitle"),
     fileList: $("fileList"),
+    fileListEmpty: $("fileListEmpty"),
     btnToggleFiles: $("btnToggleFiles"),
     mSuccess: $("mSuccess"),
     mSuccessLabel: $("mSuccessLabel"),
@@ -77,9 +77,7 @@
     btnOpenSettingsFile: $("btnOpenSettingsFile"),
     // 关于页 · 版本更新
     aboutVersion: $("aboutVersion"),
-    aboutLatest: $("aboutLatest"),
     btnCheckUpdate: $("btnCheckUpdate"),
-    btnDownloadLatest: $("btnDownloadLatest"),
     updateStatus: $("updateStatus"),
     repoLink: $("repoLink"),
     // 关于页 · 运行日志
@@ -347,43 +345,36 @@
     }).catch(function () { /* 读不到就保持占位符 */ });
   }
 
-  // 版本更新：查询 GitHub 最新 release；查询失败（离线/超时）诚实提示，
-  // 但下载按钮始终指向仓库最新版本页面，不因查询失败而失效。
-  function checkUpdate() {
-    if (el.updateStatus) el.updateStatus.textContent = "检查中…";
-    if (el.btnCheckUpdate) el.btnCheckUpdate.disabled = true;
-    api("/api/check-update", undefined, 12000).then(function (r) {
-      if (el.btnCheckUpdate) el.btnCheckUpdate.disabled = false;
-      if (!r) { if (el.updateStatus) el.updateStatus.textContent = "检查失败"; return; }
-      if (r.latest) {
-        if (el.aboutLatest) el.aboutLatest.textContent = r.latest;
-        if (el.updateStatus) {
-          el.updateStatus.textContent = r.up_to_date
-            ? "已是最新版本" : "发现新版本 " + r.latest;
-        }
-        if (r.latest_url && el.repoLink) el.repoLink.href = r.latest_url;
-      } else {
-        if (el.aboutLatest) el.aboutLatest.textContent = "离线 / 未获取";
-        if (el.updateStatus) {
-          el.updateStatus.textContent = "无法查询版本号，仍可点「下载最新版本」打开仓库最新发布页";
-        }
-      }
-    }).catch(function (err) {
-      if (el.btnCheckUpdate) el.btnCheckUpdate.disabled = false;
-      if (el.aboutLatest) el.aboutLatest.textContent = "离线 / 未获取";
-      if (el.updateStatus) el.updateStatus.textContent = "检查失败：" + (err.message || err);
-    });
+  /* v0.3.8：关于页只保留一个「检查更新」按钮，点一下即走完更新链路——
+     查询 GitHub 最新版本 → 发现新版本（或离线无法确认）自动打开最新发布页。
+     后端 /api/update 一次调用完成「检查 + 引导更新」，前端只负责诚实回显，
+     不再有第二个「下载最新版本」按钮，也不再静默吞掉结果。*/
+  function setUpdateStatus(text, cls) {
+    if (!el.updateStatus) return;
+    el.updateStatus.textContent = text;
+    el.updateStatus.className = "update-status" + (cls ? " " + cls : "");
   }
 
-  function downloadLatest() {
-    if (el.updateStatus) el.updateStatus.textContent = "正在打开下载页…";
-    api("/api/open-latest", {}, 10000).then(function (r) {
-      if (el.updateStatus) {
-        el.updateStatus.textContent = (r && r.ok)
-          ? "已在浏览器中打开最新版本下载页" : "打开失败：" + ((r && r.error) || "未知");
-      }
+  function checkUpdate() {
+    if (!el.btnCheckUpdate) return;
+    var old = el.btnCheckUpdate.textContent;
+    el.btnCheckUpdate.disabled = true;
+    el.btnCheckUpdate.textContent = "检查中…";
+    setUpdateStatus("正在查询 GitHub 最新版本…", "");
+
+    api("/api/update", {}, 15000).then(function (r) {
+      if (r && r.url && el.repoLink) el.repoLink.href = r.url;
+      if (r && r.latest_url && el.repoLink) el.repoLink.href = r.latest_url;
+      var status = (r && r.status) || "";
+      var cls = status === "up_to_date" ? "is-ok"
+        : status === "new_version" ? "is-new"
+        : status === "offline" ? "is-warn" : "is-err";
+      setUpdateStatus((r && r.message) || "检查完成，但未返回说明", cls);
     }).catch(function (err) {
-      if (el.updateStatus) el.updateStatus.textContent = "打开失败：" + (err.message || err);
+      setUpdateStatus("检查更新失败：" + (err.message || String(err)), "is-err");
+    }).finally(function () {
+      el.btnCheckUpdate.disabled = false;
+      el.btnCheckUpdate.textContent = old;
     });
   }
 
@@ -484,9 +475,14 @@
 
   var FILE_LIST_MAX = 500;
 
+  /* v0.3.8：已识别清单已从输入卡片移到右列独立卡片，常显不隐藏；
+     空态时显示提示文字并隐藏列表与「收起」按钮，避免右列留一大块空白。*/
   function clearFileList() {
-    el.fileListWrap.hidden = true;
     el.fileList.textContent = "";
+    el.fileList.hidden = true;
+    if (el.fileListTitle) el.fileListTitle.textContent = "已识别 0 个文件";
+    if (el.btnToggleFiles) el.btnToggleFiles.hidden = true;
+    if (el.fileListEmpty) el.fileListEmpty.hidden = false;
   }
 
   function renderFileList(data) {
@@ -527,8 +523,11 @@
     el.fileListTitle.textContent = "已识别 " + counted + " 个文件";
 
     el.fileList.hidden = false;
-    el.btnToggleFiles.textContent = "收起";
-    el.fileListWrap.hidden = false;
+    if (el.fileListEmpty) el.fileListEmpty.hidden = true;
+    if (el.btnToggleFiles) {
+      el.btnToggleFiles.hidden = false;
+      el.btnToggleFiles.textContent = "收起";
+    }
   }
 
   /* ------------------------------ 预览 ------------------------------ */
@@ -1123,18 +1122,15 @@
     if (el.btnCheckUpdate) {
       el.btnCheckUpdate.addEventListener("click", function () { checkUpdate(); });
     }
-    if (el.btnDownloadLatest) {
-      el.btnDownloadLatest.addEventListener("click", function () { downloadLatest(); });
-    }
     if (el.btnExportLog) {
       el.btnExportLog.addEventListener("click", function () { exportLog(); });
     }
-    // 关于页里的仓库链接是真实 href（可右键复制）；点击时交给后端用系统浏览器打开，
-    // 避免 Edge --app 窗口内打开外链时没有地址栏。
+    // 关于页里的仓库链接是真实 href（可右键复制）；点击时走同一套一键更新流程，
+    // 由后端用系统浏览器打开最新版本页，避免 Edge --app 窗口内打开外链时没有地址栏。
     if (el.repoLink) {
       el.repoLink.addEventListener("click", function (e) {
         e.preventDefault();
-        downloadLatest();
+        checkUpdate();
       });
     }
     if (el.btnOpenSettingsFile) {
