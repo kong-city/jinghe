@@ -4,6 +4,30 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.4.7] - 2026-11-15
+
+**S4 · 视频 → `.md`**（阶段 3 二期）。新增**完全独立**的 `video_transcribe.py` video handler：ffmpeg 只读探测流信息 / 抽取音轨 / 机械导出内嵌字幕轨，本机 whisper CLI 转写音轨，产出**三区块齐备**（元数据 / 音轨转写 / 画面·字幕）的 Markdown。软件不提供 OCR / 视觉模型，**绝不编造画面语义描述**；不打包、不下载、不安装任何工具或模型。按「逐阶段确认」，S4 完成后停在闸门等确认，**不进入 S5**（视频链接 → .md）。
+
+### Added
+
+- `video_transcribe.py`（新）：`capability()` / `inspect()` / `transcribe()` / `probe_streams()` / `parse_srt()`；与 `audio_transcribe.py` **双向不依赖**（`test_41` 断言锁死），视频只认 `MEDIA_VIDEO`、音频只认 `MEDIA_AUDIO`，分类先于存在性与工具检查。
+- 四个新端点：`POST /api/video/inspect` / `transcribe` / `cancel`、`GET /api/video/status?since=N`；`/api/tools/probe` 顶层新增 `video_transcribe` 字段。ffprobe 只是可选增强，**不进** `media_tools.TOOL_SPECS`（`probe.tools` 仍恰好 3 个工具）。
+- UI 新增「视频提取 → .md」与「取消提取」按钮、独立 800ms 进度轮询；老的音视频转写占位按钮与 S1 诚实降级判定原样保留。
+- 产物 `out/derived/<doc_id>.md`：元数据（时长 / 分辨率 / 帧率 / 视频与音频流 / 字幕轨数 / 工具版本 / sha256）、音轨转写（带 `HH:MM:SS.mmm` 时间戳与 `time` 锚点）、画面·字幕（真实导出的 SRT 条目，或「未检测到内嵌字幕轨 + 不生成画面语义描述」的客观状态）；8 字段 `src` + 块级锚点，`provenance_media.json` 读旧追加。
+- ffprobe `-of json` 结构化元数据优先，探不到或解析失败自动回退 `ffmpeg -i` 文本解析，并在产物里写明「元数据来源」；`converter` 记录 whisper / ffmpeg（及 ffprobe）真实版本。
+
+### Changed
+
+- 契约升 **v0.6**：订正 v0.5「`/api/media/run` 留给 S4/S5」的漂移为「留给 S5 批量编排」；新增 10 条 S4 裁决（独立 handler、画面区块诚实实现、双门禁、长任务与进程树等）。
+- 发版门禁编译列表与 PyInstaller `hiddenimports` 纳入 `video_transcribe.py`；启动时清扫 `jinghe-run-video-*` 孤儿临时目录。
+- 测试基线 68 → **70 用例**（`test_41` / `test_42`）。
+
+### 不变量
+
+- 双门禁防伪产物：解析不出视频流元数据、或既无真实语音分段又无真实字幕条目，一律 `ok:false` + **零 md**，绝不写空壳三区块 / 占位正文。
+- 缺工具（whisper / ffmpeg）诚实显示「未启用」且连 `derived/` 都不创建；产物只落 `derived/`，`out/md/` / `INDEX.md` / `MERGED.md` / `provenance.json` 全程只读。
+- `/api/transcribe` 的 S1 空心位、`test_06` / `test_11` / `test_34` / `test_38` 全部原样保留；`SPEC.md` 与 `extract.py` 主流水线一字未改。
+
 ## [0.4.6] - 2026-11-15
 
 **S3 · 音频 → `.md`**（阶段 3 一期）。用**本机可插拔** whisper CLI + ffmpeg 把音频转成带时间戳的 Markdown；软件本体仍是零第三方依赖的单文件 exe，模型与工具由用户在本机提供，不下载、不打包、不自动安装。按「逐阶段确认」，S3 完成后停在闸门等确认，**不进入 S4**（视频 → .md）。

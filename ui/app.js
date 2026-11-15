@@ -51,6 +51,8 @@
     btnWordEnhance: $("btnWordEnhance"),
     btnAudioTranscribe: $("btnAudioTranscribe"),
     btnAudioCancel: $("btnAudioCancel"),
+    btnVideoTranscribe: $("btnVideoTranscribe"),
+    btnVideoCancel: $("btnVideoCancel"),
     btnKnowledgeBase: $("btnKnowledgeBase"),
     toolStatus: $("toolStatus"),
     // 左侧导航与页面
@@ -1003,6 +1005,7 @@
                toolState.capabilities.media_transcribe) || {};
     var why = cap.reason || "本机工具状态未知";
     var at = (toolState && toolState.audio_transcribe) || {};
+    var vt = (toolState && toolState.video_transcribe) || {};
     var wi = (toolState && toolState.word_input) || {};
     var legacy = wi.legacy_doc || {};
     el.toolStatus.textContent = "本机工具：" + parts.join(" · ") +
@@ -1015,7 +1018,9 @@
       "；Word 导出：" +
       ((((toolState || {}).word_export) || {}).enabled ? "已启用（标准库 OOXML）" : "未启用") +
       "；音频转写：" +
-      (at.enabled ? "已启用（本机 whisper + ffmpeg）" : "未启用（" + (at.reason || "缺少本机工具") + "）");
+      (at.enabled ? "已启用（本机 whisper + ffmpeg）" : "未启用（" + (at.reason || "缺少本机工具") + "）") +
+      "；视频提取：" +
+      (vt.enabled ? "已启用（独立 video handler）" : "未启用（" + (vt.reason || "缺少本机工具") + "）");
     el.toolStatus.hidden = false;
   }
 
@@ -1059,6 +1064,20 @@
     return false;
   }
 
+  // S4：只认注册表里的视频后缀；扩展名列表与后端 MEDIA_VIDEO 保持一致。
+  var VIDEO_EXT_RE = /\.(mp4|mov|avi|mkv|flv|webm|m4v|wmv)$/i;
+  function hasVideoInput() {
+    var list = currentInputs();
+    if (!list.length) {
+      var v = (el.inputPath && el.inputPath.value || "").trim();
+      if (v) list = [v];
+    }
+    for (var i = 0; i < list.length; i += 1) {
+      if (VIDEO_EXT_RE.test(list[i])) return true;
+    }
+    return false;
+  }
+
   // 仅在「本次运行成功且有产物目录」时点亮后处理按钮；运行/预览中不点亮。
   function updateFeatureButtons() {
     var on = !!lastDoneOutdir && !running && !previewing;
@@ -1085,6 +1104,12 @@
     el.btnAudioTranscribe.disabled = !(!running && !previewing && audioOn &&
                                        hasAudioInput() && audioOut);
     el.btnAudioTranscribe.textContent = audioOn ? "音频转写 → .md" : "音频转写（未启用）";
+    // S4：真实能力走顶层 video_transcribe；与音频按钮各走一条独立端点。
+    var vt = ((toolState || {}).video_transcribe) || {};
+    var videoOn = !!vt.enabled;
+    el.btnVideoTranscribe.disabled = !(!running && !previewing && videoOn &&
+                                       hasVideoInput() && audioOut);
+    el.btnVideoTranscribe.textContent = videoOn ? "视频提取 → .md" : "视频提取（未启用）";
   }
 
   // 统一的后端动作：调用 /api/*，成功给带时间戳的常驻文案，失败显式报错。
@@ -1257,6 +1282,68 @@
     });
   }
 
+  // S4：独立 video handler 的长任务；绝不复用 /api/audio/* 端点。
+  function doVideoTranscribe() {
+    var inputs = currentInputs().filter(function (p) {
+      return VIDEO_EXT_RE.test(p);
+    });
+    if (!inputs.length) {
+      var v = (el.inputPath && el.inputPath.value || "").trim();
+      if (v && VIDEO_EXT_RE.test(v)) inputs = [v];
+    }
+    if (!inputs.length) { showError("请先选择视频文件（mp4 / mov / mkv / avi / webm 等）"); return; }
+    var outdir = (summary && summary.outdir) || lastDoneOutdir ||
+                 (el.outPath && el.outPath.value || "").trim();
+    if (!outdir) { showError("请先指定输出目录"); return; }
+    if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
+    var btn = el.btnVideoTranscribe;
+    var cancelBtn = el.btnVideoCancel;
+    var old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "提取中…";
+    cancelBtn.hidden = false;
+    cancelBtn.disabled = false;
+    clearBar();
+    var since = 0;
+    var timer = window.setInterval(function () {
+      api("/api/video/status?since=" + since, undefined, 5000).then(function (s) {
+        if (!s) return;
+        if (s.next) since = s.next;
+        var evs = s.events || [];
+        if (evs.length) showNotice(evs[evs.length - 1].text + " · " + nowHMS());
+      }).catch(function () { /* 进度轮询失败不打断提取 */ });
+    }, 800);
+    api("/api/video/transcribe", { inputs: inputs, outdir: outdir }, 1800000)
+      .then(function (r) {
+        if (!r.ok) {
+          var detail = (r.results || []).filter(function (x) { return !x.ok; })
+            .map(function (x) { return x.name + "：" + x.error; }).join("；");
+          throw new Error((r.error || "视频提取失败") +
+                          (detail ? "（" + detail + "）" : ""));
+        }
+        var msg = "已生成 " + r.success + " 份三区块 .md：" + r.derived_dir;
+        if (r.failed) msg += "；另有 " + r.failed + " 项未处理（见产物清单）";
+        if (r.cancelled) msg = "提取已取消：" + (r.error || "");
+        showNotice(msg + " · " + nowHMS());
+      }).catch(function (err) {
+        showError(err.message || String(err));
+      }).finally(function () {
+        window.clearInterval(timer);
+        cancelBtn.hidden = true;
+        btn.textContent = old;
+        updateFeatureButtons();
+      });
+  }
+
+  function doVideoCancel() {
+    api("/api/video/cancel", {}, 5000).then(function (r) {
+      if (!r.ok) showError(r.error || "取消失败");
+      else showNotice("已请求取消提取（会终止本机工具进程树） · " + nowHMS());
+    }).catch(function (err) {
+      showError(err.message || String(err));
+    });
+  }
+
   /* ------------------------------ Tabs ------------------------------ */
   function activateTab(name) {
     var tabs = document.querySelectorAll(".tab");
@@ -1302,6 +1389,8 @@
     el.btnWordEnhance.addEventListener("click", doWordEnhance);
     el.btnAudioTranscribe.addEventListener("click", doAudioTranscribe);
     el.btnAudioCancel.addEventListener("click", doAudioCancel);
+    el.btnVideoTranscribe.addEventListener("click", doVideoTranscribe);
+    el.btnVideoCancel.addEventListener("click", doVideoCancel);
     el.btnKnowledgeBase.addEventListener("click", function () {
       showNotice("阶段 4 知识库 / 自动化规划中，敬请期待。");
     });

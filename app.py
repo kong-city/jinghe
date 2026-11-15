@@ -46,6 +46,7 @@ import media_runtime
 import word_input  # S2a：Word → .md 输入增强（独立后处理层，冻结内核零改动）
 import word_export  # S2b：.md → .docx 导出（独立后处理层，纯标准库 OOXML）
 import audio_transcribe  # S3：音频 → .md（本机 whisper 适配器，冻结内核零改动）
+import video_transcribe  # S4：视频 → .md（独立 video handler，绝不复用音频路径）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -776,6 +777,11 @@ _LAST_OUTDIR = ""
 # 的事件队列与件数对账；仍复用同一个 Job 类（事件总线 / 子进程登记 / 超时）。
 _AUDIO_JOB: Job | None = None
 _AUDIO_LOCK = threading.Lock()
+
+# S4 视频提取任务：与 _JOB（阶段 1）/ _AUDIO_JOB（S3）三者互不相交，
+# 各自独立事件队列，绝不污染 /api/progress 与 md/ 件数对账。
+_VIDEO_JOB: Job | None = None
+_VIDEO_LOCK = threading.Lock()
 
 
 def start_job_watchdog(job: Job, timeout_sec: float) -> threading.Event | None:
@@ -1920,6 +1926,16 @@ class Handler(BaseHTTPRequestHandler):
                     since = 0
                 self._send_json(self._api_audio_status(since))
                 return
+            if path == "/api/video/status":
+                # S4：视频提取进度独立轮询，与音频 / 阶段 1 三条队列互不相交。
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                try:
+                    since = int((qs.get("since") or ["0"])[0])
+                except (TypeError, ValueError):
+                    since = 0
+                self._send_json(self._api_video_status(since))
+                return
             if path == "/favicon.ico":
                 self._send_bytes(b"", "image/x-icon", 204)
                 return
@@ -1984,6 +2000,9 @@ class Handler(BaseHTTPRequestHandler):
         data["word_export"] = word_export.capability()
         # S3：音频转写真实状态同样走顶层增量字段，S1 的占位清单不改写。
         data["audio_transcribe"] = audio_transcribe.capability(refresh=refresh)
+        # S4：视频能力同样只走顶层增量字段；ffprobe 是 video_transcribe
+        # 自有 tools 子结构，绝不并入 media_tools.TOOL_SPECS / probe["tools"]。
+        data["video_transcribe"] = video_transcribe.capability(refresh=refresh)
         return data
 
     def _api_state(self) -> dict:
@@ -2112,6 +2131,16 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/audio/cancel":
                 self._send_json(self._api_audio_cancel())
+            elif path == "/api/video/inspect":
+                self._send_json(self._api_video_inspect(_norm_inputs(data)))
+            elif path == "/api/video/transcribe":
+                self._send_json(self._api_video_transcribe(
+                    _norm_inputs(data),
+                    str(data.get("outdir") or "").strip(),
+                    str(data.get("model") or "").strip(),
+                ))
+            elif path == "/api/video/cancel":
+                self._send_json(self._api_video_cancel())
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态
@@ -2659,6 +2688,96 @@ class Handler(BaseHTTPRequestHandler):
                 "current_name": job.current_name,
             }
 
+    # ------------------- S4 · 视频 → .md（独立 video handler） -------------- #
+    def _api_video_inspect(self, inputs: list[str]) -> dict:
+        """只读预检：音频拒收、缺工具诚实回显，不写任何文件、不创建目录。"""
+        result = video_transcribe.inspect(inputs)
+        _append_log("[INFO] 视频预检：共 %d 个文件，可处理 %d 个"
+                    % (result["total"], result["ready"]))
+        return result
+
+    def _api_video_transcribe(self, inputs: list[str], outdir: str,
+                              model: str = "") -> dict:
+        """同步执行长任务，独立 _VIDEO_JOB 供 /api/video/status 轮询与 cancel。"""
+        global _VIDEO_JOB
+        target_dir = outdir or _LAST_OUTDIR
+        if not target_dir:
+            return {"ok": False, "error": "请先指定输出目录（本次提取的输出路径）"}
+        with _VIDEO_LOCK:
+            current = _VIDEO_JOB
+            if current is not None and current.running:
+                return {"ok": False, "error": "已有视频提取任务在运行"}
+            job = Job(list(inputs), target_dir)
+            job.state = "running"
+            _VIDEO_JOB = job
+        timeout = video_transcribe.DEFAULT_TIMEOUT
+        stop = start_job_watchdog(job, timeout + 10.0)
+        result: dict = {}
+        try:
+            result = video_transcribe.transcribe(
+                inputs, target_dir, job=job, refresh=True, timeout=timeout,
+                model=model or video_transcribe.DEFAULT_MODEL)
+        except Exception as exc:  # 兜底：绝不把异常伪装成成功
+            _log_error("API:/api/video/transcribe", "视频提取任务异常", exc,
+                       request=target_dir)
+            result = {"ok": False, "error": "视频提取异常：%s" % exc,
+                      "results": [], "success": 0, "failed": 0, "total": 0}
+        finally:
+            if stop is not None:
+                stop.set()
+            with _VIDEO_LOCK:
+                job.running = False
+                job.state = ("cancelled" if (job.cancelled or job.timed_out)
+                             else ("done" if result.get("ok") else "failed"))
+                job.summary = result
+                job.error = result.get("error") or ""
+        if result.get("ok"):
+            _append_log("[INFO] 视频提取完成：成功 %d / 共 %d，产物区 %s"
+                        % (result.get("success", 0), result.get("total", 0),
+                           result.get("derived_dir", "")))
+        else:
+            _append_log("[WARN] 视频提取未产出文件：%s"
+                        % result.get("error", "逐条原因见 results"))
+        if not result.get("frozen_unchanged", True):
+            _log_error("API:/api/video/transcribe",
+                       "新能力污染了阶段 1 冻结对账盘",
+                       RuntimeError("frozen_unchanged=False"),
+                       request=target_dir)
+        return result
+
+    def _api_video_cancel(self) -> dict:
+        """取消提取：状态收敛到 cancelled，并终止 ffmpeg / whisper 进程树。"""
+        with _VIDEO_LOCK:
+            job = _VIDEO_JOB
+        if job is None or not job.running:
+            return {"ok": False, "error": "当前无视频提取任务"}
+        job.cancelled = True
+        job.terminate_children()
+        job.add("log", "用户取消视频提取，已终止外部工具进程")
+        return {"ok": True}
+
+    def _api_video_status(self, since: int) -> dict:
+        """S4 提取进度：与 /api/progress、/api/audio/status 完全隔离。"""
+        with _VIDEO_LOCK:
+            job = _VIDEO_JOB
+        if job is None:
+            return {"events": [], "next": since, "running": False,
+                    "summary": None, "state": "idle", "error": None,
+                    "total": 0, "current": 0, "current_name": ""}
+        with job.lock:
+            events = [dict(ev) for ev in job.events if ev["i"] > since]
+            return {
+                "events": events,
+                "next": events[-1]["i"] if events else since,
+                "running": job.running,
+                "summary": job.summary,
+                "state": job.state,
+                "error": job.error,
+                "total": job.total,
+                "current": job.current,
+                "current_name": job.current_name,
+            }
+
 
 # --------------------------------------------------------------------------- #
 # 启动器
@@ -2857,6 +2976,12 @@ def main(argv: list[str] | None = None) -> int:
     _sweep_run_dirs()  # 清掉上次异常退出遗留的本 pid 编码副本目录
     try:
         _n = _sweep_orphan_dirs()  # 再清已死进程遗留的孤儿目录（硬杀场景）
+        try:
+            # S4 临时目录孤儿清扫：只认 jinghe-run-video-* 前缀，
+            # 绝不碰阶段 1 或 S3 的临时目录。
+            video_transcribe.sweep_orphan_temps()
+        except Exception:
+            pass
         if _n:
             _append_log("启动清理：移除 %d 个已退出进程遗留的编码副本目录" % _n)
     except Exception as exc:

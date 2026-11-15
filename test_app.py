@@ -2710,6 +2710,377 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("audio_transcribe.py", gate)
         self.assertIn("'audio_transcribe'", spec)
 
+    # ------------------------------------------------------------------ #
+    # S4 公共夹具：本机工具的「假探测结果」与 mock 视频后端
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _s4_outdir(root: Path, name: str) -> Path:
+        out = root / name
+        (out / "md").mkdir(parents=True)
+        (out / "md" / "a.md").write_text("# a\n", encoding="utf-8")
+        (out / "INDEX.md").write_text("idx\n", encoding="utf-8")
+        (out / "MERGED.md").write_text("merged\n", encoding="utf-8")
+        return out
+
+    @staticmethod
+    def _s4_fake_cap(*, enabled=True, with_ffprobe=False) -> dict:
+        return {
+            "name": "video_transcribe", "enabled": enabled,
+            "capability": "available" if enabled else "unavailable",
+            "tools": {
+                "whisper": {"available": enabled, "path": "whisper",
+                            "version": "1.2.3", "reason": "可用"},
+                "ffmpeg": {"available": enabled, "path": "ffmpeg",
+                           "version": "7.0.2", "reason": "可用"},
+                "ffprobe": {"available": with_ffprobe, "path": "ffprobe",
+                            "version": "7.0.2" if with_ffprobe else "",
+                            "reason": "可用" if with_ffprobe else "未安装"},
+            },
+            "missing": [] if enabled else ["whisper", "ffmpeg"],
+            "reason": ("可用" if enabled else
+                       "未启用：本机未找到 whisper / ffmpeg，请安装后重试"),
+        }
+
+    @staticmethod
+    def _s4_runner(*, probe=None, srt=None, segments=None,
+                   ffprobe_json=None, whisper_rc=0) -> object:
+        """模拟 ffmpeg / ffprobe / whisper：把 json、srt 写进临时目录。"""
+        default_probe = (
+            "  Duration: 00:00:20.50, start: 0.000000\n"
+            "    Stream #0:0: Video: h264 (High), yuv420p, 1920x1080, 25 fps\n"
+            "    Stream #0:1: Audio: aac (LC), 48000 Hz, stereo, fltp\n")
+        default_segs = {"text": "视频语音", "language": "zh", "segments": [
+            {"start": 0, "end": 8.24, "text": " 第一段中文语音 "},
+            {"start": 8.24, "end": 15.5, "text": "第二段 & <标签>"},
+            {"start": 16, "end": 15, "text": "非法段应丢弃"}]}
+        p_text = default_probe if probe is None else probe
+        segs = default_segs if segments is None else segments
+
+        def runner(argv):
+            a = list(map(str, argv))
+            if "-show_streams" in a:
+                if ffprobe_json is None:
+                    return {"returncode": 1, "stdout": "", "stderr": "no ffprobe"}
+                return {"returncode": 0,
+                        "stdout": json.dumps(ffprobe_json, ensure_ascii=False),
+                        "stderr": ""}
+            if "-c:s" in a:
+                if srt is None:
+                    return {"returncode": 1, "stdout": "", "stderr": "no subtitle"}
+                Path(a[-1]).write_text(srt, encoding="utf-8")
+                return {"returncode": 0, "stdout": "", "stderr": ""}
+            if "-c:a" in a:
+                return {"returncode": 0, "stdout": "", "stderr": ""}
+            if "--output_dir" in a:
+                outd = Path(a[a.index("--output_dir") + 1])
+                (outd / (Path(a[1]).stem + ".json")).write_text(
+                    json.dumps(segs, ensure_ascii=False), encoding="utf-8")
+                return {"returncode": whisper_rc, "stdout": "",
+                        "stderr": "工具报错" if whisper_rc else ""}
+            return {"returncode": 1, "stdout": "", "stderr": p_text}
+        return runner
+
+    # ------------------------------------------------------------------ #
+    # 41) S4：独立 video handler / 三区块 / 伪内容防护 / derived 隔离
+    # ------------------------------------------------------------------ #
+    def test_41_s4_video_handler_contract(self):
+        sys.path.insert(0, str(ROOT))
+        try:
+            import video_transcribe as vt
+            import audio_transcribe as at
+            import media_runtime as rt
+            import format_registry as reg
+        finally:
+            sys.path.remove(str(ROOT))
+        from unittest import mock
+
+        frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
+        self.assertIn("def test_06_deferred_media", frozen_tests)
+        self.assertIn("def test_11_video_redline", frozen_tests)
+        v_src = (ROOT / "video_transcribe.py").read_text(encoding="utf-8")
+        a_src = (ROOT / "audio_transcribe.py").read_text(encoding="utf-8")
+        self.assertNotIn("import audio_transcribe", v_src,
+                         "S4 绝不复用音频转写路径（红线 2）")
+        self.assertNotIn("import extract", v_src)
+        self.assertNotIn("video_transcribe", a_src,
+                         "双向红线：音频 handler 不得反向依赖视频 handler")
+        self.assertIn("format_registry.MEDIA_VIDEO", v_src)
+        self.assertEqual(reg.media_kind(".mp4"), "video")
+        self.assertEqual(reg.media_kind(".mp3"), "audio")
+
+        # 时间戳 / SRT / 分段解析
+        self.assertEqual(vt.format_timestamp(8.24), "00:00:08.240")
+        self.assertEqual(vt.format_timestamp(float("nan")), "00:00:00.000")
+        subs = vt.parse_srt("1\n00:00:00,000 --> 00:00:02,500\n第一条<i>字幕</i>\n\n"
+                            "2\n00:00:03,000 --> 00:00:05,240\n第二条\n")
+        self.assertEqual(len(subs), 2)
+        self.assertEqual(subs[1]["start"], 3.0)
+        segs, meta = vt.parse_segments({"segments": [
+            {"start": 0, "end": 2, "text": "好"},
+            {"start": 5, "end": 4, "text": "非法"}]})
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(meta["skipped"], 1)
+
+        video = self.tmp / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42 fake video")
+        audio = self.tmp / "voice.mp3"
+        audio.write_bytes(b"ID3 fake audio")
+        # 双向红线：视频拒收音频、音频拒收视频，分类先于存在性判断
+        vi = vt.inspect([str(audio)])
+        self.assertEqual(vi["items"][0]["status"], vt.STATUS_UNSUPPORTED)
+        self.assertIn("S3", vi["items"][0]["error"])
+        ai = at.inspect([str(video)])
+        self.assertEqual(ai["items"][0]["status"], at.STATUS_UNSUPPORTED)
+        self.assertIn("S4", ai["items"][0]["error"])
+
+        # 缺工具：诚实「未启用」，零 md、连 derived/ 都不创建
+        out0 = self.tmp / "out_unavailable"
+        out0.mkdir()
+        with mock.patch.object(vt, "capability",
+                               return_value=self._s4_fake_cap(enabled=False)):
+            un = vt.transcribe([str(video)], str(out0))
+        self.assertIs(un["ok"], False)
+        self.assertEqual(un["capability"], "unavailable")
+        self.assertIn("未启用", un["error"])
+        self.assertFalse((out0 / "derived").exists())
+
+        cap = self._s4_fake_cap()
+        srt_text = ("1\n00:00:00,000 --> 00:00:02,500\n真实字幕第一条\n\n"
+                    "2\n00:00:03,000 --> 00:00:05,240\n真实字幕第二条\n")
+        probe_sub = (
+            "  Duration: 00:00:20.50, start: 0.000000\n"
+            "    Stream #0:0: Video: h264, 1920x1080, 25 fps\n"
+            "    Stream #0:1: Audio: aac, 48000 Hz\n"
+            "    Stream #0:2: Subtitle: mov_text\n")
+
+        # ① 音轨 + 字幕轨：三区块齐备 / 8 字段 src / time 锚点 / 冻结盘隔离
+        outdir = self._s4_outdir(self.tmp, "out_full")
+        before = rt.frozen_snapshot(outdir)
+        runner = self._s4_runner(probe=probe_sub, srt=srt_text)
+        with mock.patch.object(vt, "capability", return_value=cap):
+            res = vt.transcribe([str(video)], str(outdir), runner=runner)
+        self.assertIs(res["ok"], True, res)
+        self.assertEqual(res["results"][0]["segments"], 2)
+        self.assertEqual(res["results"][0]["subtitles"], 2)
+        self.assertEqual(res["results"][0]["sections"], 3)
+        self.assertIs(res["frozen_unchanged"], True)
+        self.assertTrue(rt.frozen_unchanged(before, outdir))
+        self.assertEqual(Path(res["path"]).parent.name, rt.DERIVED_DIRNAME)
+        md = Path(res["path"]).read_text(encoding="utf-8")
+        for key in ("src:", "path:", "format:", "converter:", "extracted:",
+                    "size:", "sha256: [0-9a-f]{64}", "anchors:"):
+            if "[0-9a-f]{64}" in key:
+                self.assertRegex(md, r"sha256: [0-9a-f]{64}")
+            else:
+                self.assertIn(key, md)
+        self.assertRegex(md, r"<!--\s*anchor:\s*doc_[0-9a-f]{12}\s*\|")
+        self.assertEqual([x for x in md.splitlines() if x.startswith("## ")],
+                         ["## 元数据", "## 音轨转写", "## 画面 / 字幕"])
+        self.assertIn("00:00:00.000-00:00:08.240", md)
+        self.assertIn("第一段中文语音", md)
+        self.assertIn("真实字幕第一条", md)
+        self.assertIn("whisper 1.2.3 + ffmpeg 7.0.2", md)
+        for bad in ("画面显示", "可以看到", "镜头中", "无语音说明文档"):
+            self.assertNotIn(bad, md, "伪画面描述 / 占位正文混入产物")
+        self.assertFalse(list((outdir / "derived").glob("*.part")))
+        self.assertEqual(sorted(p.name for p in outdir.glob("*.md")),
+                         ["INDEX.md", "MERGED.md"])
+        self.assertEqual((outdir / "MERGED.md").read_text(encoding="utf-8"),
+                         "merged\n")
+
+        # ② 无字幕轨：画面区块只写客观事实，不编造画面内容，仍靠真实分段出 md
+        out_nosub = self._s4_outdir(self.tmp, "out_nosub")
+        with mock.patch.object(vt, "capability", return_value=cap):
+            r2 = vt.transcribe([str(video)], str(out_nosub),
+                               runner=self._s4_runner())
+        self.assertIs(r2["ok"], True, r2)
+        md2 = Path(r2["path"]).read_text(encoding="utf-8")
+        self.assertIn("未检测到内嵌字幕轨", md2)
+        self.assertIn("不生成画面语义描述", md2)
+        self.assertNotIn("真实字幕第一条", md2)
+        self.assertEqual(r2["results"][0]["subtitles"], 0)
+
+        # ③ 无音轨但有字幕：音轨区块留客观状态，字幕是真实内容 → 允许出 md
+        out_noaudio = self._s4_outdir(self.tmp, "out_noaudio")
+        probe_noaudio = ("  Duration: 00:00:20.50\n"
+                         "    Stream #0:0: Video: h264, 1920x1080, 25 fps\n"
+                         "    Stream #0:1: Subtitle: mov_text\n")
+        with mock.patch.object(vt, "capability", return_value=cap):
+            r3 = vt.transcribe([str(video)], str(out_noaudio),
+                               runner=self._s4_runner(probe=probe_noaudio,
+                                                      srt=srt_text))
+        self.assertIs(r3["ok"], True, r3)
+        md3 = Path(r3["path"]).read_text(encoding="utf-8")
+        self.assertIn("未获得可用的带时间戳语音分段", md3)
+        self.assertIn("真实字幕第一条", md3)
+        self.assertIs(r3["results"][0]["has_audio"], False)
+
+        # ④ 伪内容防护：空分段 + 无字幕 → 零 md，provenance 留失败痕
+        out_empty = self._s4_outdir(self.tmp, "out_empty")
+        empty = {"text": "", "language": "zh", "segments": []}
+        with mock.patch.object(vt, "capability", return_value=cap):
+            r4 = vt.transcribe([str(video)], str(out_empty),
+                               runner=self._s4_runner(segments=empty))
+        self.assertIs(r4["ok"], False)
+        self.assertEqual(r4["results"][0]["status"], vt.STATUS_NO_CONTENT)
+        self.assertIn("拒绝写占位", r4["results"][0]["error"])
+        self.assertEqual(list((out_empty / "derived").glob("*.md")), [])
+        prov = rt.read_provenance(out_empty)
+        self.assertTrue(any(e.get("capability") == "video_transcribe"
+                            for e in prov.get("entries", [])))
+
+        # ⑤ 元数据门禁：解析不出视频流 → 零 md（不写空壳三区块）
+        out_nostream = self._s4_outdir(self.tmp, "out_nostream")
+        with mock.patch.object(vt, "capability", return_value=cap):
+            r5 = vt.transcribe([str(video)], str(out_nostream),
+                               runner=self._s4_runner(probe="no stream info"))
+        self.assertIs(r5["ok"], False)
+        self.assertIn("视频流元数据", r5["results"][0]["error"])
+
+        # ⑥ ffprobe 可选增强（绝不进 media_tools.TOOL_SPECS / probe.tools）
+        out_ffprobe = self._s4_outdir(self.tmp, "out_ffprobe")
+        capf = self._s4_fake_cap(with_ffprobe=True)
+        fjson = {"streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1280,
+             "height": 720, "r_frame_rate": "30/1"},
+            {"codec_type": "audio", "codec_name": "aac"}],
+            "format": {"duration": "12.500000"}}
+        with mock.patch.object(vt, "capability", return_value=capf):
+            r6 = vt.transcribe([str(video)], str(out_ffprobe),
+                               runner=self._s4_runner(probe=probe_sub,
+                                                      srt=srt_text,
+                                                      ffprobe_json=fjson))
+        self.assertIs(r6["ok"], True, r6)
+        md6 = Path(r6["path"]).read_text(encoding="utf-8")
+        self.assertIn("ffprobe JSON", md6)
+        self.assertIn("1280 × 720", md6)
+        self.assertIn("ffprobe 7.0.2", md6)
+
+        # ⑦ provenance 读旧追加（历史条目不被覆盖）+ 取消 / 临时目录清理
+        out_hist = self._s4_outdir(self.tmp, "out_hist")
+        rt.write_provenance(out_hist, entries=[
+            {"capability": "word_export", "name": "old.md", "status": "成功"}])
+        with mock.patch.object(vt, "capability", return_value=cap):
+            r7 = vt.transcribe([str(video)], str(out_hist),
+                               runner=self._s4_runner(probe=probe_sub,
+                                                      srt=srt_text))
+        self.assertIs(r7["ok"], True, r7)
+        entries = rt.read_provenance(out_hist).get("entries", [])
+        self.assertIn("word_export", [e.get("capability") for e in entries])
+        self.assertIn("video_transcribe", [e.get("capability") for e in entries])
+        out_cancel = self._s4_outdir(self.tmp, "out_cancel")
+        with mock.patch.object(vt, "capability", return_value=cap):
+            r8 = vt.transcribe([str(video)], str(out_cancel),
+                               runner=self._s4_runner(),
+                               cancel_check=lambda: True)
+        self.assertIs(r8["ok"], False)
+        self.assertIs(r8["cancelled"], True)
+        self.assertEqual(list((out_cancel / "derived").glob("*.md")), [])
+        import tempfile
+        self.assertEqual(list(Path(tempfile.gettempdir()).glob(
+            "jinghe-run-video-*")), [], "临时目录三链未收干净")
+
+    # ------------------------------------------------------------------ #
+    # 42) S4：HTTP 端点 / probe 顶层字段 / UI 接线 / 冻结断言零回归
+    # ------------------------------------------------------------------ #
+    def test_42_s4_video_http_and_ui(self):
+        srv = self.start()
+
+        # ① probe 顶层增量字段；S1 占位清单与三工具结构原样
+        status, probe = srv.get_json("/api/tools/probe")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(probe["tools"]), {"ffmpeg", "whisper", "yt-dlp"},
+                         "ffprobe 只能待在 video_transcribe.tools，绝不进 TOOL_SPECS")
+        self.assertIn("video_transcribe", probe)
+        self.assertIs(probe["video_transcribe"]["enabled"], False)
+        self.assertEqual(probe["video_transcribe"]["capability"], "unavailable")
+        self.assertIn("ffprobe", probe["video_transcribe"]["tools"])
+        self.assertIs(probe["capabilities"]["media_transcribe"]["enabled"], False)
+        self.assertIs(probe["capabilities"]["word_export"]["enabled"], False)
+        self.assertIs(probe["word_export"]["enabled"], True)
+        self.assertIs(probe["audio_transcribe"]["enabled"], False)
+
+        status, st = srv.get_json("/api/video/status?since=0")
+        self.assertEqual(status, 200)
+        self.assertEqual(st["state"], "idle")
+        self.assertEqual(st["events"], [])
+
+        outdir = self._s4_outdir(self.tmp, "out_http")
+        video = self.tmp / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        audio = self.tmp / "voice.mp3"
+        audio.write_bytes(b"ID3 fake audio")
+
+        # ② 只读预检：音频逐条拒收，零副作用
+        status, ins = srv.post_json(
+            "/api/video/inspect", {"inputs": [str(video), str(audio)]})
+        self.assertEqual(status, 200)
+        by_name = {i["name"]: i for i in ins["items"]}
+        self.assertEqual(by_name["voice.mp3"]["status"], "不支持")
+        self.assertIn("S3", by_name["voice.mp3"]["error"])
+        self.assertFalse((outdir / "derived").exists())
+
+        # ③ 缺工具诚实降级：零 md、零 derived
+        status, res = srv.post_json(
+            "/api/video/transcribe",
+            {"inputs": [str(video)], "outdir": str(outdir)})
+        self.assertEqual(status, 200, res)
+        self.assertIs(res["ok"], False)
+        self.assertEqual(res["capability"], "unavailable")
+        self.assertIn("未启用", res["error"])
+        self.assertFalse((outdir / "derived").exists())
+        self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
+
+        # ④ 音频走视频端点仍显式拒收（不因缺工具被笼统盖掉）
+        status, ar = srv.post_json(
+            "/api/video/transcribe",
+            {"inputs": [str(audio)], "outdir": str(outdir)})
+        self.assertEqual(status, 200)
+        self.assertIs(ar["ok"], False)
+        self.assertEqual(ar["results"][0]["status"], "不支持")
+        self.assertFalse((outdir / "derived").exists())
+
+        # ⑤ 状态收敛 / 取消无任务 / 未知端点
+        status, st = srv.get_json("/api/video/status?since=0")
+        self.assertEqual(status, 200)
+        self.assertIn(st["state"], ("done", "failed", "cancelled"))
+        self.assertIs(st["running"], False)
+        status, cancel = srv.post_json("/api/video/cancel", {})
+        self.assertEqual(status, 200)
+        self.assertIs(cancel["ok"], False)
+        status, unknown = srv.post_json("/api/video/nope", {})
+        self.assertEqual(status, 404)
+        self.assertIs(unknown["ok"], False)
+
+        # ⑥ UI / 后端接线 / 打包清单；S1 空心位与冻结断言原样保留
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        spec = (ROOT / "build.spec").read_text(encoding="utf-8")
+        contract = (ROOT / "docs" / "CAPABILITY_CONTRACT.md").read_text(
+            encoding="utf-8")
+        self.assertIn('id="btnVideoTranscribe"', html)
+        self.assertIn('id="btnVideoCancel"', html)
+        for needle in ("/api/video/transcribe", "/api/video/status",
+                       "/api/video/cancel", "doVideoTranscribe",
+                       "video_transcribe", "hasVideoInput", "VIDEO_EXT_RE"):
+            self.assertIn(needle, js)
+        for needle in ('path == "/api/video/transcribe"',
+                       'path == "/api/video/status"',
+                       'data["video_transcribe"]', "_VIDEO_JOB",
+                       "import video_transcribe"):
+            self.assertIn(needle, app_src)
+        self.assertIn("video_transcribe.py", gate)
+        self.assertIn("'video_transcribe'", spec)
+        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
+                      "S1 的音视频诚实降级判定被改写")
+        self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
+                      "S1 空心占位被提前填充或改写")
+        self.assertIn("v0.6", contract)
+        self.assertIn("留给 S5", contract,
+                      "契约须订正：/api/media/run 不再留给 S4")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
