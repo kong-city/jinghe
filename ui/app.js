@@ -48,6 +48,7 @@
     btnSummarize: $("btnSummarize"),
     btnExportDocx: $("btnExportDocx"),
     btnTranscribe: $("btnTranscribe"),
+    btnWordEnhance: $("btnWordEnhance"),
     btnKnowledgeBase: $("btnKnowledgeBase"),
     toolStatus: $("toolStatus"),
     // 左侧导航与页面
@@ -999,9 +1000,15 @@
     var cap = (toolState && toolState.capabilities &&
                toolState.capabilities.media_transcribe) || {};
     var why = cap.reason || "本机工具状态未知";
+    var wi = (toolState && toolState.word_input) || {};
+    var legacy = wi.legacy_doc || {};
     el.toolStatus.textContent = "本机工具：" + parts.join(" · ") +
       "；音视频转写：" +
-      (capabilityEnabled("media_transcribe") ? "已启用" : "未启用（" + why + "）");
+      (capabilityEnabled("media_transcribe") ? "已启用" : "未启用（" + why + "）") +
+      "；Word 输入增强：" +
+      (wi.enabled ? "已启用（.docx）" : "未启用") +
+      "，.doc 旧格式：" +
+      (legacy.enabled ? "可用（LibreOffice " + (legacy.tool && legacy.tool.version || "") + "）" : "未启用");
     el.toolStatus.hidden = false;
   }
 
@@ -1018,6 +1025,19 @@
     });
   }
 
+  // S2a：只要选择了 Word 文件就能用；没跑提取也可以（产物落独立 derived 区）。
+  function hasWordInput() {
+    var list = currentInputs();
+    if (!list.length) {
+      var v = (el.inputPath && el.inputPath.value || "").trim();
+      if (v) list = [v];
+    }
+    for (var i = 0; i < list.length; i += 1) {
+      if (/\.(docx|doc)$/i.test(list[i])) return true;
+    }
+    return false;
+  }
+
   // 仅在「本次运行成功且有产物目录」时点亮后处理按钮；运行/预览中不点亮。
   function updateFeatureButtons() {
     var on = !!lastDoneOutdir && !running && !previewing;
@@ -1026,6 +1046,11 @@
     el.btnExportDocx.disabled = true;  // 导出 Word 为后续计划，恒禁用
     el.btnTranscribe.disabled = !on || !mediaOn;
     el.btnTranscribe.textContent = mediaOn ? "音视频转写" : "音视频转写（未启用）";
+    var wi = (toolState && toolState.word_input) || {};
+    var wordOn = !!wi.enabled;
+    el.btnWordEnhance.disabled = !(!running && !previewing && wordOn &&
+                                   (hasWordInput() || on));
+    el.btnWordEnhance.textContent = wordOn ? "Word 输入增强" : "Word 输入增强（未启用）";
   }
 
   // 统一的后端动作：调用 /api/*，成功给带时间戳的常驻文案，失败显式报错。
@@ -1064,6 +1089,43 @@
     }
     if (!inputs.length) { showError("请先选择音视频文件"); return; }
     callFeature("/api/transcribe", { inputs: inputs }, el.btnTranscribe, "转写中…");
+  }
+
+  // S2a：逐条回显成功 / 失败原因，绝不把「部分成功」说成「全部完成」。
+  function doWordEnhance() {
+    var inputs = currentInputs();
+    if (!inputs.length) {
+      var v = el.inputPath.value.trim();
+      if (v) inputs = [v];
+    }
+    inputs = inputs.filter(function (p) { return /\.(docx|doc)$/i.test(p); });
+    if (!inputs.length) { showError("请先选择 .docx / .doc 文件"); return; }
+    var outdir = (summary && summary.outdir) || lastDoneOutdir ||
+                 el.outPath.value.trim();
+    if (!outdir) { showError("请先指定输出目录"); return; }
+    if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
+    var btn = el.btnWordEnhance;
+    var old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "解析中…";
+    clearBar();
+    api("/api/word/enhance", { inputs: inputs, outdir: outdir }, 120000)
+      .then(function (r) {
+        if (!r.ok) {
+          var detail = (r.results || []).filter(function (x) { return !x.ok; })
+            .map(function (x) { return x.name + "：" + x.error; }).join("；");
+          throw new Error((r.error || "Word 输入增强失败") +
+                          (detail ? "（" + detail + "）" : ""));
+        }
+        var msg = "已生成 " + r.success + " 份增强 .md：" + r.derived_dir;
+        if (r.failed) msg += "；另有 " + r.failed + " 项未处理（见产物清单）";
+        showNotice(msg + " · " + nowHMS());
+      }).catch(function (err) {
+        showError(err.message || String(err));
+      }).finally(function () {
+        btn.textContent = old;
+        updateFeatureButtons();
+      });
   }
 
   /* ------------------------------ Tabs ------------------------------ */
@@ -1110,6 +1172,7 @@
       showNotice("导出 Word 为后续计划（阶段 2 二期），当前输出格式为 Markdown（MERGED.md）。");
     });
     el.btnTranscribe.addEventListener("click", doTranscribe);
+    el.btnWordEnhance.addEventListener("click", doWordEnhance);
     el.btnKnowledgeBase.addEventListener("click", function () {
       showNotice("阶段 4 知识库 / 自动化规划中，敬请期待。");
     });

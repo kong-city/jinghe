@@ -1920,6 +1920,241 @@ class AppContractTest(unittest.TestCase):
                       (ROOT / "app.py").read_text(encoding="utf-8"),
                       "取消链路未终止外部工具子进程")
 
+    # ------------------------------------------------------------------ #
+    # S2a 公共夹具：用标准库现场造一个真实 OOXML 包，绝不依赖 samples/
+    # ------------------------------------------------------------------ #
+    def _s2a_make_docx(self, path: Path, *, with_body=True,
+                       with_comments=True, with_revisions=True) -> Path:
+        import zipfile
+        ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        paras = []
+        if with_body:
+            paras.append('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
+                         '<w:r><w:t>验收标题</w:t></w:r></w:p>')
+            paras.append('<w:p><w:commentRangeStart w:id="1"/>'
+                         '<w:r><w:t>正文第一段</w:t></w:r>'
+                         '<w:commentRangeEnd w:id="1"/>'
+                         '<w:r><w:commentReference w:id="1"/></w:r></w:p>')
+        if with_revisions:
+            paras.append('<w:p><w:ins w:author="张三" w:date="2026-11-15T10:00:00Z">'
+                         '<w:r><w:t>新增文字</w:t></w:r></w:ins>'
+                         '<w:del w:author="李四"><w:r><w:delText>删除文字'
+                         '</w:delText></w:r></w:del></w:p>')
+        doc = ('<w:document xmlns:w="%s"><w:body>%s</w:body></w:document>'
+               % (ns, "".join(paras)))
+        comments = ('<w:comments xmlns:w="%s"><w:comment w:id="1" w:author="王五" '
+                    'w:date="2026-11-15T11:00:00Z"><w:p><w:r><w:t>这是一条批注'
+                    '</w:t></w:r></w:p></w:comment></w:comments>' % ns)
+        with zipfile.ZipFile(str(path), "w") as zf:
+            zf.writestr("[Content_Types].xml", "<Types/>")
+            zf.writestr("word/document.xml", doc)
+            if with_comments:
+                zf.writestr("word/comments.xml", comments)
+        return path
+
+    # ------------------------------------------------------------------ #
+    # 35) S2a：Word 输入增强的解析 / 产物 / 诚实降级契约
+    # ------------------------------------------------------------------ #
+    def test_35_s2a_word_input_contract(self):
+        sys.path.insert(0, str(ROOT))
+        try:
+            import format_registry as reg
+            import media_runtime as rt
+            import word_input as wi
+        finally:
+            sys.path.remove(str(ROOT))
+        from unittest import mock
+
+        # ① 注册表是 S2a 支持格式的唯一写者；冻结内核测试原样保留
+        self.assertEqual(reg.WORD_INPUT_EXTS, {".doc", ".docx"})
+        self.assertIs(reg.is_word_input(".docx"), True)
+        self.assertIs(reg.is_word_input(".xlsx"), False)
+        self.assertEqual(reg.word_kind(".doc"), "legacy")
+        self.assertEqual(reg.word_kind(".docx"), "ooxml")
+        self.assertIn("import extract", (ROOT / "format_registry.py").read_text(
+            encoding="utf-8"))
+        self.assertNotIn("import extract", (ROOT / "word_input.py").read_text(
+            encoding="utf-8"), "S2a 不得回写 / 依赖冻结内核的解析流水线")
+        frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
+        self.assertIn("def test_06_deferred_media", frozen_tests)
+        self.assertIn("def test_11_video_redline", frozen_tests)
+
+        # ② OOXML 增量：批注（含锚定段落）/ 插入 / 删除 / 表格
+        src = self._s2a_make_docx(self.tmp / "sample.docx")
+        parsed = wi.parse_ooxml(src)
+        self.assertEqual(len(parsed["blocks"]), 3)
+        self.assertEqual(len(parsed["comments"]), 1)
+        self.assertEqual(parsed["comments"][0]["author"], "王五")
+        self.assertEqual(parsed["comments"][0]["paragraph"], 2)
+        self.assertEqual(parsed["revisions"]["insertions"][0]["text"], "新增文字")
+        self.assertEqual(parsed["revisions"]["deletions"][0]["text"], "删除文字")
+        self.assertEqual(parsed["revisions"]["total"], 2)
+
+        # ③ 产物：8 字段 src 注释 + 块级锚点 + 三区块，且冻结对账盘零污染
+        outdir = self.tmp / "out"
+        (outdir / "md").mkdir(parents=True)
+        (outdir / "md" / "a.md").write_text("# a\n", encoding="utf-8")
+        (outdir / "INDEX.md").write_text("idx\n", encoding="utf-8")
+        (outdir / "MERGED.md").write_text("merged\n", encoding="utf-8")
+        before = rt.frozen_snapshot(outdir)
+        res = wi.enhance([str(src)], str(outdir))
+        self.assertIs(res["ok"], True, res)
+        self.assertEqual(res["success"], 1)
+        self.assertEqual(res["failed"], 0)
+        self.assertIs(res["frozen_unchanged"], True)
+        self.assertTrue(rt.frozen_unchanged(before, outdir),
+                        "S2a 污染了阶段 1 的 md/ 对账盘")
+        md_path = Path(res["path"])
+        self.assertEqual(md_path.parent.name, rt.DERIVED_DIRNAME)
+        md = md_path.read_text(encoding="utf-8")
+        for key in ("src:", "path:", "format:", "converter:", "extracted:",
+                    "size:", "sha256:", "anchors:"):
+            self.assertIn(key, md, "S2a 产物缺少 8 字段中的 %s" % key)
+        self.assertIsNotNone(re.search(r"sha256: [0-9a-f]{64}", md))
+        self.assertRegex(md, r"<!--\s*anchor:\s*doc_[0-9a-f]{12}\s*\|")
+        for section in ("## 文档信息", "## 正文", "## 批注", "## 修订"):
+            self.assertIn(section, md)
+        self.assertIn("这是一条批注", md)
+        self.assertIn("新增文字", md)
+        self.assertIn("删除文字", md)
+        prov = rt.read_provenance(outdir)
+        self.assertEqual(len(prov["entries"]), 1)
+        self.assertEqual(prov["entries"][0]["status"], "成功")
+
+        # ④ 加密：只做正向证据识别，单列「待人工授权」，绝不破译 / 绝不产 md
+        secret = self.tmp / "secret.doc"
+        secret.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 512
+                           + "EncryptedPackage".encode("utf-16-le")
+                           + b"\x00" * 128)
+        ins = wi.inspect([str(secret)])
+        self.assertEqual(ins["items"][0]["status"], wi.STATUS_NEEDS_AUTH)
+        self.assertIn("待人工授权", ins["items"][0]["error"])
+        enc = wi.enhance([str(secret)], str(outdir))
+        self.assertIs(enc["ok"], False)
+        self.assertEqual(enc["success"], 0)
+        self.assertEqual(enc["results"][0]["status"], wi.STATUS_NEEDS_AUTH)
+        self.assertEqual(len(list((outdir / "derived").glob("*.md"))), 1,
+                         "加密文件竟产出了 md")
+
+        # ⑤ 损坏容器 = 失败（不是加密）；空文档拒绝写空 md
+        broken = self.tmp / "broken.docx"
+        broken.write_bytes(b"PK\x03\x04" + b"\x00" * 64)
+        self.assertEqual(wi.inspect([str(broken)])["items"][0]["status"],
+                         wi.STATUS_FAILED)
+        empty = self._s2a_make_docx(
+            self.tmp / "empty.docx",
+            with_body=False, with_comments=False, with_revisions=False)
+        empty_res = wi.enhance([str(empty)], str(outdir))
+        self.assertIs(empty_res["ok"], False)
+        self.assertIn("拒绝写空 md", empty_res["results"][0]["error"])
+
+        # ⑥ .doc 旧格式缺工具：诚实「未启用」，零 md 产出（不依赖本机是否装 LO）
+        legacy = self.tmp / "legacy.doc"
+        legacy.write_bytes(b"fake legacy word binary")
+        fake_tool = {"available": False, "path": "", "version": "",
+                     "reason": "本机未找到 soffice", "name": "soffice"}
+        with mock.patch.object(wi, "probe_soffice", return_value=fake_tool):
+            cap = wi.capability()
+            self.assertIs(cap["ooxml"]["enabled"], True)
+            self.assertIs(cap["legacy_doc"]["enabled"], False)
+            self.assertIs(cap["encryption"]["enabled"], False,
+                          "加密能力不得被标记为已启用")
+            legacy_res = wi.enhance([str(legacy)], str(outdir))
+        self.assertIs(legacy_res["ok"], False)
+        self.assertEqual(legacy_res["results"][0]["status"], wi.STATUS_UNAVAILABLE)
+        self.assertIn("未启用", legacy_res["results"][0]["error"])
+        self.assertEqual(len(list((outdir / "derived").glob("*.md"))), 1,
+                         "缺工具时竟产出了 md")
+
+        # ⑦ 新模块纳入编译门禁与冻结打包清单
+        self.assertIn("word_input.py",
+                      (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8"))
+        self.assertIn("'word_input'",
+                      (ROOT / "build.spec").read_text(encoding="utf-8"))
+
+    # ------------------------------------------------------------------ #
+    # 36) S2a：HTTP 端点、能力状态与 UI 契约
+    # ------------------------------------------------------------------ #
+    def test_36_s2a_word_http_and_ui(self):
+        srv = self.start()
+
+        # ① 探测端点增量字段：不改写 S1 的 capabilities / tools 结构
+        status, probe = srv.get_json("/api/tools/probe")
+        self.assertEqual(status, 200)
+        self.assertIs(probe["ok"], True)
+        self.assertEqual(set(probe["tools"]), {"ffmpeg", "whisper", "yt-dlp"})
+        self.assertIs(probe["capabilities"]["media_transcribe"]["enabled"], False)
+        wi = probe["word_input"]
+        self.assertIs(wi["enabled"], True)
+        self.assertIs(wi["ooxml"]["enabled"], True)
+        self.assertIs(wi["encryption"]["enabled"], False)
+        self.assertIn("enabled", wi["legacy_doc"])
+
+        # ② 只读预检端点：不写任何文件
+        src = self._s2a_make_docx(self.tmp / "http.docx")
+        status, ins = srv.post_json("/api/word/inspect", {"inputs": [str(src)]})
+        self.assertEqual(status, 200, ins)
+        self.assertIs(ins["ok"], True)
+        self.assertEqual(ins["total"], 1)
+        self.assertEqual(ins["ready"], 1)
+        self.assertEqual(ins["items"][0]["comments"], 1)
+        self.assertEqual(ins["items"][0]["revisions"], 2)
+        self.assertFalse((self.tmp / "derived").exists(),
+                         "预检端点不应创建 derived 目录")
+
+        # ③ 增强端点：真实 HTTP 产出 derived 产物，冻结对账盘一动不动
+        outdir = self.tmp / "out"
+        (outdir / "md").mkdir(parents=True)
+        (outdir / "md" / "a.md").write_text("# a\n", encoding="utf-8")
+        (outdir / "MERGED.md").write_text("merged\n", encoding="utf-8")
+        status, res = srv.post_json(
+            "/api/word/enhance", {"inputs": [str(src)], "outdir": str(outdir)})
+        self.assertEqual(status, 200, res)
+        self.assertIs(res["ok"], True, res)
+        self.assertEqual(res["success"], 1)
+        self.assertIs(res["frozen_unchanged"], True)
+        produced = Path(res["path"])
+        self.assertTrue(produced.is_file())
+        self.assertEqual(produced.parent.name, "derived")
+        self.assertIn("## 批注", produced.read_text(encoding="utf-8"))
+        self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
+
+        # ④ 缺工具 / 加密 / 不支持后缀都走诚实回显，且未知端点仍是 404 JSON
+        legacy = self.tmp / "legacy.doc"
+        legacy.write_bytes(b"fake legacy word binary")
+        text = self.tmp / "note.txt"
+        text.write_text("hello\n", encoding="utf-8")
+        status, mixed = srv.post_json(
+            "/api/word/enhance",
+            {"inputs": [str(src), str(legacy), str(text)], "outdir": str(outdir)})
+        self.assertEqual(status, 200, mixed)
+        self.assertIs(mixed["ok"], True, mixed)
+        self.assertEqual(mixed["total"], 3)
+        self.assertGreaterEqual(mixed["failed"], 2)
+        statuses = {r["name"]: r["status"] for r in mixed["results"]}
+        self.assertEqual(statuses["note.txt"], "不支持")
+        self.assertIn(statuses["legacy.doc"], ("未启用", "失败"))
+        self.assertIn("warning", mixed, "部分成功必须显式提示，不能宣称全部完成")
+        status, unknown = srv.post_json("/api/word/nope", {})
+        self.assertEqual(status, 404)
+        self.assertIs(unknown["ok"], False)
+
+        # ⑤ UI 入口与降级文案；S1 的音视频判定行原样保留
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('id="btnWordEnhance"', html)
+        self.assertIn("/api/word/enhance", js)
+        self.assertIn("doWordEnhance", js)
+        self.assertIn("wi.enabled", js)
+        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
+                      "S1 的音视频诚实降级判定被改写")
+        self.assertIn('path == "/api/word/enhance"', app_src)
+        self.assertIn('path == "/api/word/inspect"', app_src)
+        self.assertIn("_api_transcribe", app_src)
+        self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
+                      "S3 空心占位被提前填充或改写")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

@@ -4,6 +4,30 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.4.4] - 2026-11-15
+
+**S2a · Word → .md 输入增强**（阶段 2 一期）。在 S1 地基之上交付第一个真正面向用户的新能力：对所选 `.docx` / `.doc` 生成带批注、修订与加密识别的独立增强 Markdown。按「逐阶段确认」，S2a 完成后停在闸门等确认，**不进入 S2b**（`.md` → `.docx` 导出）。
+
+### Added
+
+- `word_input.py`（新）：纯标准库 `zipfile` + `xml.etree.ElementTree` 的 OOXML 增量解析 —— `word/comments.xml` 批注（作者 / 时间 / 锚定段落）、`w:ins` / `w:del` / `w:move*` / `w:rPrChange` 修订明细、标题与表格正文。零第三方依赖，不 import 也不改写 `extract.py`。
+- `.doc` 旧格式的**本机可插拔预处理**：LibreOffice `soffice --headless --convert-to docx`，工具由本机提供，软件不下载 / 不打包 / 不自动安装；缺工具、探测失败、超时一律 `未启用` + 可读原因，**零 md 产出**。临时目录由父进程持有，`finally` + `atexit` + 启动过期孤儿清扫三链齐备。
+- 加密正向证据识别：OLE 容器含 `EncryptedPackage` / `EncryptionInfo`、ZIP 成员加密位、加密信息成员一律单列 `待人工授权`，**绝不破译、不询问口令、不盲重试**；普通 `.doc` 的 OLE 头不会被误判为加密。
+- 新增 `POST /api/word/inspect`（只读预检，不写任何文件）与 `POST /api/word/enhance`（写独立产物）。`GET /api/tools/probe` 新增顶层 `word_input` 能力字段，刻意不改写 S1 的 `capabilities` / `tools` 结构。
+- 产物落 `out/derived/<doc_id>.md` + `provenance_media.json`：8 字段 `src` 来源注释、块级锚点、文档信息 / 正文 / 批注 / 修订四区块；`.part` 原子替换；失败项不落空文件、只在 results 与 provenance 留痕；部分成功显式回 `warning`。
+- UI：「后处理 · 阶段 2/3」新增「Word 输入增强」按钮，选中 Word 文件即可用；`本机工具` 状态行追加 `.docx` / `.doc` 可用性与原因。
+- 新增 `test_35_s2a_word_input_contract` / `test_36_s2a_word_http_and_ui` 两个契约用例；测试基线 62 → **64**。
+
+### Changed
+
+- `format_registry.py` 新增 `WORD_INPUT_EXTS` / `is_word_input()` / `word_kind()`，注册表仍是新能力支持格式的唯一写者。
+- `build.spec` 的 `hiddenimports` 与 `tools/check_release.py` 的编译列表纳入 `word_input.py`。
+- 契约升级 **v0.3**，新增 `docs/S2a-Word输入增强验收.md`。
+
+### 不变
+
+- `SPEC.md` 一字未改；`extract.py` 阶段 1 探测 / 分流 / 提取 / 汇总 / 对账主流水线零改动；`test_06` / `test_11` 原样保留；`/api/transcribe` 的诚实拒绝空心位原样保留；阶段 1 冻结对账盘（`out/md/`、`INDEX.md`、`MERGED.md`）只读。
+
 ## [0.4.3] - 2026-11-15
 
 **S1 · 能力框架地基**（阶段 2/3 七阶段路线图第 1 阶段）。本版本**不含面向用户的新转换能力** —— 音视频转写仍是空心占位、绝不产出伪转写；S1 只把「以后每加一类格式就要在 7 个文件里手工对表」的地基浇好。按用户确认的「逐阶段推进」，S1 完成后停在闸门等确认。

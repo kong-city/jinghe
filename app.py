@@ -43,6 +43,7 @@ import extract  # 同目录模块：版本号唯一来源（冻结后由 PyInsta
 import format_registry
 import media_tools
 import media_runtime
+import word_input  # S2a：Word → .md 输入增强（独立后处理层，冻结内核零改动）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -1952,6 +1953,9 @@ class Handler(BaseHTTPRequestHandler):
             "provenance": media_runtime.PROVENANCE_NAME,
             "frozen_artifacts_untouched": list(media_runtime.FROZEN_ARTIFACTS),
         }
+        # S2a：Word 输入增强能力单独挂顶层字段，不改写 media_tools.capabilities()
+        # 的既有条目（S1 契约测试锁住了「全部未启用」与工具数量）。
+        data["word_input"] = word_input.capability(refresh=refresh)
         return data
 
     def _api_state(self) -> dict:
@@ -2058,6 +2062,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._api_summarize(str(data.get("outdir") or "").strip()))
             elif path == "/api/transcribe":
                 self._send_json(self._api_transcribe(_norm_inputs(data)))
+            elif path == "/api/word/inspect":
+                self._send_json(self._api_word_inspect(_norm_inputs(data)))
+            elif path == "/api/word/enhance":
+                self._send_json(self._api_word_enhance(
+                    _norm_inputs(data),
+                    str(data.get("outdir") or "").strip(),
+                ))
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态
@@ -2459,6 +2470,35 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": False, "error":
                 "阶段 3 音视频转写需专用转写器，当前零依赖运行环境未启用；"
                 "已识别 %d 个音视频文件，请在启用转写后端后重试。" % len(found)}
+
+    # ------------------- S2a · Word → .md 输入增强 ------------------- #
+    def _api_word_inspect(self, inputs: list[str]) -> dict:
+        """只读预检：不写任何文件、不创建目录，加密文档单列待人工授权。"""
+        result = word_input.inspect(inputs)
+        _append_log("[INFO] Word 输入增强预检：共 %d 个文件，可处理 %d 个"
+                    % (result["total"], result["ready"]))
+        return result
+
+    def _api_word_enhance(self, inputs: list[str], outdir: str) -> dict:
+        """生成独立 derived 产物；失败项不落空 md，冻结对账盘只读。"""
+        target_dir = outdir or _LAST_OUTDIR
+        if not target_dir:
+            return {"ok": False,
+                    "error": "请先指定输出目录（本次提取的输出路径）"}
+        result = word_input.enhance(inputs, target_dir)
+        if result.get("ok"):
+            _append_log("[INFO] Word 输入增强完成：成功 %d / 共 %d，产物区 %s"
+                        % (result["success"], result["total"],
+                           result["derived_dir"]))
+        else:
+            _append_log("[WARN] Word 输入增强未产出文件：%s"
+                        % result.get("error", "逐条原因见 results"))
+        if not result.get("frozen_unchanged", True):
+            _log_error("API:/api/word/enhance",
+                       "新能力污染了阶段 1 冻结对账盘",
+                       RuntimeError("frozen_unchanged=False"),
+                       request=target_dir)
+        return result
 
 
 # --------------------------------------------------------------------------- #

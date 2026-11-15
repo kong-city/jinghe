@@ -51,10 +51,28 @@ MEDIA_VIDEO = frozenset({
 })
 MEDIA_EXT = MEDIA_AUDIO | MEDIA_VIDEO
 
-# Word 输入增强（S2a）与导出（S2b）的候选后缀，S1 只登记、不实现。
+# Word 输入增强（S2a）与导出（S2b）的候选后缀。
+# S2a 实际只启用 Word 文档两兄弟：.docx（纯标准库 OOXML）与 .doc（本机工具预处理）；
+# 表格 / 演示后缀仍属「候选」，S2a 不做、遇到时诚实回「不支持」。
 WORD_INPUT_LEGACY = frozenset({".doc", ".xls", ".ppt"})
 WORD_INPUT_OOXML = frozenset({".docx", ".xlsx", ".pptx"})
+WORD_INPUT_EXTS = frozenset({".doc", ".docx"})
 WORD_EXPORT_SUFFIX = ".docx"
+
+
+def is_word_input(ext: str) -> bool:
+    """S2a Word 输入增强是否接受该后缀（新能力唯一写者口径）。"""
+    return str(ext or "").lower() in WORD_INPUT_EXTS
+
+
+def word_kind(ext: str) -> str:
+    """``legacy``（需本机预处理）/ ``ooxml``（纯标准库）/ 空串。"""
+    e = str(ext or "").lower()
+    if e == ".doc":
+        return "legacy"
+    if e == ".docx":
+        return "ooxml"
+    return ""
 
 
 def stage1_bucket(ext: str) -> str:

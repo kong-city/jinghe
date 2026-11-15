@@ -135,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     # ⑦ 关键 Python 文件语法可编译（不落 __pycache__）
     bad = []
     for rel in ("app.py", "extract.py", "test_app.py", "test_extract.py",
-                "format_registry.py", "media_tools.py", "media_runtime.py"):
+                "format_registry.py", "media_tools.py", "media_runtime.py",
+                "word_input.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:
