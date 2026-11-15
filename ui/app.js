@@ -49,6 +49,7 @@
     btnExportDocx: $("btnExportDocx"),
     btnTranscribe: $("btnTranscribe"),
     btnKnowledgeBase: $("btnKnowledgeBase"),
+    toolStatus: $("toolStatus"),
     // 左侧导航与页面
     appShell: $("appShell"),
     sidebar: $("sidebar"),
@@ -977,12 +978,54 @@
   }
 
   /* ------------------------------ 阶段 2 / 3 后处理 ------------------------------ */
+  // S1：工具健康探测结果。缺工具 / 能力未接入时，按钮必须诚实显示「未启用」。
+  var toolState = null;
+
+  function capabilityEnabled(name) {
+    return !!(toolState && toolState.capabilities &&
+              toolState.capabilities[name] &&
+              toolState.capabilities[name].enabled);
+  }
+
+  function renderToolStatus() {
+    if (!el.toolStatus) return;
+    var tools = (toolState && toolState.tools) || {};
+    var names = ["ffmpeg", "whisper", "yt-dlp"];
+    var parts = names.map(function (n) {
+      var t = tools[n] || {};
+      return n + " " + (t.available ? "可用" : "未启用") +
+             (t.version ? "（" + t.version + "）" : "");
+    });
+    var cap = (toolState && toolState.capabilities &&
+               toolState.capabilities.media_transcribe) || {};
+    var why = cap.reason || "本机工具状态未知";
+    el.toolStatus.textContent = "本机工具：" + parts.join(" · ") +
+      "；音视频转写：" +
+      (capabilityEnabled("media_transcribe") ? "已启用" : "未启用（" + why + "）");
+    el.toolStatus.hidden = false;
+  }
+
+  function loadTools() {
+    api("/api/tools/probe", undefined, 15000).then(function (r) {
+      toolState = (r && r.ok) ? r : null;
+      renderToolStatus();
+      updateFeatureButtons();
+    }).catch(function () {
+      // 探测失败也必须诚实：不能默认当成「可用」而点亮按钮。
+      toolState = null;
+      renderToolStatus();
+      updateFeatureButtons();
+    });
+  }
+
   // 仅在「本次运行成功且有产物目录」时点亮后处理按钮；运行/预览中不点亮。
   function updateFeatureButtons() {
     var on = !!lastDoneOutdir && !running && !previewing;
+    var mediaOn = capabilityEnabled("media_transcribe");
     el.btnSummarize.disabled = !on;
     el.btnExportDocx.disabled = true;  // 导出 Word 为后续计划，恒禁用
-    el.btnTranscribe.disabled = !on;
+    el.btnTranscribe.disabled = !on || !mediaOn;
+    el.btnTranscribe.textContent = mediaOn ? "音视频转写" : "音视频转写（未启用）";
   }
 
   // 统一的后端动作：调用 /api/*，成功给带时间戳的常驻文案，失败显式报错。
@@ -1245,6 +1288,9 @@
     }).catch(function (err) {
       showError("无法连接本地服务：" + (err.message || err));
     });
+
+    // S1：工具健康探测只在启动时跑一次，绝不挂到 400ms 轮询上。
+    loadTools();
   }
 
   if (document.readyState === "loading") {

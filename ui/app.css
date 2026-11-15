@@ -279,6 +279,18 @@ button, input { font-family: inherit; }
   color: #9A9890;
 }
 
+/* S1 · 本机工具健康探测：缺工具时诚实显示「未启用」 */
+.tool-status {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #E5E2D9;
+  border-radius: 6px;
+  background: #FAF9F5;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #6B6A65;
+}
+
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .text-input {

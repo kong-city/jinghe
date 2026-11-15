@@ -4,6 +4,35 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.4.3] - 2026-11-15
+
+**S1 · 能力框架地基**（阶段 2/3 七阶段路线图第 1 阶段）。本版本**不含面向用户的新转换能力** —— 音视频转写仍是空心占位、绝不产出伪转写；S1 只把「以后每加一类格式就要在 7 个文件里手工对表」的地基浇好。按用户确认的「逐阶段推进」，S1 完成后停在闸门等确认。
+
+### Added
+
+- `format_registry.py`：格式注册表。`stage1` 部分是 `extract.py` 冻结常量的只读镜像，`media` 部分是新能力的唯一写者（含 `.m4v` 与 `.wmv` 并集）；提供桶判定、音视频归类、文件对话框过滤器派生与结构化视图。
+- `media_tools.py`：`ToolAdapter` 统一接口与健康探测。本机 ffmpeg / whisper / yt-dlp 由用户自己提供，软件不下载、不打包、不自动安装；找不到工具、探测失败、超时一律 `available=false` + 可读原因，结果进程内缓存。`capabilities()` 如实标记 S2b / S3 / S5 尚未接入。
+- `media_runtime.py`：独立产物区 `out/derived/` + `provenance_media.json` 骨架，以及 8 字段 `src` 来源注释 / 块级锚点生成函数，供 S2–S5 复用。
+- `GET /api/tools/probe`：工具健康探测端点（支持 `?refresh=1`），响应含 `tools` / `capabilities` / `media_ready` / `derived`。刻意不挂到 400ms 轮询的 `/api/state` 上。
+- `Job` 扩展：`deadline` / `timed_out` / `register_child()` / `terminate_children()` 与 `start_job_watchdog()`；取消时一并终止外部工具子进程。
+- UI：「后处理 · 阶段 2/3」卡片新增本机工具状态行；能力未接入或缺工具时，音视频按钮显示「未启用」并禁用。
+- 新增 `test_33_s1_registry_tools_and_derived` / `test_34_s1_probe_http_and_long_job` 两个契约用例。
+
+### Changed
+
+- `app.py` 的 `_FILE_FILTERS` 与 `_STAGE3_AUDIO_EXT` 改为从注册表派生，消除 S0 登记的 **D1**（`.m4v`/`.wmv` 两处集合不一致）与 **D2**（过滤器列出 `.rtf/.odt/.yaml/.ini` 等不支持格式）漂移。
+- `tools/check_release.py` 门禁 ⑦ 的编译列表纳入 3 个新模块；`build.spec` 的 `hiddenimports` 同步。
+
+### Notes
+
+- **`SPEC.md` 与 `extract.py` 提取主流水线零改动**。契约要求的「`FORMAT_REGISTRY` 单一来源」与「冻结内核一行不动」存在张力，S1 的裁决是：**冻结内核为阶段 1 分流的只读真源，注册表为新能力的唯一写者，两者由一致性断言逐字锁住**，而不是反过来改内核。
+- 阶段 1 提取任务**不挂**超时看门狗，行为零变化；`_run_job_inner` 主循环一行未动。
+- `/api/transcribe` 仍只诚实拒绝；S1 未产出任何实际内容文档，也未写 `out/md/`、`INDEX.md`、`MERGED.md`。
+- 验收：`python -m unittest -v test_extract test_app` **62/62 OK**（146.115s）、门禁 **9/9**、`git diff -- SPEC.md` 与 `git diff --stat -- extract.py` 均为空。
+- **S1 到此为止，等用户确认后才进入 S2a（Word → .md 输入增强）**。
+
+---
+
 ## [0.4.2] - 2026-11-15
 
 阶段 2/3 能力扩展（Word / 音频 / 视频 / 视频链接 → `.md`）的 **S0 立项与契约对账** 里程碑。**本版本不含功能变更**，桌面端行为与 v0.4.1 完全一致；升级版本号仅为履行「每阶段收尾打包 exe + 上传 GitHub + 推版本 tag」的发版规则。

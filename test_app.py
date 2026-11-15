@@ -1707,6 +1707,219 @@ class AppContractTest(unittest.TestCase):
             self.assertIs(upd.get("opened"), False,
                           "离线时不应自动弹浏览器：%s" % upd)
 
+    # ------------------------------------------------------------------ #
+    # 33) v0.4.3 / S1：FORMAT_REGISTRY、工具健康探测、独立产物区
+    # ------------------------------------------------------------------ #
+    def test_33_s1_registry_tools_and_derived(self):
+        sys.path.insert(0, str(ROOT))
+        try:
+            import extract
+            import format_registry as reg
+            import media_tools
+            import media_runtime as rt
+        finally:
+            sys.path.remove(str(ROOT))
+        from unittest import mock
+
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+
+        # ① 冻结内核只读镜像必须逐字一致，且 extract.py 本身没被改写
+        self.assertEqual(reg.STAGE1_SKILL, set(extract.SKILL_EXT))
+        self.assertEqual(reg.STAGE1_PLAIN, set(extract.PLAIN_EXT))
+        self.assertEqual(reg.STAGE1_RICH, set(extract.RICH_EXT))
+        self.assertEqual(reg.STAGE1_DEFERRED, set(extract.DEFERRED_EXT))
+        self.assertEqual(reg.STAGE1_LEGACY, set(extract.LEGACY_EXT))
+        self.assertNotIn(".wmv", extract.DEFERRED_EXT,
+                         "冻结内核被改动：DEFERRED_EXT 不应混入 .wmv")
+        self.assertEqual(reg.stage1_bucket(".mp4"), "阶段3预留")
+        self.assertEqual(reg.stage1_bucket(".doc"), "需预处理")
+        self.assertEqual(reg.stage1_bucket(".zzz"), "不支持")
+
+        # ② D1 漂移收敛：.m4v 与 .wmv 并存，视频绝不归音频（红线 2）
+        self.assertIn(".m4v", reg.MEDIA_EXT)
+        self.assertIn(".wmv", reg.MEDIA_EXT)
+        self.assertEqual(reg.media_kind(".mp4"), "video")
+        self.assertEqual(reg.media_kind(".wmv"), "video")
+        self.assertEqual(reg.media_kind(".mp3"), "audio")
+        self.assertIn("_STAGE3_AUDIO_EXT = set(format_registry.MEDIA_EXT)", app_src)
+        self.assertIn("_FILE_FILTERS = format_registry.file_filters()", app_src)
+
+        # ③ D2 漂移收敛：过滤器不再列出 extract.py 不支持的扩展名
+        filters = dict(reg.file_filters())
+        tokens = set(filters["全部支持格式"].split(";"))
+        for bad in (".rtf", ".odt", ".ods", ".odp", ".yaml", ".yml",
+                    ".ini", ".py", ".js", ".markdown"):
+            self.assertNotIn("*" + bad, tokens,
+                             "过滤器仍把不支持的 %s 列为「全部支持格式」" % bad)
+        self.assertIn("*.docx", tokens)
+        self.assertIn("*.mp4", tokens)  # 阶段 1 会识别（判为预留）
+
+        # ④ 工具探测三条路径：缺工具 / 探测失败 / 探测成功，全都不撒谎
+        missing = media_tools.ToolAdapter(
+            "ffmpeg", ["-version"], which=lambda n: None).probe()
+        self.assertIs(missing["available"], False)
+        self.assertIn("未找到", missing["reason"])
+
+        class _Fail:
+            returncode = 2
+            stdout = ""
+            stderr = "bad option"
+
+        failed = media_tools.ToolAdapter(
+            "ffmpeg", ["-version"], which=lambda n: "C:/fake/ffmpeg.exe",
+            runner=lambda **kw: _Fail()).probe()
+        self.assertIs(failed["available"], False,
+                      "工具存在但探测失败，不能报可用")
+        self.assertIn("退出码", failed["reason"])
+
+        class _OK:
+            returncode = 0
+            stdout = "ffmpeg version 6.1.1 Copyright (c)"
+            stderr = ""
+
+        good = media_tools.ToolAdapter(
+            "ffmpeg", ["-version"], r"ffmpeg version\s+(\S+)",
+            which=lambda n: "C:/fake/ffmpeg.exe",
+            runner=lambda **kw: _OK()).probe()
+        self.assertIs(good["available"], True)
+        self.assertEqual(good["version"], "6.1.1")
+
+        # ⑤ 探测结果进程内缓存，不会每次请求都起外部子进程
+        calls = {"n": 0}
+
+        def _runner(**kw):
+            calls["n"] += 1
+            return _OK()
+
+        media_tools.reset_cache()
+        with mock.patch.object(media_tools.shutil, "which",
+                               return_value="C:/fake/tool.exe"), \
+             mock.patch.object(media_tools.subprocess, "run",
+                               side_effect=_runner):
+            first = media_tools.probe_all()
+            second = media_tools.probe_all()
+        self.assertEqual(calls["n"], 3, "探测结果未缓存或工具数量不符")
+        self.assertEqual(first, second)
+        media_tools.reset_cache()
+
+        # ⑥ S1 能力一律未启用：绝不因为工具齐全就伪装成可用
+        caps = media_tools.capabilities()
+        self.assertTrue(all(not v["enabled"] for v in caps.values()))
+        self.assertIs(media_tools.media_ready(
+            {"ffmpeg": {"available": True}, "whisper": {"available": True}},
+            caps), False, "S3 未接入却允许点亮转写入口")
+
+        # ⑦ 独立产物区：写 derived/ 后冻结对账盘必须一模一样
+        (self.tmp / "md").mkdir()
+        (self.tmp / "md" / "a.md").write_text("# a\n", encoding="utf-8")
+        (self.tmp / "INDEX.md").write_text("idx\n", encoding="utf-8")
+        (self.tmp / "MERGED.md").write_text("merged\n", encoding="utf-8")
+        before = rt.frozen_snapshot(self.tmp)
+        prov = rt.write_provenance(
+            self.tmp, entries=[{"status": "unavailable", "reason": "缺工具"}])
+        self.assertEqual(prov.parent.name, rt.DERIVED_DIRNAME)
+        self.assertTrue(rt.frozen_unchanged(before, self.tmp),
+                        "新能力污染了阶段 1 的 md/ 对账盘")
+        data = rt.read_provenance(self.tmp)
+        self.assertEqual(data["schema"], rt.SCHEMA)
+        self.assertEqual(len(data["entries"]), 1)
+        self.assertIn("md", data["frozen_artifacts_untouched"])
+
+        # ⑧ 出处骨架：8 字段 src 注释 + 完整 sha256 + 块级锚点正则
+        comment = rt.source_comment(self.tmp / "md" / "a.md", ".md", "内置转换器 v1")
+        self.assertIn("<!-- source:", comment)
+        for key in ("src:", "path:", "format:", "converter:", "extracted:",
+                    "size:", "sha256:", "anchors:"):
+            self.assertIn(key, comment, "src 注释缺少字段 %s" % key)
+        self.assertIsNotNone(re.search(r"sha256: [0-9a-f]{64}", comment))
+        anchor = rt.block_anchor("doc_0123456789ab", 1, time="00:00:01.000")
+        self.assertRegex(anchor, r"<!--\s*anchor:\s*doc_[0-9a-f]{12}\s*\|")
+        self.assertIn("time: 00:00:01.000", anchor)
+        self.assertNotIn("page:", anchor, "不适用的定位键必须省略")
+
+        # ⑨ UI 诚实降级 + 新模块纳入发版门禁的编译检查
+        self.assertIn('id="toolStatus"', html)
+        self.assertIn("/api/tools/probe", js)
+        self.assertIn("未启用", js)
+        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js)
+        for name in ("format_registry.py", "media_tools.py", "media_runtime.py"):
+            self.assertIn(name, gate, "门禁未编译新模块 %s" % name)
+
+    # ------------------------------------------------------------------ #
+    # 34) v0.4.3 / S1：探测端点、诚实降级、长任务超时与子进程终止
+    # ------------------------------------------------------------------ #
+    def test_34_s1_probe_http_and_long_job(self):
+        srv = self.start(patch_open=True)
+
+        # ① 真实 HTTP：健康探测契约 + 独立产物区声明
+        status, obj = srv.get_json("/api/tools/probe")
+        self.assertEqual(status, 200, "探测端点未返回 200：%s" % obj)
+        self.assertIs(obj.get("ok"), True)
+        for key in ("tools", "capabilities", "media_ready", "derived"):
+            self.assertIn(key, obj, "探测响应缺少 %s" % key)
+        for name in ("ffmpeg", "whisper", "yt-dlp"):
+            tool = obj["tools"].get(name)
+            self.assertIsInstance(tool, dict, "缺少工具 %s 的探测结果" % name)
+            self.assertIn("available", tool)
+            self.assertIn("reason", tool)
+        self.assertEqual(obj["derived"]["dirname"], "derived")
+        self.assertIn("md", obj["derived"]["frozen_artifacts_untouched"])
+        self.assertIs(obj["capabilities"]["media_transcribe"]["enabled"], False)
+        self.assertIs(obj["media_ready"], False,
+                      "S1 未接入转写后端，media_ready 必须为 false")
+
+        status2, obj2 = srv.get_json("/api/tools/probe?refresh=1")
+        self.assertEqual(status2, 200)
+        self.assertEqual(set(obj2["tools"]), set(obj["tools"]))
+
+        # ② 转写入口仍是空心占位：识别到文件也只诚实拒绝，绝不产出伪转写
+        clip = self.tmp / "clip.mp3"
+        clip.write_bytes(b"ID3 fake audio")
+        status3, tr = srv.post_json("/api/transcribe",
+                                    {"inputs": [str(clip)]})
+        self.assertEqual(status3, 200)
+        self.assertIs(tr.get("ok"), False)
+        self.assertIn("未启用", tr.get("error") or "")
+        self.assertEqual(list(self.tmp.glob("*.md")), [],
+                         "缺工具时竟产出了 md 文件")
+
+        # ③ 长任务超时：取消 + 终止外部子进程；提前停止不得误判
+        sys.path.insert(0, str(ROOT))
+        try:
+            import app as app_mod
+            from unittest import mock
+
+            child = mock.MagicMock()
+            child.poll.return_value = None
+            job = app_mod.Job([], "")
+            job.register_child(child)
+            stop = app_mod.start_job_watchdog(job, 0.05)
+            self.assertIsNotNone(stop)
+            self.assertIsNotNone(job.deadline)
+            time.sleep(0.25)
+            self.assertIs(job.timed_out, True, "超时未触发")
+            self.assertIs(job.cancelled, True, "超时未收敛到取消")
+            child.terminate.assert_called()
+            stop.set()
+
+            job2 = app_mod.Job([], "")
+            stop2 = app_mod.start_job_watchdog(job2, 0.05)
+            stop2.set()
+            time.sleep(0.15)
+            self.assertIs(job2.timed_out, False,
+                          "任务已提前结束却仍被判超时")
+
+            child.poll.return_value = 1  # 已退出的子进程不该再 terminate
+            self.assertEqual(job.terminate_children(), 0)
+        finally:
+            sys.path.remove(str(ROOT))
+        self.assertIn("job.terminate_children()",
+                      (ROOT / "app.py").read_text(encoding="utf-8"),
+                      "取消链路未终止外部工具子进程")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

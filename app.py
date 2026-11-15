@@ -39,6 +39,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import extract  # 同目录模块：版本号唯一来源（冻结后由 PyInstaller 一并打包）
+# S1 能力框架地基：三个新模块全部挂在后处理层，extract.py 主流水线保持只读。
+import format_registry
+import media_tools
+import media_runtime
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -713,6 +717,31 @@ class Job:
         self.candidates: int | None = None
         self.empty: int | None = None
         self.no_heading: int | None = None
+        # ---- S1 长任务框架：超时 / 外部工具子进程 / 独立产物区 ----
+        self.deadline: float | None = None
+        self.timed_out = False
+        self.children: list = []
+        self._children_lock = threading.Lock()
+
+    def register_child(self, proc):
+        """登记外部工具子进程；取消 / 超时必须一并终止，不能只杀主进程。"""
+        with self._children_lock:
+            self.children.append(proc)
+        return proc
+
+    def terminate_children(self) -> int:
+        """终止所有已登记且仍在运行的外部子进程，返回实际终止个数。"""
+        with self._children_lock:
+            kids = list(self.children)
+        killed = 0
+        for proc in kids:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    killed += 1
+            except Exception:
+                pass
+        return killed
 
     def add(self, etype: str, text: str, progress: float | None = None,
             raw: str | None = None, **extra) -> dict:
@@ -732,6 +761,43 @@ _JOB_LOCK = threading.Lock()
 _LAST_INPUT = ""
 _LAST_INPUTS: list[str] = []
 _LAST_OUTDIR = ""
+
+
+def start_job_watchdog(job: Job, timeout_sec: float) -> threading.Event | None:
+    """S1：给长任务挂超时看门狗，到点取消任务并终止主 / 外部子进程。
+
+    返回 ``stop`` 事件；调用方必须在任务 ``finally`` 里 ``set()``，避免
+    任务已结束仍被误判超时。阶段 1 提取任务**不挂**看门狗，行为零变化；
+    S3/S4/S5 的长耗时转写与链接任务才需要它。
+    """
+    if timeout_sec <= 0:
+        return None
+    stop = threading.Event()
+    job.deadline = time.time() + float(timeout_sec)
+
+    def _watch() -> None:
+        if stop.wait(timeout_sec):
+            return
+        with job.lock:
+            still_running = job.running
+        if not still_running:
+            return
+        job.timed_out = True
+        job.cancelled = True
+        job.terminate_children()
+        proc = job.proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        job.add("log", "任务超时（%.0fs），已取消并终止外部工具进程"
+                % timeout_sec)
+
+    threading.Thread(target=_watch, name="jinghe-job-watchdog",
+                     daemon=True).start()
+    return stop
+
 
 # ---- 桌面端「关窗即退」：页面心跳 + 看门狗 --------------------------------
 # 页面每 2 秒打一次 /api/heartbeat；窗口被关闭后心跳停止。看门狗在宽限期
@@ -1233,16 +1299,10 @@ _SAVE_FLAGS = (_OFN_HIDEREADONLY | _OFN_NOCHANGEDIR | _OFN_EXPLORER
 _SAVE_TITLE = "把运行日志生成到指定文件"
 
 # 过滤器：name\0spec\0 依次排列，末尾再补一个 \0 表示整表结束
-_FILE_FILTERS = [
-    ("常用文档",
-     "*.pdf;*.docx;*.doc;*.xlsx;*.xls;*.pptx;*.ppt;*.txt;*.md;*.markdown;"
-     "*.html;*.htm;*.csv;*.json;*.epub"),
-    ("全部支持格式",
-     "*.pdf;*.docx;*.doc;*.xlsx;*.xls;*.pptx;*.ppt;*.txt;*.md;*.markdown;"
-     "*.html;*.htm;*.csv;*.json;*.epub;*.rtf;*.odt;*.ods;*.odp;*.zip;"
-     "*.log;*.xml;*.yaml;*.yml;*.ini;*.py;*.js"),
-    ("所有文件", "*.*"),
-]
+# S1：Win32 文件对话框过滤器由 FORMAT_REGISTRY 派生，不再手写扩展名。
+# 旧版曾列出 .rtf/.odt/.yaml/.ini/.py/.js 等 extract.py 并不支持的格式
+# （S0 漂移 D2），也漏掉了全部音视频后缀；注册表是现在的唯一写者。
+_FILE_FILTERS = format_registry.file_filters()
 
 
 def _ofn_filter_string() -> str:
@@ -1691,10 +1751,9 @@ def _merged_path(outdir: str) -> Path | None:
 # --------------------------------------------------------------------------- #
 # 阶段 2 / 3 后处理（纯标准库实现，守住「零第三方依赖 / 单文件 exe」设计不变量）
 # --------------------------------------------------------------------------- #
-_STAGE3_AUDIO_EXT = {
-    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma", ".amr",
-    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm",
-}
+# S1：音视频扩展名统一由 FORMAT_REGISTRY 提供（.m4v 与 .wmv 并集），
+# 与 extract.py 的冻结 DEFERRED_EXT 语义分离，消除 S0 漂移 D1。
+_STAGE3_AUDIO_EXT = set(format_registry.MEDIA_EXT)
 
 
 
@@ -1828,6 +1887,14 @@ class Handler(BaseHTTPRequestHandler):
                     since = 0
                 self._send_json(self._api_progress(since))
                 return
+            if path == "/api/tools/probe":
+                # S1：工具健康探测只在前端启动时 / 用户刷新时调用一次，
+                # 绝不挂到 400ms 轮询的 /api/state 上，避免反复起子进程。
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+                self._send_json(self._api_tools_probe(refresh))
+                return
             if path == "/favicon.ico":
                 self._send_bytes(b"", "image/x-icon", 204)
                 return
@@ -1875,6 +1942,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_text("404 Not Found", 404)
             return
         self._send_bytes(body, ctype)
+
+    def _api_tools_probe(self, refresh: bool = False) -> dict:
+        """S1：本机工具健康探测 + 能力启用状态；缺工具一律诚实回显。"""
+        data = media_tools.payload(refresh=refresh)
+        # 顺带声明独立产物区契约（只描述、不创建目录、不写冻结对账盘）。
+        data["derived"] = {
+            "dirname": media_runtime.DERIVED_DIRNAME,
+            "provenance": media_runtime.PROVENANCE_NAME,
+            "frozen_artifacts_untouched": list(media_runtime.FROZEN_ARTIFACTS),
+        }
+        return data
 
     def _api_state(self) -> dict:
         _reap_dead_job()
@@ -2044,6 +2122,8 @@ class Handler(BaseHTTPRequestHandler):
                 proc.terminate()
             except Exception:
                 pass
+        # S1：外部工具子进程必须一并终止，否则「已取消」但 ffmpeg 还在跑。
+        job.terminate_children()
         return {"ok": True}
 
     def _api_open(self, path: str) -> dict:
