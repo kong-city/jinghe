@@ -112,11 +112,11 @@
 
       <section class="card features">
         <div class="card-title">后处理 · 阶段 2 / 3</div>
-        <p class="card-sub">基于本次提取产物（MERGED.md，现行输出格式为 Markdown）进一步加工；Word 导出列为后续计划。</p>
+        <p class="card-sub">基于本次提取产物（MERGED.md，现行输出格式为 Markdown）进一步加工；Word 导出产物落 out/derived/，不改动对账文件。</p>
         <div class="feature-grid">
           <button id="btnSummarize" class="feature-btn" type="button" disabled>核心提炼（摘要）</button>
-          <button id="btnExportDocx" class="feature-btn is-soon" type="button" disabled
-                  title="阶段 2 二期，后续计划，暂不实现">导出 Word（规划中）</button>
+          <button id="btnExportDocx" class="feature-btn" type="button" disabled
+                  title="把 MERGED.md / 所选 .md 导出为独立 .docx（落 out/derived/），来源注释与块级锚点按原文保留">导出 Word</button>
           <button id="btnTranscribe" class="feature-btn" type="button" disabled>音视频转写</button>
           <button id="btnWordEnhance" class="feature-btn" type="button" disabled
                   title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）">Word 输入增强</button>

@@ -4,6 +4,33 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.4.5] - 2026-11-15
+
+**S2b · `.md` → `.docx` 导出**（阶段 2 二期）。放开界面上长期禁用的「导出 Word」占位按钮，用**纯标准库**生成真正可被 Word 打开的 `.docx`；`.md` 输入全程只读，产物落独立 `out/derived/`，阶段 1 冻结对账盘一字不动。按「逐阶段确认」，S2b 完成后停在闸门等确认，**不进入 S3**（音频 → .md）。
+
+### Added
+
+- `word_export.py`（新）：`zipfile` 组装 8 个 OOXML 部件（`[Content_Types].xml`、`_rels/.rels`、`word/document.xml`、`word/_rels/document.xml.rels`、`word/styles.xml`、`word/settings.xml`、`docProps/core.xml`、`docProps/app.xml`），不引入 python-docx / lxml / Word / LibreOffice，也不随 exe 分发任何外部工具。
+- Markdown 映射：一至六级标题、普通段落、有序 / 无序列表、引用、围栏代码块、水平线、真实 `w:tbl` 表格，行内 `**粗体**` / `*斜体*` / `` `等宽` `` / `~~删除线~~` 拆成 `w:r`；所有文本做 XML 转义并剔除 XML 1.0 非法控制字符，中文字体固定 `Microsoft YaHei`。
+- **出处不丢**：`<!-- source: … -->`、8 字段 `<!-- src: … -->`、块级 `<!-- anchor: … -->` 按原文渲染成 `SourceNote` 段落，`src` 原文同时写进 `docProps/core.xml` 的 `dc:description`；导出后可用 `word_input.parse_ooxml()` 反向读回，形成闭环。文档开头另有「导出信息」区块（源文件 / doc_id / sha256 / 大小 / 转换器 / 时间 / 溯源注释数）。
+- 新增 `POST /api/word/export`：显式 `.md` 输入优先；未给时**只读**自动收集 `MERGED.md`，其次 `out/md/*.md`（上限 20 个）。产物 `out/derived/<doc_id>.docx` + `provenance_media.json`，`.part` 原子替换，失败清理半成品。
+- `GET /api/tools/probe` 新增顶层 `word_export` 能力字段；`format_registry.py` 新增 `WORD_EXPORT_INPUT_EXTS` / `is_word_export_input()`；`build.spec` 与发版门禁编译列表纳入新模块。
+- UI：「导出 Word」不再是禁用占位，接上逐条状态回显；工具状态行追加导出能力。混合批次部分成功显式提示「另有 N 项未处理」。
+
+### Fixed
+
+- `media_tools.capabilities()` 的注释订正：它是 S1 的**能力占位清单**，被 `test_33` 锁死为「全部未启用」，S2a / S2b 均不改写；已落地能力的真实状态由 `/api/tools/probe` 顶层增量字段给出。逻辑零改动，避免返回两个互相矛盾的字段被误读。
+
+### Safety
+
+- 单文件 8 MB / 2 万行上限；文件不存在、非 `.md`、空白正文、超上限、写入失败一律 `ok:false` + 可读原因，**零 docx 产出**；空输入连 `derived/` 目录都不创建。阶段 1 的 `out/md/`、`INDEX.md`、`MERGED.md`、`provenance.json` 全程只读。
+
+### Tests
+
+- 新增 `test_37` / `test_38`：OOXML 部件齐全且全部 XML 可解析、zip 无损坏、反向解析保留来源注释 / 锚点 / 中文与 `& < > " ' %` 特殊字符、对账盘零污染、自动输入、四条失败路径、部分成功 `warning`、provenance 保留历史条目、真实 HTTP 与 UI 契约。测试基线 **64 → 66 用例**，全量 OK。
+
+---
+
 ## [0.4.4] - 2026-11-15
 
 **S2a · Word → .md 输入增强**（阶段 2 一期）。在 S1 地基之上交付第一个真正面向用户的新能力：对所选 `.docx` / `.doc` 生成带批注、修订与加密识别的独立增强 Markdown。按「逐阶段确认」，S2a 完成后停在闸门等确认，**不进入 S2b**（`.md` → `.docx` 导出）。

@@ -1008,7 +1008,9 @@
       "；Word 输入增强：" +
       (wi.enabled ? "已启用（.docx）" : "未启用") +
       "，.doc 旧格式：" +
-      (legacy.enabled ? "可用（LibreOffice " + (legacy.tool && legacy.tool.version || "") + "）" : "未启用");
+      (legacy.enabled ? "可用（LibreOffice " + (legacy.tool && legacy.tool.version || "") + "）" : "未启用") +
+      "；Word 导出：" +
+      ((((toolState || {}).word_export) || {}).enabled ? "已启用（标准库 OOXML）" : "未启用");
     el.toolStatus.hidden = false;
   }
 
@@ -1043,7 +1045,12 @@
     var on = !!lastDoneOutdir && !running && !previewing;
     var mediaOn = capabilityEnabled("media_transcribe");
     el.btnSummarize.disabled = !on;
-    el.btnExportDocx.disabled = true;  // 导出 Word 为后续计划，恒禁用
+    // S2b：纯标准库导出恒可用；只需有输出目录（后端会自动只读收集 MERGED.md）。
+    var we = ((toolState || {}).word_export) || {};
+    var exportOn = !!we.enabled;
+    var outReady = !!(lastDoneOutdir || (el.outPath && el.outPath.value || "").trim());
+    el.btnExportDocx.disabled = !(exportOn && outReady && !running && !previewing);
+    el.btnExportDocx.textContent = exportOn ? "导出 Word" : "导出 Word（未启用）";
     el.btnTranscribe.disabled = !on || !mediaOn;
     el.btnTranscribe.textContent = mediaOn ? "音视频转写" : "音视频转写（未启用）";
     var wi = (toolState && toolState.word_input) || {};
@@ -1128,6 +1135,39 @@
       });
   }
 
+  // S2b：把 MERGED.md / 所选 .md 导出为独立 .docx，逐条回显失败原因。
+  function doWordExport() {
+    var inputs = currentInputs().filter(function (p) {
+      return /\.(md|markdown)$/i.test(p);
+    });
+    var outdir = (summary && summary.outdir) || lastDoneOutdir ||
+                 el.outPath.value.trim();
+    if (!outdir) { showError("请先指定输出目录"); return; }
+    if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
+    var btn = el.btnExportDocx;
+    var old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "导出中…";
+    clearBar();
+    api("/api/word/export", { inputs: inputs, outdir: outdir }, 120000)
+      .then(function (r) {
+        if (!r.ok) {
+          var detail = (r.results || []).filter(function (x) { return !x.ok; })
+            .map(function (x) { return x.name + "：" + x.error; }).join("；");
+          throw new Error((r.error || "Word 导出失败") +
+                          (detail ? "（" + detail + "）" : ""));
+        }
+        var msg = "已生成 " + r.success + " 份 .docx：" + r.derived_dir;
+        if (r.failed) msg += "；另有 " + r.failed + " 项未处理（见产物清单）";
+        showNotice(msg + " · " + nowHMS());
+      }).catch(function (err) {
+        showError(err.message || String(err));
+      }).finally(function () {
+        btn.textContent = old;
+        updateFeatureButtons();
+      });
+  }
+
   /* ------------------------------ Tabs ------------------------------ */
   function activateTab(name) {
     var tabs = document.querySelectorAll(".tab");
@@ -1168,9 +1208,7 @@
     el.btnBrowseOut.addEventListener("click", browseOutput);
     el.btnPickFiles.addEventListener("click", pickFiles);
     el.btnSummarize.addEventListener("click", doSummarize);
-    el.btnExportDocx.addEventListener("click", function () {
-      showNotice("导出 Word 为后续计划（阶段 2 二期），当前输出格式为 Markdown（MERGED.md）。");
-    });
+    el.btnExportDocx.addEventListener("click", doWordExport);
     el.btnTranscribe.addEventListener("click", doTranscribe);
     el.btnWordEnhance.addEventListener("click", doWordEnhance);
     el.btnKnowledgeBase.addEventListener("click", function () {

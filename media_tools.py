@@ -138,10 +138,13 @@ def probe_all(refresh: bool = False) -> dict:
 
 
 def capabilities() -> dict:
-    """S1 阶段所有新能力都尚未接入，一律如实标记 ``enabled=False``。
+    """S1 预留的「能力占位清单」，一律如实标记 ``enabled=False``。
 
-    S2b / S3 / S5 落地后，只需把对应条目改为 True 并写清实现来源，
-    UI 无需再改一遍「未启用」判定逻辑。
+    **S2a / S2b 裁决**：本清单被 ``test_33`` 的
+    ``all(not v["enabled"] for v in caps.values())`` 锁死，后续阶段
+    **不得改写**（否则既有断言变红）。已落地能力的真实状态由
+    ``app.py::_api_tools_probe`` 挂到 ``/api/tools/probe`` 的**顶层增量字段**
+    ``word_input`` / ``word_export`` 给出；UI 读顶层字段，不读本清单。
     """
     return {
         "media_transcribe": {

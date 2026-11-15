@@ -2155,6 +2155,237 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
                       "S3 空心占位被提前填充或改写")
 
+    def _s2b_write_md(self, name: str, body: str) -> Path:
+        """构造一份带 8 字段来源注释与块级锚点的真实 Markdown。"""
+        sys.path.insert(0, str(ROOT))
+        try:
+            import media_runtime as media_rt
+        finally:
+            sys.path.remove(str(ROOT))
+        path = self.tmp / name
+        path.write_text("", encoding="utf-8")
+        header = media_rt.source_comment(
+            path, ".md", "精核 MD→DOCX 导出 v1（标准库 zipfile+ElementTree）",
+            ["block"])
+        path.write_text(header + "\n" + body, encoding="utf-8")
+        return path
+
+    def test_37_s2b_word_export_ooxml_contract(self):
+        import zipfile
+        import xml.etree.ElementTree as ET
+        sys.path.insert(0, str(ROOT))
+        try:
+            import extract
+            import format_registry as reg
+            import media_runtime as rt
+            import media_tools
+            import word_input as wi
+            import word_export as we
+        finally:
+            sys.path.remove(str(ROOT))
+
+        # ① 注册表是 S2b 输入后缀的唯一写者；冻结内核仍原样
+        self.assertEqual(reg.WORD_EXPORT_INPUT_EXTS, {".md", ".markdown"})
+        self.assertEqual(reg.WORD_EXPORT_SUFFIX, ".docx")
+        self.assertIs(reg.is_word_export_input(".md"), True)
+        self.assertIs(reg.is_word_export_input(".docx"), False)
+        self.assertNotIn("import extract", (ROOT / "word_export.py").read_text(
+            encoding="utf-8"), "S2b 不得依赖冻结内核的提取流水线")
+        frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
+        self.assertIn("def test_06_deferred_media", frozen_tests)
+        self.assertIn("def test_11_video_redline", frozen_tests)
+        self.assertIs(we.capability()["enabled"], True)
+        # S1 的 capabilities() 是「占位清单」，被 test_33 锁死为全未启用；
+        # S2b 不改写它，真实状态走 /api/tools/probe 顶层增量字段。
+        caps = media_tools.capabilities()
+        self.assertTrue(all(not v["enabled"] for v in caps.values()))
+        self.assertIs(caps["word_export"]["enabled"], False)
+
+        body = (
+            "# 标题一 · 中文\n\n"
+            "正文 A & B <tag> \"双引号\" '单引号' 100% 与 **粗体**、`代码`。\n\n"
+            "- 无序项\n1. 有序项\n\n> 引用行\n\n"
+            "| 列A | 列B |\n| --- | --- |\n| 1 | 2 |\n\n"
+            "```\nprint(\"hello & <world>\")\n```\n\n"
+            "<!-- anchor: doc_abcdef123456 | block: 1 -->\n\n---\n\n"
+            "## 末尾小节\n")
+        self.assertEqual({b["kind"] for b in we.parse_markdown(body)},
+                         {"heading", "para", "list", "quote", "table",
+                          "code", "comment", "hr"})
+
+        src = self._s2b_write_md("sample.md", body)
+        outdir = self.tmp / "out"
+        (outdir / "md").mkdir(parents=True)
+        (outdir / "md" / "a.md").write_text("# a\n", encoding="utf-8")
+        (outdir / "INDEX.md").write_text("idx\n", encoding="utf-8")
+        (outdir / "MERGED.md").write_text("merged\n", encoding="utf-8")
+        before = rt.frozen_snapshot(outdir)
+
+        # ② 导出：8 个部件齐全、每个 XML 可解析、zip 无损坏
+        res = we.export([str(src)], str(outdir))
+        self.assertIs(res["ok"], True, res)
+        self.assertEqual(res["success"], 1)
+        self.assertIs(res["frozen_unchanged"], True, res)
+        path = Path(res["path"])
+        self.assertEqual(path.parent.name, rt.DERIVED_DIRNAME)
+        self.assertEqual(path.suffix, ".docx")
+        required = {"[Content_Types].xml", "_rels/.rels", "word/document.xml",
+                    "word/_rels/document.xml.rels", "word/styles.xml",
+                    "word/settings.xml", "docProps/core.xml", "docProps/app.xml"}
+        with zipfile.ZipFile(str(path)) as zf:
+            self.assertTrue(required.issubset(set(zf.namelist())))
+            self.assertIsNone(zf.testzip(), "docx 压缩包存在损坏成员")
+            for name in zf.namelist():
+                if name.endswith((".xml", ".rels")):
+                    try:
+                        ET.fromstring(zf.read(name))
+                    except ET.ParseError as exc:
+                        self.fail("S2b 部件 XML 不合法：%s（%s）" % (name, exc))
+            core = zf.read("docProps/core.xml").decode("utf-8")
+            self.assertIn("src:", core)
+            self.assertIn("sha256:", core)
+
+        # ③ 产物能被反向解析回 Word 结构；来源注释 / 锚点 / 特殊字符不丢
+        parsed = wi.parse_ooxml(path)
+        joined = "\n".join(b["text"] for b in parsed["blocks"])
+        for needle in ("<!-- source:", "<!-- src:", "<!-- anchor:",
+                       "标题一 · 中文", "A & B <tag> \"双引号\" '单引号' 100%",
+                       "print(\"hello & <world>\")", "列A", "末尾小节"):
+            self.assertIn(needle, joined, "导出丢失了：%s" % needle)
+        self.assertIsNotNone(re.search(r"doc_[0-9a-f]{12}", joined))
+        self.assertRegex(joined, r"sha256: [0-9a-f]{64}")
+
+        # ④ 阶段 1 冻结对账盘零污染：实盘数与文件内容都不变
+        self.assertTrue(rt.frozen_unchanged(before, outdir))
+        self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
+        self.assertEqual((outdir / "MERGED.md").read_text(encoding="utf-8"),
+                         "merged\n")
+        self.assertEqual(list((outdir / "derived").glob("*.part")), [],
+                         "原子替换后残留了 .part 半成品")
+
+        # ⑤ 默认输入：不显式给 inputs 时，只读收集 MERGED.md
+        auto = we.export([], str(outdir))
+        self.assertIs(auto["auto_inputs"], True)
+        self.assertIs(auto["ok"], True, auto)
+        self.assertEqual(auto["results"][0]["name"], "MERGED.md")
+
+        # ⑥ 失败路径一律零 docx：不存在 / 非 md / 空白 / 超行上限
+        before_count = len(list((outdir / "derived").glob("*.docx")))
+        blank = self.tmp / "blank.md"
+        blank.write_text("\n\n", encoding="utf-8")
+        huge = self.tmp / "huge.md"
+        huge.write_text("x\n" * (we.MAX_LINES + 1), encoding="utf-8")
+        bad_txt = self.tmp / "note.txt"
+        bad_txt.write_text("hello\n", encoding="utf-8")
+        failed = we.export([str(self.tmp / "nope.md"), str(bad_txt),
+                            str(blank), str(huge)], str(outdir))
+        self.assertIs(failed["ok"], False)
+        self.assertEqual(failed["success"], 0)
+        self.assertEqual(failed["failed"], 4)
+        statuses = {r["name"]: r["status"] for r in failed["results"]}
+        self.assertEqual(statuses["note.txt"], "不支持")
+        self.assertEqual(statuses["blank.md"], "失败")
+        self.assertIn("拒绝写空 docx",
+                      next(r["error"] for r in failed["results"]
+                           if r["name"] == "blank.md"))
+        self.assertEqual(len(list((outdir / "derived").glob("*.docx"))),
+                         before_count, "失败批次竟产出了 docx")
+
+        # ⑦ 部分成功必须显式 warning；provenance 保留历史条目不覆盖
+        mixed = we.export([str(src), str(bad_txt)], str(outdir))
+        self.assertIs(mixed["ok"], True)
+        self.assertEqual(mixed["failed"], 1)
+        self.assertIn("warning", mixed)
+        prov = rt.read_provenance(outdir)
+        self.assertGreaterEqual(len(prov["entries"]), 2)
+        self.assertTrue(any(e.get("capability") == "word_export"
+                            for e in prov["entries"]))
+
+    def test_38_s2b_word_export_http_and_ui(self):
+        import zipfile
+        srv = self.start()
+
+        # ① 探测端点：顶层增量字段，S1 的 tools / capabilities 结构原样
+        status, probe = srv.get_json("/api/tools/probe")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(probe["tools"]), {"ffmpeg", "whisper", "yt-dlp"})
+        self.assertIs(probe["capabilities"]["media_transcribe"]["enabled"], False)
+        self.assertIs(probe["word_input"]["enabled"], True)
+        self.assertIs(probe["word_export"]["enabled"], True)
+        self.assertEqual(probe["word_export"]["output"]["suffix"], ".docx")
+        self.assertIs(probe["capabilities"]["word_export"]["enabled"], False,
+                      "S1 占位清单不得改写；真实状态以顶层 word_export 为准")
+
+        outdir = self.tmp / "out"
+        (outdir / "md").mkdir(parents=True)
+        (outdir / "md" / "a.md").write_text("# a\n", encoding="utf-8")
+        (outdir / "MERGED.md").write_text("# merged\n\n内容\n", encoding="utf-8")
+        src = self._s2b_write_md("http.md", "# HTTP 标题\n\n段落 & <标签>\n")
+
+        # ② 真实 HTTP 导出：产物在 derived/，冻结对账盘一动不动
+        status, res = srv.post_json(
+            "/api/word/export", {"inputs": [str(src)], "outdir": str(outdir)})
+        self.assertEqual(status, 200, res)
+        self.assertIs(res["ok"], True, res)
+        self.assertIs(res["frozen_unchanged"], True)
+        produced = Path(res["path"])
+        self.assertTrue(produced.is_file())
+        self.assertEqual(produced.parent.name, "derived")
+        with zipfile.ZipFile(str(produced)) as zf:
+            self.assertIn("word/document.xml", zf.namelist())
+        self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
+        self.assertEqual((outdir / "MERGED.md").read_text(encoding="utf-8"),
+                         "# merged\n\n内容\n")
+
+        # ③ 混合批次：部分成功回 warning，失败项逐条给出可读原因
+        txt = self.tmp / "note.txt"
+        txt.write_text("hello\n", encoding="utf-8")
+        status, mixed = srv.post_json(
+            "/api/word/export",
+            {"inputs": [str(src), str(txt)], "outdir": str(outdir)})
+        self.assertEqual(status, 200, mixed)
+        self.assertIs(mixed["ok"], True)
+        self.assertEqual(mixed["failed"], 1)
+        self.assertIn("warning", mixed)
+        self.assertEqual({r["name"]: r["status"] for r in mixed["results"]}
+                         ["note.txt"], "不支持")
+
+        # ④ 空目录 / 空输入：诚实失败，不写空 docx；未知端点仍 404 JSON
+        empty_out = self.tmp / "empty_out"
+        empty_out.mkdir()
+        status, none = srv.post_json(
+            "/api/word/export", {"inputs": [], "outdir": str(empty_out)})
+        self.assertEqual(status, 200, none)
+        self.assertIs(none["ok"], False)
+        self.assertIn("未找到可导出的 Markdown", none["error"])
+        self.assertFalse((empty_out / "derived").exists() or
+                         list((empty_out / "derived").glob("*.docx")),
+                         "空输入竟产出了目录或 docx")
+        status, unknown = srv.post_json("/api/word/export/nope", {})
+        self.assertEqual(status, 404)
+        self.assertIs(unknown["ok"], False)
+
+        # ⑤ UI：禁用占位已放开，S1 音视频诚实降级判定仍原样保留
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        spec = (ROOT / "build.spec").read_text(encoding="utf-8")
+        self.assertNotIn("导出 Word（规划中）", html)
+        self.assertIn('id="btnExportDocx"', html)
+        self.assertIn("/api/word/export", js)
+        self.assertIn("doWordExport", js)
+        self.assertIn("word_export", js)
+        self.assertIn('path == "/api/word/export"', app_src)
+        self.assertIn('data["word_export"]', app_src)
+        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
+                      "S1 的音视频诚实降级判定被改写")
+        self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
+                      "S3 空心占位被提前填充或改写")
+        self.assertIn("word_export.py", gate)
+        self.assertIn("'word_export'", spec,
+                      "新模块未加入 PyInstaller hiddenimports")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

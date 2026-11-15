@@ -57,7 +57,15 @@ MEDIA_EXT = MEDIA_AUDIO | MEDIA_VIDEO
 WORD_INPUT_LEGACY = frozenset({".doc", ".xls", ".ppt"})
 WORD_INPUT_OOXML = frozenset({".docx", ".xlsx", ".pptx"})
 WORD_INPUT_EXTS = frozenset({".doc", ".docx"})
+# S2b：.md → .docx 导出。输入端只认 Markdown，输出端固定 .docx；
+# 默认输入是本次提取的 MERGED.md（只读），其次 out/md/*.md。
+WORD_EXPORT_INPUT_EXTS = frozenset({".md", ".markdown"})
 WORD_EXPORT_SUFFIX = ".docx"
+
+
+def is_word_export_input(ext: str) -> bool:
+    """S2b 导出是否接受该后缀（新能力唯一写者口径）。"""
+    return str(ext or "").lower() in WORD_EXPORT_INPUT_EXTS
 
 
 def is_word_input(ext: str) -> bool:

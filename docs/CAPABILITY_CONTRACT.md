@@ -1,6 +1,6 @@
 # 精核 · 阶段 2/3 新能力契约（v0.1 · S0 草案）
 
-> 立约日期：2026-11-15 · 状态：**v0.3 已生效**（S0/S1/S2a 已完成，停在 S2a 闸门）
+> 立约日期：2026-11-15 · 状态：**v0.4 已生效**（S0/S1/S2a/S2b 已完成，停在 S2b 闸门）
 > 适用能力：Word 输入增强 / `.md` → `.docx` 导出 / 音频 → `.md` / 视频 → `.md` / 视频链接 → `.md`
 > 代码基线：`extract.py` v0.4.1，CI 全绿，60 用例，9 项发版门禁
 > 规格基线：`SPEC.md` v2.11（冻结，唯一写者，本契约不修改它）
@@ -148,8 +148,8 @@
 | --- | --- | --- | --- |
 | **S0** 立项与契约对账 | 本契约 + 需求确认表 + 红线解禁清单 + 受影响断言清单 | 60 用例原样全绿、9 项门禁通过、`SPEC.md` 与功能代码零改动 | 等用户确认 |
 | **S1** 能力框架地基 | `FORMAT_REGISTRY` 收敛、`ToolAdapter` + 健康探测、`Job` 进度/取消/超时、`derived/` 产物区 | 缺工具时按钮诚实显示「未启用」；长任务可取消；临时文件零残留；既有断言全绿 | 等确认 |
-| **S2a** Word → .md 输入增强 | `.doc` 旧格式（本机 LibreOffice 预处理适配）、批注/修订/加密识别 | 不引第三方库；加密仍单列「待人工授权」不破译；产物守 8 字段 | **已完成 · 等确认（S2b）** |
-| **S2b** .md → .docx 导出 | 纯标准库 `zipfile` + OOXML 独立模块，放开禁用按钮 | 产物可被 Word 打开；来源注释与锚点不丢；exe 不含重依赖 | 等确认 |
+| **S2a** Word → .md 输入增强 | `.doc` 旧格式（本机 LibreOffice 预处理适配）、批注/修订/加密识别 | 不引第三方库；加密仍单列「待人工授权」不破译；产物守 8 字段 | **已完成** |
+| **S2b** .md → .docx 导出 | 纯标准库 `zipfile` + OOXML 独立模块，放开禁用按钮 | 产物可被 Word 打开；来源注释与锚点不丢；exe 不含重依赖 | **已完成 · 等确认（S3）** |
 | **S3** 音频 → .md | ASR 适配器 + 时间戳 + 诚实降级 | 真实样本非空、可取消、失败诚实回显；绝不伪转写 | 等确认 |
 | **S4** 视频 → .md | 独立 video handler（音轨 + 画面/字幕 + 元数据），**不复用音频路径** | 三区块齐备；`test_06`/`test_11` 原样全绿（守护冻结内核） | 等确认 |
 | **S5** 视频链接 → .md | 任意链接与播放列表、防 SSRF、重定向、m3u8/DASH、批量队列 | 恶意/越界 URL 被拒；取消即清理；单条失败不拖垮整批 | 等确认 |
@@ -196,3 +196,11 @@
   5. `.doc` 预处理临时目录三链齐备：父进程持有 → `finally` 删除 → `atexit` 兜底 → 启动时清扫 24 小时前过期孤儿；不靠单一 `atexit` 兜强杀。
   6. 新产物四区块之外，失败项一律不落空 md，只在 `results` 与 `provenance_media.json` 留痕；部分成功必须显式回 `warning`，不得宣称全部完成。
   7. 测试基线由 62 → **64 用例**（`test_35` / `test_36`）。`test_06` / `test_11` 仍原样保留，`/api/transcribe` 空心位留给 S3/S4。
+- **v0.4（2026-11-15 · S2b）**：用户确认 S2a 后开工；S2b 落地后补以下裁决，**§1 不变量一条未改**：
+  1. §7 端点候选 `/api/word/export` 正式定稿为 `POST /api/word/export`。显式 `.md` 输入优先；未给时**只读**自动收集 `MERGED.md`，其次 `out/md/*.md`（上限 20 个）。`/api/media/run`、`/api/link/resolve` 仍是 S3/S5 候选。
+  2. 产物为 `out/derived/<doc_id>.docx`（`doc_id` 取源 `.md` 字节的 sha256 前 12 位）+ `provenance_media.json`；**provenance 必须读旧条目后追加**，不得覆盖 S2a 历史条目；空输入零副作用（连 `derived/` 都不创建）。
+  3. 「来源注释与锚点不丢」定稿为双保险：① 每条 `<!-- source/src/anchor … -->` 按**原文**渲染为 `SourceNote` 段落，位置顺序不变；② `src` 原文写入 `docProps/core.xml` 的 `dc:description`。验收须用 `word_input.parse_ooxml()` 反向读回形成闭环。
+  4. OOXML 包最小部件定为 8 个（内容类型、根关系、document.xml、document.xml.rels、styles.xml、settings.xml、core.xml、app.xml）；所有文本必须 XML 转义并剔除 XML 1.0 非法控制字符；`body` 以空段落收尾，表格后不得直接接 `sectPr`。
+  5. **`media_tools.capabilities()` 是 S1 的「能力占位清单」**，被 `test_33` 的「全部未启用」硬断言锁死，**S2a/S2b 一律不改写**；其 `word_export.enabled=false` 仅表示占位未接入，已落地能力的真实状态一律以 `/api/tools/probe` **顶层增量字段**（`word_input` / `word_export`）为准。本轮只订正该函数的注释说明，逻辑零改动。
+  6. 输入上限：单文件 8 MB / 2 万行；文件不存在、非 `.md`、空白正文、超上限、写入失败一律诚实失败且零 `.docx` 产出；`.part` 原子替换，失败清理半成品；部分成功显式回 `warning`。
+  7. 测试基线由 64 → **66 用例**（`test_37` / `test_38`）。`test_06` / `test_11` 与 `/api/transcribe` 空心位仍原样保留。
