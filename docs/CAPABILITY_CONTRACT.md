@@ -1,6 +1,6 @@
 # 精核 · 阶段 2/3 新能力契约（v0.1 · S0 草案）
 
-> 立约日期：2026-11-15 · 状态：**v0.4 已生效**（S0/S1/S2a/S2b 已完成，停在 S2b 闸门）
+> 立约日期：2026-11-15 · 状态：**v0.5 已生效**（S0/S1/S2a/S2b/S3 已完成，停在 S3 闸门）
 > 适用能力：Word 输入增强 / `.md` → `.docx` 导出 / 音频 → `.md` / 视频 → `.md` / 视频链接 → `.md`
 > 代码基线：`extract.py` v0.4.1，CI 全绿，60 用例，9 项发版门禁
 > 规格基线：`SPEC.md` v2.11（冻结，唯一写者，本契约不修改它）
@@ -139,6 +139,7 @@
 - 响应统一 `{"ok": bool, ...}`；失败必带可读 `error`；未知 `/api/*` 的 GET/POST 同形返回 `404 + JSON`（`SPEC.md` §8.3）。
 - 候选：`/api/tools/probe`（健康探测）、`/api/word/export`（`.md` → `.docx`）、`/api/media/run` `/api/media/status` `/api/media/cancel`（音视频与批量）、`/api/link/resolve`（链接预检）。
 - **不得**改动既有端点旧契约：`/api/transcribe` 在无后端时仍返回诚实拒绝；`/api/summarize` 行为不变；新增端点走增量，不重写路由主链。
+- S3 定稿：`POST /api/audio/inspect`、`POST /api/audio/transcribe`、`POST /api/audio/cancel`、`GET /api/audio/status?since=N`；`/api/media/run` 留给 S4/S5 批量编排，`/api/link/resolve` 仍是 S5 候选。
 
 ---
 
@@ -149,8 +150,8 @@
 | **S0** 立项与契约对账 | 本契约 + 需求确认表 + 红线解禁清单 + 受影响断言清单 | 60 用例原样全绿、9 项门禁通过、`SPEC.md` 与功能代码零改动 | 等用户确认 |
 | **S1** 能力框架地基 | `FORMAT_REGISTRY` 收敛、`ToolAdapter` + 健康探测、`Job` 进度/取消/超时、`derived/` 产物区 | 缺工具时按钮诚实显示「未启用」；长任务可取消；临时文件零残留；既有断言全绿 | 等确认 |
 | **S2a** Word → .md 输入增强 | `.doc` 旧格式（本机 LibreOffice 预处理适配）、批注/修订/加密识别 | 不引第三方库；加密仍单列「待人工授权」不破译；产物守 8 字段 | **已完成** |
-| **S2b** .md → .docx 导出 | 纯标准库 `zipfile` + OOXML 独立模块，放开禁用按钮 | 产物可被 Word 打开；来源注释与锚点不丢；exe 不含重依赖 | **已完成 · 等确认（S3）** |
-| **S3** 音频 → .md | ASR 适配器 + 时间戳 + 诚实降级 | 真实样本非空、可取消、失败诚实回显；绝不伪转写 | 等确认 |
+| **S2b** .md → .docx 导出 | 纯标准库 `zipfile` + OOXML 独立模块，放开禁用按钮 | 产物可被 Word 打开；来源注释与锚点不丢；exe 不含重依赖 | **已完成**（S2b 闸门已放行） |
+| **S3** 音频 → .md | ASR 适配器 + 时间戳 + 诚实降级 | 真实样本非空、可取消、失败诚实回显；绝不伪转写 | **已完成 · 等确认（S4）** |
 | **S4** 视频 → .md | 独立 video handler（音轨 + 画面/字幕 + 元数据），**不复用音频路径** | 三区块齐备；`test_06`/`test_11` 原样全绿（守护冻结内核） | 等确认 |
 | **S5** 视频链接 → .md | 任意链接与播放列表、防 SSRF、重定向、m3u8/DASH、批量队列 | 恶意/越界 URL 被拒；取消即清理；单条失败不拖垮整批 | 等确认 |
 | **S6** 工程化收口 | 测试矩阵、CI 可选依赖探测、门禁扩项、exe、push tag、Release 资产核对 | 全量用例 + 门禁 + CI 全绿；Release 带 exe | 最终验收 |
@@ -204,3 +205,13 @@
   5. **`media_tools.capabilities()` 是 S1 的「能力占位清单」**，被 `test_33` 的「全部未启用」硬断言锁死，**S2a/S2b 一律不改写**；其 `word_export.enabled=false` 仅表示占位未接入，已落地能力的真实状态一律以 `/api/tools/probe` **顶层增量字段**（`word_input` / `word_export`）为准。本轮只订正该函数的注释说明，逻辑零改动。
   6. 输入上限：单文件 8 MB / 2 万行；文件不存在、非 `.md`、空白正文、超上限、写入失败一律诚实失败且零 `.docx` 产出；`.part` 原子替换，失败清理半成品；部分成功显式回 `warning`。
   7. 测试基线由 64 → **66 用例**（`test_37` / `test_38`）。`test_06` / `test_11` 与 `/api/transcribe` 空心位仍原样保留。
+- **v0.5（2026-11-15 · S3）**：用户确认 S2b 后开工；S3 落地后补以下裁决，**§1 不变量一条未改**：
+  1. **`/api/transcribe` 空心位原样保留**。`test_34`（识别到文件也只诚实拒绝）、`test_38`（「阶段 3 音视频转写需专用转写器」与 `el.btnTranscribe.disabled = !on || !mediaOn`）双锁旧契约；就地填充必然删改文案并使既有 66 个断言变红。S3 另开 `/api/audio/*` 四个端点，S4 视频走独立 handler，绝不复用音频路径。
+  2. **能力状态仍走顶层增量字段**：`/api/tools/probe` 新增 `audio_transcribe`（`enabled` = 本机 whisper 与 ffmpeg 同时可用）。`media_tools.capabilities()` / `TOOL_SPECS` / `payload.tools` 与 `media_ready()` 一律不改写；`media_ready()` 因占位清单锁死恒 False，**不得**当 S3 就绪判据。
+  3. **只认 JSON 文件输出**：`whisper <in> --model <m> --task transcribe --output_format json --output_dir <temp>`，从 `--output_dir` 读 `<stem>.json`，不读 stdout（冻结态 stdout 可能为 None）；否决 srt / vtt（逗号毫秒、BOM、二次解析易把失败伪装成空转写）。ffmpeg 只做 `ffmpeg -hide_banner -i <in>` 只读时长探测，失败不阻断转写，元数据明确写「未探测到」。
+  4. **绝不产出伪转写**：`segments` 必须存在且含至少一条 `text` 非空、时间合法（`0 <= start <= end <= 99h`、有限值）的分段才写 md；空分段 / 无语音 / 非法 JSON / 非 0 退出 / 缺工具一律 `ok:false` + 零 md，**不生成「无语音」说明文档**。非法时间段逐条丢弃并在 `## 转写元数据` 计数。时间戳统一 `HH:MM:SS.mmm`。
+  5. **视频拒收优先于存在性与工具检查**：只认 `format_registry.MEDIA_AUDIO`，且 `media_kind(ext) == "video"` 先于文件存在性判定；不得沿用 `app.py:_STAGE3_AUDIO_EXT`（它是 `MEDIA_EXT` 并集，含全部视频后缀，是当前最危险的真实隐患）。缺工具时视频仍逐条回「不支持」而非笼统「未启用」。
+  6. **产物与出处**：`out/derived/<doc_id>.md`（`doc_id = doc_ + sha256(原始音频字节)[:12]`）+ 8 字段 `src`（`converter` 只写 `whisper <版本> + ffmpeg <版本>`，探不到写「版本未探测到」，绝不写「内置 ASR」）+ 块级锚点 `time` 键；区块为「文档信息 / 音轨转写 / 转写元数据」，**音频不写画面 / 字幕区块**（那是 S4 视频三区块要求）。provenance 读旧追加，失败项也留痕；**能力级缺工具时零副作用**（连 `derived/` 都不创建），只在 results 与运行日志回显。
+  7. **长任务与进程树**：转写任务单独持有 `_AUDIO_JOB`（不污染阶段 1 `/api/progress` 与件数对账），复用 `Job` 事件总线 / `register_child` / `terminate_children` 与 `start_job_watchdog`；新增 `media_tools.terminate_process_tree()`，Windows 用 `taskkill /T /F /PID` 杀 whisper 派生的整棵 ffmpeg 进程树，POSIX 用 `killpg`。临时目录 `jinghe-run-audio-<pid>-<seq>` 三链齐备，前缀刻意与阶段 1 `jinghe-run-<pid>-<seq>` 隔离，避免孤儿清扫误删。
+  8. **UI 增量**：新增「音频转写 → .md」与「取消转写」按钮；老的音视频转写占位按钮与 S1 诚实降级判定原样保留。缺工具显示「未启用」。
+  9. 测试基线由 66 → **68 用例**（`test_39` / `test_40`）。`test_06` / `test_11`、`test_34` / `test_38` 的空心位断言全部原样保留。

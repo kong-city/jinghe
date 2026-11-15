@@ -112,7 +112,7 @@
 
       <section class="card features">
         <div class="card-title">后处理 · 阶段 2 / 3</div>
-        <p class="card-sub">基于本次提取产物（MERGED.md，现行输出格式为 Markdown）进一步加工；Word 导出产物落 out/derived/，不改动对账文件。</p>
+        <p class="card-sub">基于本次提取产物（MERGED.md，现行输出格式为 Markdown）进一步加工；Word / 音频产物落 out/derived/，不改动对账文件。音频转写需本机安装 whisper 与 ffmpeg，缺工具时按钮显示「未启用」。</p>
         <div class="feature-grid">
           <button id="btnSummarize" class="feature-btn" type="button" disabled>核心提炼（摘要）</button>
           <button id="btnExportDocx" class="feature-btn" type="button" disabled
@@ -120,6 +120,9 @@
           <button id="btnTranscribe" class="feature-btn" type="button" disabled>音视频转写</button>
           <button id="btnWordEnhance" class="feature-btn" type="button" disabled
                   title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）">Word 输入增强</button>
+          <button id="btnAudioTranscribe" class="feature-btn" type="button" disabled
+                  title="用本机 whisper 把所选音频转成带时间戳的 .md（落 out/derived/）；视频由 S4 独立处理，不复用音频路径">音频转写 → .md</button>
+          <button id="btnAudioCancel" class="feature-btn" type="button" hidden>取消转写</button>
           <button id="btnKnowledgeBase" class="feature-btn is-soon" type="button" disabled
                   title="阶段 4 知识库 / 自动化，规划中">知识库（规划中）</button>
         </div>

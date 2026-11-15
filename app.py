@@ -45,6 +45,7 @@ import media_tools
 import media_runtime
 import word_input  # S2a：Word → .md 输入增强（独立后处理层，冻结内核零改动）
 import word_export  # S2b：.md → .docx 导出（独立后处理层，纯标准库 OOXML）
+import audio_transcribe  # S3：音频 → .md（本机 whisper 适配器，冻结内核零改动）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -732,7 +733,12 @@ class Job:
         return proc
 
     def terminate_children(self) -> int:
-        """终止所有已登记且仍在运行的外部子进程，返回实际终止个数。"""
+        """终止所有已登记且仍在运行的外部子进程，返回实际终止个数。
+
+        S3 补强：whisper CLI 会再派生 ffmpeg，单杀外壳会留下孤儿进程继续
+        占用 CPU 与临时目录。对真实 Popen 追加进程树终止；测试里的
+        MagicMock 仍只走上面的单进程分支，既有断言不受影响。
+        """
         with self._children_lock:
             kids = list(self.children)
         killed = 0
@@ -743,6 +749,8 @@ class Job:
                     killed += 1
             except Exception:
                 pass
+        for proc in kids:
+            media_tools.terminate_process_tree(proc)
         return killed
 
     def add(self, etype: str, text: str, progress: float | None = None,
@@ -763,6 +771,11 @@ _JOB_LOCK = threading.Lock()
 _LAST_INPUT = ""
 _LAST_INPUTS: list[str] = []
 _LAST_OUTDIR = ""
+
+# S3 音频转写任务：与阶段 1 提取任务 _JOB 分开持有，避免污染 /api/progress
+# 的事件队列与件数对账；仍复用同一个 Job 类（事件总线 / 子进程登记 / 超时）。
+_AUDIO_JOB: Job | None = None
+_AUDIO_LOCK = threading.Lock()
 
 
 def start_job_watchdog(job: Job, timeout_sec: float) -> threading.Event | None:
@@ -1897,6 +1910,16 @@ class Handler(BaseHTTPRequestHandler):
                 refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
                 self._send_json(self._api_tools_probe(refresh))
                 return
+            if path == "/api/audio/status":
+                # S3：转写进度独立轮询，不塞进阶段 1 的 /api/progress 事件队列。
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                try:
+                    since = int((qs.get("since") or ["0"])[0])
+                except (TypeError, ValueError):
+                    since = 0
+                self._send_json(self._api_audio_status(since))
+                return
             if path == "/favicon.ico":
                 self._send_bytes(b"", "image/x-icon", 204)
                 return
@@ -1959,6 +1982,8 @@ class Handler(BaseHTTPRequestHandler):
         data["word_input"] = word_input.capability(refresh=refresh)
         # S2b：导出能力同样走顶层增量字段，不改写 capabilities() / tools 结构。
         data["word_export"] = word_export.capability()
+        # S3：音频转写真实状态同样走顶层增量字段，S1 的占位清单不改写。
+        data["audio_transcribe"] = audio_transcribe.capability(refresh=refresh)
         return data
 
     def _api_state(self) -> dict:
@@ -2077,6 +2102,16 @@ class Handler(BaseHTTPRequestHandler):
                     _norm_inputs(data),
                     str(data.get("outdir") or "").strip(),
                 ))
+            elif path == "/api/audio/inspect":
+                self._send_json(self._api_audio_inspect(_norm_inputs(data)))
+            elif path == "/api/audio/transcribe":
+                self._send_json(self._api_audio_transcribe(
+                    _norm_inputs(data),
+                    str(data.get("outdir") or "").strip(),
+                    str(data.get("model") or "").strip(),
+                ))
+            elif path == "/api/audio/cancel":
+                self._send_json(self._api_audio_cancel())
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态
@@ -2529,6 +2564,100 @@ class Handler(BaseHTTPRequestHandler):
                        RuntimeError("frozen_unchanged=False"),
                        request=target_dir)
         return result
+
+    # ------------------- S3 · 音频 → .md（本机 whisper 适配器） ------------- #
+    def _api_audio_inspect(self, inputs: list[str]) -> dict:
+        """只读预检：视频拒收、缺工具诚实回显，不写任何文件、不创建目录。"""
+        result = audio_transcribe.inspect(inputs)
+        _append_log("[INFO] 音频转写预检：共 %d 个文件，可处理 %d 个"
+                    % (result["total"], result["ready"]))
+        return result
+
+    def _api_audio_transcribe(self, inputs: list[str], outdir: str,
+                              model: str = "") -> dict:
+        """同步执行长任务，独立 Job 供 /api/audio/status 轮询与 /api/audio/cancel 取消。
+
+        与阶段 1 的 `_JOB` 分开持有，避免污染 `/api/progress` 的事件队列和
+        `md/` 件数对账；但仍复用 S1 的 Job 事件总线、子进程登记与超时看门狗。
+        """
+        global _AUDIO_JOB
+        target_dir = outdir or _LAST_OUTDIR
+        if not target_dir:
+            return {"ok": False, "error": "请先指定输出目录（本次提取的输出路径）"}
+        with _AUDIO_LOCK:
+            current = _AUDIO_JOB
+            if current is not None and current.running:
+                return {"ok": False, "error": "已有音频转写任务在运行"}
+            job = Job(list(inputs), target_dir)
+            job.state = "running"
+            _AUDIO_JOB = job
+        timeout = audio_transcribe.DEFAULT_TIMEOUT
+        stop = start_job_watchdog(job, timeout + 10.0)
+        result: dict = {}
+        try:
+            result = audio_transcribe.transcribe(
+                inputs, target_dir, job=job, refresh=True, timeout=timeout,
+                model=model or audio_transcribe.DEFAULT_MODEL)
+        except Exception as exc:  # 兜底：绝不把异常伪装成成功
+            _log_error("API:/api/audio/transcribe", "转写任务异常", exc,
+                       request=target_dir)
+            result = {"ok": False, "error": "音频转写异常：%s" % exc,
+                      "results": [], "success": 0, "failed": 0, "total": 0}
+        finally:
+            if stop is not None:
+                stop.set()
+            with _AUDIO_LOCK:
+                job.running = False
+                job.state = ("cancelled" if (job.cancelled or job.timed_out)
+                             else ("done" if result.get("ok") else "failed"))
+                job.summary = result
+                job.error = result.get("error") or ""
+        if result.get("ok"):
+            _append_log("[INFO] 音频转写完成：成功 %d / 共 %d，产物区 %s"
+                        % (result.get("success", 0), result.get("total", 0),
+                           result.get("derived_dir", "")))
+        else:
+            _append_log("[WARN] 音频转写未产出文件：%s"
+                        % result.get("error", "逐条原因见 results"))
+        if not result.get("frozen_unchanged", True):
+            _log_error("API:/api/audio/transcribe",
+                       "新能力污染了阶段 1 冻结对账盘",
+                       RuntimeError("frozen_unchanged=False"),
+                       request=target_dir)
+        return result
+
+    def _api_audio_cancel(self) -> dict:
+        """取消转写：状态收敛到 cancelled，并终止 whisper 派生的整棵进程树。"""
+        with _AUDIO_LOCK:
+            job = _AUDIO_JOB
+        if job is None or not job.running:
+            return {"ok": False, "error": "当前无音频转写任务"}
+        job.cancelled = True
+        job.terminate_children()
+        job.add("log", "用户取消音频转写，已终止外部工具进程")
+        return {"ok": True}
+
+    def _api_audio_status(self, since: int) -> dict:
+        """S3 转写进度：与阶段 1 的 /api/progress 同形，但独立事件队列。"""
+        with _AUDIO_LOCK:
+            job = _AUDIO_JOB
+        if job is None:
+            return {"events": [], "next": since, "running": False,
+                    "summary": None, "state": "idle", "error": None,
+                    "total": 0, "current": 0, "current_name": ""}
+        with job.lock:
+            events = [dict(ev) for ev in job.events if ev["i"] > since]
+            return {
+                "events": events,
+                "next": events[-1]["i"] if events else since,
+                "running": job.running,
+                "summary": job.summary,
+                "state": job.state,
+                "error": job.error,
+                "total": job.total,
+                "current": job.current,
+                "current_name": job.current_name,
+            }
 
 
 # --------------------------------------------------------------------------- #

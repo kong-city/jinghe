@@ -2387,6 +2387,330 @@ class AppContractTest(unittest.TestCase):
                       "新模块未加入 PyInstaller hiddenimports")
 
 
+    # ------------------------------------------------------------------ #
+    # S3 公共夹具：本机工具的「假探测结果」与 mock 转写后端
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _s3_fake_cap(*, enabled=True, whisper_version="1.2.3",
+                     ffmpeg_version="7.0.2") -> dict:
+        return {
+            "name": "audio_transcribe",
+            "enabled": enabled,
+            "capability": "available" if enabled else "unavailable",
+            "tools": {
+                "whisper": {"available": enabled, "path": "whisper",
+                            "version": whisper_version, "reason": "可用"},
+                "ffmpeg": {"available": enabled, "path": "ffmpeg",
+                           "version": ffmpeg_version, "reason": "可用"},
+            },
+            "missing": [] if enabled else ["whisper", "ffmpeg"],
+            "reason": ("可用" if enabled else
+                       "未启用：本机未找到 whisper / ffmpeg，请安装后重试"),
+        }
+
+    @staticmethod
+    def _s3_runner(payload=None, *, rc=0, write=True, raw_text=None):
+        """模拟本机 whisper：把 JSON 写进 --output_dir；ffmpeg 只回元数据。"""
+        def runner(argv):
+            if "-hide_banner" in argv:
+                return {"returncode": 1, "stdout": "", "stderr":
+                        "  Duration: 00:00:15.50, start: 0.000000\n"
+                        "    Stream #0:0: Audio: mp3, 44100 Hz, stereo, fltp"}
+            if write:
+                outd = Path(argv[argv.index("--output_dir") + 1])
+                inp = Path(argv[1])
+                content = (raw_text if raw_text is not None else
+                           json.dumps(payload, ensure_ascii=False))
+                (outd / (inp.stem + ".json")).write_text(content, encoding="utf-8")
+            return {"returncode": rc, "stdout": "",
+                    "stderr": "工具报错" if rc else ""}
+        return runner
+
+    @staticmethod
+    def _s3_frozen_outdir(root: Path) -> Path:
+        out = root / "out"
+        (out / "md").mkdir(parents=True)
+        (out / "md" / "a.md").write_text("# a\n", encoding="utf-8")
+        (out / "INDEX.md").write_text("idx\n", encoding="utf-8")
+        (out / "MERGED.md").write_text("merged\n", encoding="utf-8")
+        return out
+
+    # ------------------------------------------------------------------ #
+    # 39) S3：音频 ASR 适配器 / 产物 / 诚实降级契约
+    # ------------------------------------------------------------------ #
+    def test_39_s3_audio_asr_contract(self):
+        sys.path.insert(0, str(ROOT))
+        try:
+            import audio_transcribe as at
+            import media_runtime as rt
+            import format_registry as reg
+            import media_tools as mt
+        finally:
+            sys.path.remove(str(ROOT))
+        from unittest import mock
+
+        good_payload = {
+            "text": "中文 转写", "language": "zh",
+            "segments": [
+                {"start": 0.0, "end": 8.24, "text": " 这是第一段中文转写 "},
+                {"start": 8.24, "end": 15.5, "text": "第二段 & <标签>"},
+                {"start": 16, "end": 15, "text": "非法段应丢弃"},
+            ],
+        }
+        audio = self.tmp / "voice.mp3"
+        audio.write_bytes(b"ID3 fake audio bytes")
+
+        # ① 冻结内核 / 注册表 / 时间戳与分段解析
+        frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
+        self.assertIn("def test_06_deferred_media", frozen_tests)
+        self.assertIn("def test_11_video_redline", frozen_tests)
+        asr_src = (ROOT / "audio_transcribe.py").read_text(encoding="utf-8")
+        self.assertNotIn("import extract", asr_src,
+                         "S3 不得依赖冻结内核的解析流水线")
+        self.assertIn("format_registry.MEDIA_AUDIO", asr_src,
+                      "必须显式用 MEDIA_AUDIO 过滤，不得沿用含视频的 _STAGE3_AUDIO_EXT")
+        self.assertEqual(reg.media_kind(".mp3"), "audio")
+        self.assertEqual(reg.media_kind(".mp4"), "video")
+        self.assertEqual(at.format_timestamp(8.24), "00:00:08.240")
+        self.assertEqual(at.format_timestamp(3661.5), "01:01:01.500")
+        self.assertEqual(at.format_timestamp(float("nan")), "00:00:00.000")
+        segs, meta = at.parse_segments(good_payload)
+        self.assertEqual(len(segs), 2)
+        self.assertEqual(meta["skipped"], 1, "end<start 的非法段必须丢弃")
+        self.assertEqual(meta["language"], "zh")
+
+        # ② 视频拒收（红线 2）：分类先于存在性判断，逐条显式「不支持」
+        videos = []
+        for ext in (".mp4", ".mov", ".mkv"):
+            p = self.tmp / ("clip" + ext)
+            p.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            videos.append(str(p))
+        insp = at.inspect(videos)
+        self.assertEqual(insp["total"], 3)
+        self.assertEqual(insp["ready"], 0)
+        for item in insp["items"]:
+            self.assertEqual(item["status"], at.STATUS_UNSUPPORTED)
+            self.assertIn("S4", item["error"])
+            self.assertIn("红线 2", item["error"])
+
+        # ③ 缺工具：诚实「未启用」，零 md、连 derived/ 都不创建
+        out0 = self.tmp / "out_unavailable"
+        out0.mkdir()
+        with mock.patch.object(at, "capability",
+                               return_value=self._s3_fake_cap(enabled=False)):
+            unavailable = at.transcribe([str(audio)], str(out0))
+        self.assertIs(unavailable["ok"], False)
+        self.assertEqual(unavailable["capability"], "unavailable")
+        self.assertIn("未启用", unavailable["error"])
+        self.assertEqual(unavailable["results"][0]["status"], at.STATUS_UNAVAILABLE)
+        self.assertFalse((out0 / "derived").exists(), "缺工具竟创建了 derived 目录")
+        self.assertEqual(list(out0.rglob("*.md")), [])
+
+        # ④ mock 后端真实样本：8 字段 src / 锚点 / 时间戳 / 三区块 / 冻结盘隔离
+        outdir = self._s3_frozen_outdir(self.tmp)
+        before = rt.frozen_snapshot(outdir)
+        with mock.patch.object(at, "capability",
+                               return_value=self._s3_fake_cap()):
+            res = at.transcribe([str(audio)], str(outdir),
+                                runner=self._s3_runner(good_payload))
+        self.assertIs(res["ok"], True, res)
+        self.assertEqual(res["success"], 1)
+        self.assertEqual(res["results"][0]["segments"], 2)
+        self.assertIs(res["frozen_unchanged"], True)
+        self.assertTrue(rt.frozen_unchanged(before, outdir),
+                        "S3 污染了阶段 1 的 md/ 对账盘")
+        produced = Path(res["path"])
+        self.assertEqual(produced.parent.name, rt.DERIVED_DIRNAME)
+        md = produced.read_text(encoding="utf-8")
+        for key in ("src:", "path:", "format:", "converter:", "extracted:",
+                    "size:", "sha256:", "anchors:"):
+            self.assertIn(key, md, "S3 产物缺少 8 字段中的 %s" % key)
+        self.assertIsNotNone(re.search(r"sha256: [0-9a-f]{64}", md))
+        self.assertRegex(md, r"<!--\s*anchor:\s*doc_[0-9a-f]{12}\s*\|")
+        self.assertIn("time: 00:00:00.000-00:00:08.240", md)
+        self.assertIn("[00:00:00.000 → 00:00:08.240] 这是第一段中文转写", md)
+        self.assertIn("第二段 & <标签>", md)
+        self.assertIn("whisper 1.2.3 + ffmpeg 7.0.2", md)
+        self.assertNotIn("非法段应丢弃", md)
+        for section in ("## 文档信息", "## 音轨转写", "## 转写元数据"):
+            self.assertIn(section, md)
+        self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
+        self.assertEqual((outdir / "MERGED.md").read_text(encoding="utf-8"), "merged\n")
+        self.assertEqual(list((outdir / "derived").glob("*.part")), [],
+                         ".part 半成品未清理")
+        prov = rt.read_provenance(outdir)
+        self.assertEqual(len(prov["entries"]), 1)
+        self.assertEqual(prov["entries"][0]["capability"], "audio_transcribe")
+        self.assertEqual(prov["entries"][0]["segments"], 2)
+
+        # ⑤ 伪转写防护：空分段 / 缺 segments / 非法 JSON / 无输出 / 非 0 退出
+        bad_cases = [
+            ("空分段", self._s3_runner({"text": "", "segments": []})),
+            ("缺少 segments", self._s3_runner({"text": "只有全文占位"})),
+            ("非法 JSON", self._s3_runner(raw_text="{not json")),
+            ("无 json 输出", self._s3_runner(write=False)),
+            ("非 0 退出", self._s3_runner(good_payload, rc=1)),
+        ]
+        for i, (label, bad_runner) in enumerate(bad_cases):
+            sub = self.tmp / ("bad_%d" % i)
+            sub.mkdir()
+            with mock.patch.object(at, "capability",
+                                   return_value=self._s3_fake_cap()):
+                bad = at.transcribe([str(audio)], str(sub), runner=bad_runner)
+            self.assertIs(bad["ok"], False, "%s 竟宣称成功" % label)
+            self.assertEqual(list((sub / "derived").glob("*.md")) if
+                             (sub / "derived").exists() else [], [],
+                             "%s 竟产出了 md" % label)
+            self.assertNotIn("无语音说明", str(bad))
+        with mock.patch.object(at, "capability",
+                               return_value=self._s3_fake_cap()):
+            no_speech = at.transcribe(
+                [str(audio)], str(self.tmp / "bad_no_speech"),
+                runner=self._s3_runner({"text": "", "segments": []}))
+        self.assertEqual(no_speech["results"][0]["status"], at.STATUS_NO_SPEECH)
+        self.assertIn("拒绝写空 md", no_speech["results"][0]["error"])
+
+        # ⑥ provenance 追加而非覆盖（S2b 历史条目必须还在）
+        rt.write_provenance(outdir, entries=[
+            {"capability": "word_export", "name": "old.docx", "status": "成功"}])
+        with mock.patch.object(at, "capability",
+                               return_value=self._s3_fake_cap()):
+            again = at.transcribe([str(audio)], str(outdir),
+                                  runner=self._s3_runner(good_payload))
+        self.assertIs(again["ok"], True)
+        caps = {e.get("capability") for e in
+                rt.read_provenance(outdir)["entries"]}
+        self.assertIn("word_export", caps)
+        self.assertIn("audio_transcribe", caps)
+
+        # ⑦ 取消收敛 + 外部工具进程树终止
+        with mock.patch.object(at, "capability",
+                               return_value=self._s3_fake_cap()):
+            cancelled = at.transcribe(
+                [str(audio)], str(self.tmp / "out_cancel"),
+                runner=self._s3_runner(good_payload),
+                cancel_check=lambda: True)
+        self.assertIs(cancelled["ok"], False)
+        self.assertIs(cancelled["cancelled"], True)
+        self.assertEqual(cancelled["results"][0]["status"], at.STATUS_CANCELLED)
+        self.assertEqual(list((self.tmp / "out_cancel").rglob("*.md")), [])
+        long_proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            with mock.patch.object(mt.subprocess, "run") as mocked:
+                self.assertIs(mt.terminate_process_tree(long_proc), True)
+                argv = mocked.call_args[0][0]
+                self.assertIn("/T", argv, "未用 /T 杀整棵进程树")
+                self.assertIn("/F", argv)
+        finally:
+            long_proc.terminate()
+            long_proc.wait(timeout=5)
+        self.assertIs(mt.terminate_process_tree(object()), False,
+                      "非 Popen 不得误触进程树终止")
+
+        # ⑧ 新模块纳入编译门禁与冻结打包清单
+        self.assertIn("audio_transcribe.py",
+                      (ROOT / "tools" / "check_release.py").read_text(
+                          encoding="utf-8"))
+        self.assertIn("'audio_transcribe'",
+                      (ROOT / "build.spec").read_text(encoding="utf-8"))
+
+    # ------------------------------------------------------------------ #
+    # 40) S3：HTTP 端点、能力状态与 UI 契约
+    # ------------------------------------------------------------------ #
+    def test_40_s3_audio_http_and_ui(self):
+        srv = self.start()
+
+        # ① 探测端点：顶层增量字段；S1 占位清单 / 三工具结构原样
+        status, probe = srv.get_json("/api/tools/probe")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(probe["tools"]), {"ffmpeg", "whisper", "yt-dlp"})
+        self.assertIn("audio_transcribe", probe)
+        self.assertIs(probe["audio_transcribe"]["enabled"], False,
+                      "本机未装 whisper / ffmpeg 时不得谎报可用")
+        self.assertEqual(probe["audio_transcribe"]["capability"], "unavailable")
+        self.assertIs(probe["capabilities"]["media_transcribe"]["enabled"], False)
+        self.assertIs(probe["capabilities"]["word_export"]["enabled"], False,
+                      "S1 占位清单不得改写")
+        self.assertIs(probe["word_input"]["enabled"], True)
+        self.assertIs(probe["word_export"]["enabled"], True)
+
+        # 刚启动、尚未发起任何转写：状态端点必须是 idle 空事件
+        status, st = srv.get_json("/api/audio/status?since=0")
+        self.assertEqual(status, 200)
+        self.assertEqual(st["state"], "idle")
+        self.assertEqual(st["events"], [])
+
+        outdir = self._s3_frozen_outdir(self.tmp)
+        audio = self.tmp / "voice.mp3"
+        audio.write_bytes(b"ID3 fake audio bytes")
+        video = self.tmp / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+        # ② 只读预检：视频逐条拒收，零副作用
+        status, ins = srv.post_json(
+            "/api/audio/inspect", {"inputs": [str(audio), str(video)]})
+        self.assertEqual(status, 200)
+        self.assertIs(ins["ok"], True)
+        by_name = {i["name"]: i for i in ins["items"]}
+        self.assertEqual(by_name["clip.mp4"]["status"], "不支持")
+        self.assertIn("S4", by_name["clip.mp4"]["error"])
+        self.assertFalse((outdir / "derived").exists(), "预检竟创建了 derived 目录")
+
+        # ③ 缺工具诚实降级：零 md、零 derived
+        status, res = srv.post_json(
+            "/api/audio/transcribe",
+            {"inputs": [str(audio)], "outdir": str(outdir)})
+        self.assertEqual(status, 200, res)
+        self.assertIs(res["ok"], False)
+        self.assertEqual(res["capability"], "unavailable")
+        self.assertIn("未启用", res["error"])
+        self.assertFalse((outdir / "derived").exists())
+        self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
+
+        # ④ 视频走音频端点仍显式拒收（不因缺工具被笼统盖掉）
+        status, vr = srv.post_json(
+            "/api/audio/transcribe",
+            {"inputs": [str(video)], "outdir": str(outdir)})
+        self.assertEqual(status, 200)
+        self.assertIs(vr["ok"], False)
+        self.assertEqual(vr["results"][0]["status"], "不支持")
+        self.assertFalse((outdir / "derived").exists())
+
+        # ⑤ 任务结束后状态必须收敛（不能停在 running）；取消 / 未知端点
+        status, st = srv.get_json("/api/audio/status?since=0")
+        self.assertEqual(status, 200)
+        self.assertIn(st["state"], ("done", "failed", "cancelled"))
+        self.assertIs(st["running"], False)
+        status, cancel = srv.post_json("/api/audio/cancel", {})
+        self.assertEqual(status, 200)
+        self.assertIs(cancel["ok"], False)
+        status, unknown = srv.post_json("/api/audio/nope", {})
+        self.assertEqual(status, 404)
+        self.assertIs(unknown["ok"], False)
+
+        # ⑥ UI 与后端接线；S1 空心位与冻结断言原样保留
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        spec = (ROOT / "build.spec").read_text(encoding="utf-8")
+        self.assertIn('id="btnAudioTranscribe"', html)
+        self.assertIn('id="btnAudioCancel"', html)
+        for needle in ("/api/audio/transcribe", "/api/audio/status",
+                       "/api/audio/cancel", "doAudioTranscribe",
+                       "audio_transcribe", "hasAudioInput"):
+            self.assertIn(needle, js)
+        self.assertIn('path == "/api/audio/transcribe"', app_src)
+        self.assertIn('data["audio_transcribe"]', app_src)
+        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
+                      "S1 音视频诚实降级判定被改写")
+        self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
+                      "S1 空心占位被提前填充或改写")
+        self.assertIn("audio_transcribe.py", gate)
+        self.assertIn("'audio_transcribe'", spec)
+
+
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
     print("\n=== 界面 / API 契约数字摘要 ===")

@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -183,3 +184,38 @@ def payload(refresh: bool = False) -> dict:
         "media_ready": media_ready(tools, caps),
         "note": "工具由本机提供，软件不下载 / 不打包 / 不自动安装",
     }
+
+
+# --------------------------------------------------------------------------- #
+# S3 增量辅助：外部工具进程树终止（不改 TOOL_SPECS / capabilities 的既有契约）
+# --------------------------------------------------------------------------- #
+def terminate_process_tree(proc) -> bool:
+    """终止 ``proc`` 及其派生的子进程，返回是否尝试过进程树终止。
+
+    whisper CLI 内部会再拉起 ffmpeg 解码音频；只 ``terminate()`` 外壳会留下
+    孤儿进程继续占用 CPU 与临时文件（契约 §5 / §9 R3）。Windows 用
+    ``taskkill /T /F /PID`` 杀整棵树；POSIX 用进程组 ``killpg``。
+
+    仅对**真实** ``subprocess.Popen`` 生效；测试里的 MagicMock 会原样走
+    ``Job.terminate_children()`` 的单进程分支，既有断言不受影响。
+    """
+    if not isinstance(proc, subprocess.Popen):
+        return False
+    try:
+        if proc.poll() is not None:
+            return False
+    except Exception:
+        return False
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True, timeout=5,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+        else:
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:
+        return False
+    return True

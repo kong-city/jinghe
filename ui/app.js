@@ -49,6 +49,8 @@
     btnExportDocx: $("btnExportDocx"),
     btnTranscribe: $("btnTranscribe"),
     btnWordEnhance: $("btnWordEnhance"),
+    btnAudioTranscribe: $("btnAudioTranscribe"),
+    btnAudioCancel: $("btnAudioCancel"),
     btnKnowledgeBase: $("btnKnowledgeBase"),
     toolStatus: $("toolStatus"),
     // 左侧导航与页面
@@ -1000,6 +1002,7 @@
     var cap = (toolState && toolState.capabilities &&
                toolState.capabilities.media_transcribe) || {};
     var why = cap.reason || "本机工具状态未知";
+    var at = (toolState && toolState.audio_transcribe) || {};
     var wi = (toolState && toolState.word_input) || {};
     var legacy = wi.legacy_doc || {};
     el.toolStatus.textContent = "本机工具：" + parts.join(" · ") +
@@ -1010,7 +1013,9 @@
       "，.doc 旧格式：" +
       (legacy.enabled ? "可用（LibreOffice " + (legacy.tool && legacy.tool.version || "") + "）" : "未启用") +
       "；Word 导出：" +
-      ((((toolState || {}).word_export) || {}).enabled ? "已启用（标准库 OOXML）" : "未启用");
+      ((((toolState || {}).word_export) || {}).enabled ? "已启用（标准库 OOXML）" : "未启用") +
+      "；音频转写：" +
+      (at.enabled ? "已启用（本机 whisper + ffmpeg）" : "未启用（" + (at.reason || "缺少本机工具") + "）");
     el.toolStatus.hidden = false;
   }
 
@@ -1040,6 +1045,20 @@
     return false;
   }
 
+  // S3：只认注册表里的音频后缀；扩展名列表与后端 MEDIA_AUDIO 保持一致。
+  var AUDIO_EXT_RE = /\.(mp3|wav|m4a|aac|flac|ogg|wma|amr)$/i;
+  function hasAudioInput() {
+    var list = currentInputs();
+    if (!list.length) {
+      var v = (el.inputPath && el.inputPath.value || "").trim();
+      if (v) list = [v];
+    }
+    for (var i = 0; i < list.length; i += 1) {
+      if (AUDIO_EXT_RE.test(list[i])) return true;
+    }
+    return false;
+  }
+
   // 仅在「本次运行成功且有产物目录」时点亮后处理按钮；运行/预览中不点亮。
   function updateFeatureButtons() {
     var on = !!lastDoneOutdir && !running && !previewing;
@@ -1058,6 +1077,14 @@
     el.btnWordEnhance.disabled = !(!running && !previewing && wordOn &&
                                    (hasWordInput() || on));
     el.btnWordEnhance.textContent = wordOn ? "Word 输入增强" : "Word 输入增强（未启用）";
+    // S3：真实能力走 /api/tools/probe 顶层 audio_transcribe；缺工具恒禁用并显示「未启用」。
+    // 老的音视频转写占位按钮（btnTranscribe）仍按 S1 的诚实降级判定，原样保留。
+    var at = ((toolState || {}).audio_transcribe) || {};
+    var audioOn = !!at.enabled;
+    var audioOut = !!(lastDoneOutdir || (el.outPath && el.outPath.value || "").trim());
+    el.btnAudioTranscribe.disabled = !(!running && !previewing && audioOn &&
+                                       hasAudioInput() && audioOut);
+    el.btnAudioTranscribe.textContent = audioOn ? "音频转写 → .md" : "音频转写（未启用）";
   }
 
   // 统一的后端动作：调用 /api/*，成功给带时间戳的常驻文案，失败显式报错。
@@ -1168,6 +1195,68 @@
       });
   }
 
+  // S3：长任务同步请求 + 独立进度轮询；「取消转写」会终止本机 whisper 进程树。
+  function doAudioTranscribe() {
+    var inputs = currentInputs().filter(function (p) {
+      return AUDIO_EXT_RE.test(p);
+    });
+    if (!inputs.length) {
+      var v = (el.inputPath && el.inputPath.value || "").trim();
+      if (v && AUDIO_EXT_RE.test(v)) inputs = [v];
+    }
+    if (!inputs.length) { showError("请先选择音频文件（mp3 / wav / m4a / flac 等）"); return; }
+    var outdir = (summary && summary.outdir) || lastDoneOutdir ||
+                 (el.outPath && el.outPath.value || "").trim();
+    if (!outdir) { showError("请先指定输出目录"); return; }
+    if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
+    var btn = el.btnAudioTranscribe;
+    var cancelBtn = el.btnAudioCancel;
+    var old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "转写中…";
+    cancelBtn.hidden = false;
+    cancelBtn.disabled = false;
+    clearBar();
+    var since = 0;
+    var timer = window.setInterval(function () {
+      api("/api/audio/status?since=" + since, undefined, 5000).then(function (s) {
+        if (!s) return;
+        if (s.next) since = s.next;
+        var evs = s.events || [];
+        if (evs.length) showNotice(evs[evs.length - 1].text + " · " + nowHMS());
+      }).catch(function () { /* 进度轮询失败不打断转写 */ });
+    }, 800);
+    api("/api/audio/transcribe", { inputs: inputs, outdir: outdir }, 900000)
+      .then(function (r) {
+        if (!r.ok) {
+          var detail = (r.results || []).filter(function (x) { return !x.ok; })
+            .map(function (x) { return x.name + "：" + x.error; }).join("；");
+          throw new Error((r.error || "音频转写失败") +
+                          (detail ? "（" + detail + "）" : ""));
+        }
+        var msg = "已生成 " + r.success + " 份带时间戳的 .md：" + r.derived_dir;
+        if (r.failed) msg += "；另有 " + r.failed + " 项未处理（见产物清单）";
+        if (r.cancelled) msg = "转写已取消：" + (r.error || "");
+        showNotice(msg + " · " + nowHMS());
+      }).catch(function (err) {
+        showError(err.message || String(err));
+      }).finally(function () {
+        window.clearInterval(timer);
+        cancelBtn.hidden = true;
+        btn.textContent = old;
+        updateFeatureButtons();
+      });
+  }
+
+  function doAudioCancel() {
+    api("/api/audio/cancel", {}, 5000).then(function (r) {
+      if (!r.ok) showError(r.error || "取消失败");
+      else showNotice("已请求取消转写（会终止本机工具进程） · " + nowHMS());
+    }).catch(function (err) {
+      showError(err.message || String(err));
+    });
+  }
+
   /* ------------------------------ Tabs ------------------------------ */
   function activateTab(name) {
     var tabs = document.querySelectorAll(".tab");
@@ -1211,6 +1300,8 @@
     el.btnExportDocx.addEventListener("click", doWordExport);
     el.btnTranscribe.addEventListener("click", doTranscribe);
     el.btnWordEnhance.addEventListener("click", doWordEnhance);
+    el.btnAudioTranscribe.addEventListener("click", doAudioTranscribe);
+    el.btnAudioCancel.addEventListener("click", doAudioCancel);
     el.btnKnowledgeBase.addEventListener("click", function () {
       showNotice("阶段 4 知识库 / 自动化规划中，敬请期待。");
     });

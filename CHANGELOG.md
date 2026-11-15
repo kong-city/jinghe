@@ -4,6 +4,31 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.4.6] - 2026-11-15
+
+**S3 · 音频 → `.md`**（阶段 3 一期）。用**本机可插拔** whisper CLI + ffmpeg 把音频转成带时间戳的 Markdown；软件本体仍是零第三方依赖的单文件 exe，模型与工具由用户在本机提供，不下载、不打包、不自动安装。按「逐阶段确认」，S3 完成后停在闸门等确认，**不进入 S4**（视频 → .md）。
+
+### Added
+
+- `audio_transcribe.py`（新）：`capability()` / `inspect()` / `transcribe()` 三层；只认 whisper 的 `--output_format json` **文件输出**（不读 stdout），`segments[].start/end/text` 解析成 `HH:MM:SS.mmm` 时间戳；ffmpeg 仅做 `-hide_banner -i` 只读容器时长探测。
+- 产物 `out/derived/<doc_id>.md`：`# 标题` / `## 文档信息` / `## 音轨转写` / `## 转写元数据` 三区块，8 字段 `src` 来源注释 + 带 `time` 键的块级锚点（`<!-- anchor: doc_x | block: N | time: 00:00:00.000-00:00:08.240 -->`），`converter` 只写真实工具名与探测到的版本；`provenance_media.json` **读旧追加**，不覆盖 S2a / S2b 历史条目。
+- 新端点 `POST /api/audio/inspect`（只读预检）、`POST /api/audio/transcribe`、`POST /api/audio/cancel`、`GET /api/audio/status?since=N`；`GET /api/tools/probe` 新增顶层增量字段 `audio_transcribe`。**`/api/transcribe` 的 S1 空心位原样保留**，S4 视频走独立 handler，不复用音频路径。
+- 长任务链路：复用 S1 的 `Job`（事件总线 / `register_child` / `terminate_children`）与 `start_job_watchdog`，转写任务单独持有 `_AUDIO_JOB`，不污染阶段 1 的 `/api/progress` 事件队列；UI 提供「取消转写」按钮与 800ms 进度轮询。
+- `media_tools.terminate_process_tree()`：whisper 会再派生 ffmpeg，取消时按 `taskkill /T /F /PID` 杀整棵进程树（POSIX 走 `killpg`），不再只杀外壳留孤儿。
+- UI：后处理卡片新增「音频转写 → .md」与「取消转写」；缺工具时按钮显示「未启用」并给出安装提示，工具状态行追加音频能力；老的「音视频转写」占位按钮仍按 S1 诚实降级判定。
+
+### Safety
+
+- **绝不产出伪转写**：空分段 / 无语音 / 缺 `segments` / 非法 JSON / 无 JSON 输出 / 非 0 退出 / 缺工具，一律 `ok:false` + 可读原因，**零 md 产出**，也不生成「无语音」说明文档；缺工具时连 `derived/` 目录都不创建。非法时间段（NaN / 负值 / `end < start` / 超 99 小时）逐段丢弃并计数，绝不编造时间戳。
+- **红线 2**：只认 `format_registry.MEDIA_AUDIO`，`.mp4/.mov/.mkv` 等视频后缀逐条显式拒收并提示「S4 独立 video handler」，且不沿用历史上名不副实的 `_STAGE3_AUDIO_EXT`（那是含全部视频的 `MEDIA_EXT` 并集）。
+- 单文件 256 MB / 单批 50 个 / 单文件 900 秒超时；临时目录 `jinghe-run-audio-<pid>-<seq>` 走「父进程持有 → `finally` 删除 → `atexit` 兜底 → 启动清扫 24h 前孤儿」三链；`.part` 原子替换、失败清半成品；`md/` 实盘数与 `INDEX.md` / `MERGED.md` / `provenance.json` 全程只读，写前后 `frozen_snapshot` 比对。
+
+### Tests
+
+- 新增 `test_39` / `test_40`：伪转写五条路径、视频拒收、缺工具诚实降级、mock 后端中文真实样本（8 字段 / 锚点 / 时间戳 / 三区块 / 冻结盘隔离）、provenance 追加、取消收敛与进程树终止、HTTP 端点与 UI 接线、门禁与打包清单。测试基线 **66 → 68 用例**。
+
+---
+
 ## [0.4.5] - 2026-11-15
 
 **S2b · `.md` → `.docx` 导出**（阶段 2 二期）。放开界面上长期禁用的「导出 Word」占位按钮，用**纯标准库**生成真正可被 Word 打开的 `.docx`；`.md` 输入全程只读，产物落独立 `out/derived/`，阶段 1 冻结对账盘一字不动。按「逐阶段确认」，S2b 完成后停在闸门等确认，**不进入 S3**（音频 → .md）。
