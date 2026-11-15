@@ -4,6 +4,24 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.4.2] - 2026-11-15
+
+阶段 2/3 能力扩展（Word / 音频 / 视频 / 视频链接 → `.md`）的 **S0 立项与契约对账** 里程碑。**本版本不含功能变更**，桌面端行为与 v0.4.1 完全一致；升级版本号仅为履行「每阶段收尾打包 exe + 上传 GitHub + 推版本 tag」的发版规则。
+
+### Added
+
+- `docs/CAPABILITY_CONTRACT.md`：另立的「阶段 2/3 新能力契约 v0.1 草案」。界定与冻结 `SPEC.md` 的正交关系、10 条不变量、五层架构与 `FORMAT_REGISTRY` / `ToolAdapter` / handler 注册表扩展点、产物契约（`out/derived/` + 8 字段 `src` 注释 + 块级锚点）、长任务与安全（防 SSRF）契约、S0–S6 验收口径、6 项风险登记。
+- `docs/S0-立项与契约对账.md`：需求确认表（含用户四项决策）、现场事实（精确到行号）、红线解禁清单、受影响断言清单（A 保持 / B 扩项 / C 订正三类）、5 项已知漂移登记、S0 验收记录与确认闸门。
+
+### Notes
+
+- `SPEC.md` 保持冻结，一字未改；阶段 1 提取内核一行未动。
+- 对上一轮路线图两处精化：`test_06` / `test_11` **原样保留**（它们守护冻结内核），视频红线改由 S4 的独立新测试守护；新能力产物落独立 `out/derived/`，不写 `INDEX.md` / `MERGED.md` / `out/md/`，避免破坏 `SPEC.md` §3.F 的双向件数对账。
+- 验收快照：`python -m unittest -v test_extract test_app` 60/60 OK；`python tools/check_release.py --no-exe` 9/9；验收时 `git diff -- SPEC.md` 与 `git diff --stat -- "*.py" ui/` 均为空。
+- **S0 到此为止，等用户确认后才进入 S1**。
+
+---
+
 ## [0.4.1] - 2026-11-14
 
 修复发版链路的最后一环：v0.4.0 的代码与 tag 都已推送，但 GitHub 上始终没有 Release、也没有 `Jinghe.exe` 资产，客户端「检查更新」因此拿不到安装包。
