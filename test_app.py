@@ -3300,7 +3300,8 @@ class AppContractTest(unittest.TestCase):
 
         # ⑤ 冻结契约：test_06 / test_11 与原主流水线不得被本轮改动碰过
         extract_src = (ROOT / "extract.py").read_text(encoding="utf-8")
-        self.assertIn('__version__ = "0.4.9"', extract_src, "版本号未升到 0.4.9")
+        # v0.5.0：S7 精读/修订能力落地，版本号随发版升号（0.4.9 → 0.5.0）
+        self.assertIn('__version__ = "0.5.0"', extract_src, "版本号未升到 0.5.0")
         self.assertIn("if args.dry_run:", extract_src, "extract.py 冻结主流水线被改动")
 
         # ⑥ 真实 HTTP：GET 检查更新 200、POST 同路径仍 404（锁死根因）、上传落盘
