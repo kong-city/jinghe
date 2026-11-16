@@ -3634,6 +3634,106 @@ class AppContractTest(unittest.TestCase):
             self.assertNotIn(secret, app_log.read_text(encoding="utf-8"),
                              "app.log 泄漏了真 key")
 
+    # ------------------------------------------------------------------ #
+    # 49) S7b 后半：精读提纯引擎（mock 后端，反编造锚点校验 + 产物契约）
+    # ------------------------------------------------------------------ #
+    def test_49_s7b_refine_engine(self):
+        import backend
+        import refine
+        import refine_engine as E
+
+        md = ("# 项目定位\n强调隐私。\n强调零依赖。\n\n"
+              "# 技术方案\n本机处理。\n不上传数据。\n")
+        blocks = E.split_blocks(md)
+        self.assertEqual(len(blocks), 6, "分块数不符（标题+每段各一块）")
+        self.assertEqual([b["n"] for b in blocks], [1, 2, 3, 4, 5, 6])
+        prompt = E.build_prompt(blocks)
+        self.assertIn("[块 1]", prompt)
+        self.assertIn("block", prompt, "prompt 未要求结构化 block")
+        self.assertIn("不得编造新编号", prompt, "prompt 缺反编造约束")
+
+        # 反编造：有效保留，越界/无号/空文本/非整数一律丢弃
+        resp = ('```json\n{"points":['
+                '{"text":"注重隐私","block":2},'
+                '{"text":"编造块","block":999},'
+                '{"text":"无块号"},'
+                '{"text":"","block":3},'
+                '{"text":"字符串块","block":"2"},'
+                '{"text":"本机处理","block":5}'
+                ']}\n```')
+        pts, skipped = E.parse_points(resp, blocks)
+        self.assertEqual([p["text"] for p in pts], ["注重隐私", "本机处理"])
+        self.assertEqual(skipped, 4)
+        # 全无效 → 空列表（上层据此零产物）
+        bad, _ = E.parse_points('{"points":[{"text":"x","block":999}]}', blocks)
+        self.assertEqual(bad, [])
+        # 解析失败 → 空
+        self.assertEqual(E.parse_points("not json", blocks), ([], 0))
+
+        # 产物：mock 后端跑完整提纯，校验 8 字段 / 锚点 / 三区块 / provenance 追加
+        class FakeBackend(backend.Backend):
+            kind = "local"
+            def chat(self, messages):
+                return ('{"points":[{"text":"注重隐私","block":2},'
+                        '{"text":"编造","block":999},'
+                        '{"text":"本机处理","block":5}]}')
+
+        src = Path(self.tmp) / "精读源.md"
+        src.write_text(md, encoding="utf-8")
+        # 预置一条历史 provenance，验证读旧追加
+        E.append_provenance(self.tmp, {"capability": "prior", "status": "历史"})
+        cap = {"tools": {"backend": {"kind": "local"}}, "capability": "available"}
+        refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                        "events": [], "output": "", "error": None}
+        refine._run_refine_inner(str(src), "fake-model", str(self.tmp),
+                                 FakeBackend({}), cap)
+        st = refine.status()
+        self.assertEqual(st["state"], "done", "提纯任务未完成：%s" % st["error"])
+        out = Path(st["output"])
+        self.assertTrue(out.is_file())
+        self.assertTrue(out.name.endswith(refine.REFINE_SUFFIX))
+        text = out.read_text(encoding="utf-8")
+        self.assertIn("<!-- src:", text, "缺 8 字段来源注释")
+        for field in ("doc_id", "path:", "format:", "converter:", "extracted:",
+                      "size:", "sha256:", "anchors:"):
+            self.assertIn(field, text, "src 注释缺字段：%s" % field)
+        for sec in ("## 文档信息", "## 核心知识点", "## 提纯元数据"):
+            self.assertIn(sec, text, "缺区块：%s" % sec)
+        self.assertIn("<!-- anchor:", text, "核心观点缺块级锚点")
+        self.assertIn("注重隐私", text)
+        self.assertNotIn("编造", text, "编造观点未被丢弃")
+        self.assertIn("请对照原文核对", text, "缺诚实核对提示")
+        # provenance 读旧追加（历史条目仍在）
+        prov = E.load_provenance(Path(self.tmp))
+        entries = prov.get("entries") or []
+        self.assertEqual(len(entries), 2, "provenance 未读旧追加")
+        self.assertEqual(entries[0]["capability"], "prior")
+        self.assertEqual(entries[1]["capability"], "refine")
+        # 冻结对账盘只读：out/md / INDEX / MERGED 都未出现
+        self.assertFalse((Path(self.tmp) / "md").exists())
+        self.assertFalse((Path(self.tmp) / "INDEX.md").exists())
+        self.assertFalse((Path(self.tmp) / "MERGED.md").exists())
+        # 产物只在 derived/
+        self.assertEqual(out.parent.name, "derived", "产物未落 derived/")
+
+        # 全无效模型输出 → 零产物
+        class BadBackend(backend.Backend):
+            kind = "local"
+            def chat(self, messages):
+                return '{"points":[{"text":"瞎编","block":999}]}'
+        before = len(list((Path(self.tmp) / "derived").glob("*.refine.md")))
+        refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                        "events": [], "output": "", "error": None}
+        refine._run_refine_inner(str(src), "", str(self.tmp), BadBackend({}), cap)
+        after = len(list((Path(self.tmp) / "derived").glob("*.refine.md")))
+        self.assertEqual(after, before, "全无效输出仍产出了文档（违反零产物红线）")
+        self.assertEqual(refine.status()["state"], "failed")
+
+        # 端点形状：start 支持 outdir，status 支持 since
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('data.get("outdir")', app_src.split("/api/refine/start")[1][:300])
+        self.assertIn("refine.status(since)", app_src)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

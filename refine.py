@@ -165,19 +165,128 @@ def inspect(path: str, refresh: bool = False) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 真实推理调用：S7a 显式拒绝，绝不静默返回假结果
+# 轻量任务状态（自洽，不依赖 app.py 的 Job，避免循环 import）
 # --------------------------------------------------------------------------- #
-def _not_implemented(stage: str) -> dict:
-    return {
-        "ok": False,
-        "capability": STATUS_UNAVAILABLE,
-        "error": ("%s 的真实推理将在后续阶段（S7b/S7c）接入；"
-                  "S7a 仅交付能力地基，绝不产出伪文档" % stage),
-    }
+import threading as _threading
+import refine_engine as _engine
+
+_TASK_LOCK = _threading.Lock()
+_TASK: dict | None = None
 
 
-def start_refine(path: str, model: str = DEFAULT_MODEL, refresh: bool = False) -> dict:
-    """POST /api/refine/start（S7a：能力检查后诚实拒绝真实推理）。"""
+def _task_add(etype: str, text: str, progress: float | None = None) -> dict:
+    with _TASK_LOCK:
+        if _TASK is None:
+            return {}
+        ev = {"i": len(_TASK["events"]) + 1, "type": etype, "text": text}
+        if progress is not None:
+            ev["progress"] = round(float(progress), 4)
+        _TASK["events"].append(ev)
+        return ev
+
+
+def _run_refine(path: str, model: str, outdir: str, backend_obj, cap: dict) -> None:
+    """线程 wrapper：无论成功/失败/取消，结束时都清 running 标志。"""
+    global _TASK
+    try:
+        _run_refine_inner(path, model, outdir, backend_obj, cap)
+    finally:
+        with _TASK_LOCK:
+            if _TASK is not None:
+                _TASK["running"] = False
+
+
+def _run_refine_inner(path: str, model: str, outdir: str, backend_obj, cap: dict) -> None:
+    """提纯任务线程体：全程只读源 md，产物只落 derived/。"""
+    global _TASK
+    try:
+        _task_add("log", "开始读取源 md", 0.05)
+        src = Path(path)
+        text = src.read_text(encoding="utf-8", errors="replace")
+
+        blocks = _engine.split_blocks(text)
+        _task_add("log", "源文档分为 %d 块" % len(blocks), 0.15)
+        if not blocks:
+            _task_add("error", "无可提纯内容", 1.0)
+            with _TASK_LOCK:
+                _TASK["state"] = "failed"
+                _TASK["error"] = "无可提纯内容"
+            return
+
+        with _TASK_LOCK:
+            if _TASK["cancelled"]:
+                _TASK["state"] = "cancelled"
+                return
+
+        _task_add("log", "调用后端提纯…", 0.3)
+        prompt = _engine.build_prompt(blocks)
+        try:
+            response = backend_obj.chat([
+                {"role": "system", "content": "你是文档提纯助手，只输出 JSON。"},
+                {"role": "user", "content": prompt},
+            ])
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            # 异常文案不打印可能含 key 的细节；只报类型
+            _task_add("error", "后端调用失败：%s" % type(exc).__name__, 1.0)
+            with _TASK_LOCK:
+                _TASK["state"] = "failed"
+                _TASK["error"] = "后端调用失败：%s" % type(exc).__name__
+            return
+
+        points, skipped = _engine.parse_points(response, blocks)
+        _task_add("log", "校验核心：有效 %d 条，丢弃 %d 条" % (len(points), skipped), 0.7)
+
+        # 红线：全无效 → 零产物，不写空壳
+        if not points:
+            _task_add("error", "无有效核心（锚点校验后为空），未产出文档", 1.0)
+            with _TASK_LOCK:
+                _TASK["state"] = "failed"
+                _TASK["error"] = "无有效核心，未产出文档"
+            return
+
+        with _TASK_LOCK:
+            if _TASK["cancelled"]:
+                _TASK["state"] = "cancelled"
+                return
+
+        # 冻结对账盘只读快照
+        before = media_runtime.frozen_snapshot(outdir)
+        meta = {
+            "block_count": len(blocks),
+            "skipped": skipped,
+            "backend_kind": cap["tools"]["backend"].get("kind", ""),
+            "model": model or "后端默认",
+            "converter": "可插拔后端（%s）" % cap["tools"]["backend"].get("kind", "?"),
+        }
+        md_text, doc_id = _engine.render_md(src, points, meta)
+        target = media_runtime.ensure_derived(outdir) / (doc_id + REFINE_SUFFIX)
+        target.write_text(md_text, encoding="utf-8")
+        _engine.append_provenance(outdir, {
+            "capability": "refine", "stage": "refine", "doc_id": doc_id,
+            "source": src.name, "backend": meta["backend_kind"], "model": meta["model"],
+            "points": len(points), "skipped": skipped,
+            "output": target.name, "status": "成功",
+        })
+        frozen_ok = media_runtime.frozen_unchanged(before, outdir)
+        _task_add("log", "产物：%s" % target.name, 0.95)
+        with _TASK_LOCK:
+            _TASK["state"] = "done" if frozen_ok else "failed"
+            _TASK["output"] = str(target)
+            _TASK["error"] = None if frozen_ok else "冻结对账盘被改动（异常）"
+        _task_add("log", "完成" if frozen_ok else "冻结盘校验失败", 1.0)
+    except Exception as exc:
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "提纯失败：%s" % type(exc).__name__
+        _task_add("error", "提纯失败：%s" % type(exc).__name__, 1.0)
+
+
+def start_refine(path: str, model: str = DEFAULT_MODEL, outdir: str = "",
+                 refresh: bool = False) -> dict:
+    """POST /api/refine/start：校验后启动提纯线程，立即返回。"""
+    global _TASK
     cap = capability(refresh=refresh)
     if not cap["enabled"]:
         return {"ok": False, "capability": STATUS_UNAVAILABLE,
@@ -186,27 +295,55 @@ def start_refine(path: str, model: str = DEFAULT_MODEL, refresh: bool = False) -
     if not chk["ok"]:
         return {"ok": False, "capability": cap["capability"],
                 "error": chk["error"], "source": chk}
-    return _not_implemented("精读提纯")
+    out = Path(outdir) if outdir else Path(path).resolve().parent
+    with _TASK_LOCK:
+        if _TASK is not None and _TASK["running"]:
+            return {"ok": False, "error": "已有精读任务在运行，请等待或取消"}
+        _TASK = {"state": "running", "running": True, "cancelled": False,
+                 "events": [], "output": "", "error": None}
+    be = backend.current_backend()
+    t = _threading.Thread(target=_run_refine,
+                          args=(chk["path"], model, str(out), be, cap),
+                          daemon=True)
+    t.start()
+    return {"ok": True, "capability": cap["capability"], "started": True}
+
+
+def _not_implemented(stage: str) -> dict:
+    return {"ok": False, "capability": STATUS_UNAVAILABLE,
+            "error": "%s 将在后续阶段接入" % stage}
 
 
 def start_revise(path: str, model: str = DEFAULT_MODEL, refresh: bool = False) -> dict:
-    """POST /api/revise/start（S7a：能力检查后诚实拒绝真实推理）。"""
+    """POST /api/revise/start（S7c 实现，当前显式拒绝）。"""
     cap = capability(refresh=refresh)
     if not cap["enabled"]:
-        return {"ok": False, "capability": STATUS_UNAVAILABLE,
-                "error": cap["reason"]}
+        return {"ok": False, "capability": STATUS_UNAVAILABLE, "error": cap["reason"]}
     chk = check_source(path)
     if not chk["ok"]:
-        return {"ok": False, "capability": cap["capability"],
-                "error": chk["error"], "source": chk}
-    return _not_implemented("修订增修")
+        return {"ok": False, "capability": cap["capability"], "error": chk["error"]}
+    return _not_implemented("修订增修（S7c）")
 
 
-def status() -> dict:
-    """GET /api/refine/status（S7a：无长任务，恒空闲）。"""
-    return {"state": "idle", "running": False, "events": [], "next": 0}
+def status(since: int = 0) -> dict:
+    """GET /api/refine/status：返回增量事件 + 任务状态。"""
+    with _TASK_LOCK:
+        if _TASK is None:
+            return {"state": "idle", "running": False, "events": [], "next": 0,
+                    "output": "", "error": None}
+        events = [e for e in _TASK["events"] if e["i"] > since]
+        return {"state": _TASK["state"], "running": _TASK["running"],
+                "events": events,
+                "next": events[-1]["i"] if events else since,
+                "output": _TASK["output"], "error": _TASK["error"]}
 
 
 def cancel() -> dict:
-    """POST /api/refine/cancel（S7a：无长任务可取消）。"""
-    return {"ok": True, "cancelled": False, "note": "S7a 地基：当前无运行中的精读/修订任务"}
+    """POST /api/refine/cancel：置取消标志（线程在检查点自行退出）。"""
+    global _TASK
+    with _TASK_LOCK:
+        if _TASK is None or not _TASK["running"]:
+            return {"ok": True, "cancelled": False}
+        _TASK["cancelled"] = True
+        return {"ok": True, "cancelled": True}
+

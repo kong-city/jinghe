@@ -288,3 +288,11 @@
   4. app.py 新增 `GET/POST /api/refine/backend`；POST 回显走 public_config 不回显真 key。
   5. 测试基线 75 → **76 用例**（test_48）；修 `_LOCK` 非重入自死锁（save_config 锁内不再调 load_config）。冻结态实测脱敏全绿；SPEC.md / extract.py 零改动。
   6. 停在 S7b 适配层闸门；真推理产出（精读 .refine.md）+ 修订双产物 + UI 留后续阶段。
+
+- **v0.8.7（2026-11-16 · S7b 后半精读提纯引擎落地，mock 验证）**：
+  1. 新增 `refine_engine.py` 纯函数（split_blocks / build_prompt / parse_points / render_md / provenance 读写）。**反编造机制**：模型只返回带块号的 JSON 核心，每条 block 必须 ∈ 1..N 且为整数，否则丢弃；全无效 → 零产物（不写空壳）。
+  2. 产物 `out/derived/<doc_id>.refine.md` = 8 字段 src 注释 + 三区块 + 每条 `block_anchor`；独立 `provenance_refine.json` 读旧追加（与 provenance_media.json 分离，避免污染音视频 schema）；冻结快照 before/after 比对保护 §3.F。
+  3. refine.py 轻量任务状态（模块级 `_TASK` + 锁 + 线程，不依赖 app.py Job）：start_refine(path, model, outdir) / status(since) / cancel；线程 finally 清 running；后端调用走 Backend.chat()，mock 可完整验证。
+  4. 诚实边界写进产物："块号有效≠内容出自该块"，标注请核对，不宣称零幻觉。
+  5. 测试基线 76 → **77 用例**（test_49）；冻结态实测端点形状 + 空输入诚实降级；SPEC.md / extract.py 零改动。
+  6. 停在 S7b 闸门；真模型质量验证待用户环境，后续 S7c 修订双产物、S7d UI、S7e 收口。

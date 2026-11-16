@@ -2122,9 +2122,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(self._api_video_status(since))
                 return
             if path == "/api/refine/status":
-                # S7：精读 / 修订进度独立轮询（S7a 地基当前恒空闲）。
+                # S7：精读 / 修订进度独立轮询（增量事件）。
                 _touch_heartbeat()
-                self._send_json(refine.status())
+                qs = parse_qs(parsed.query)
+                try:
+                    since = int((qs.get("since") or ["0"])[0])
+                except (TypeError, ValueError):
+                    since = 0
+                self._send_json(refine.status(since))
                 return
             if path == "/api/refine/models":
                 # S7：列出本机 ollama 已就绪模型（S7a 地基：缺工具诚实拒绝，不编造模型名）。
@@ -2388,6 +2393,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(refine.start_refine(
                     str(data.get("path") or "").strip(),
                     str(data.get("model") or "").strip(),
+                    str(data.get("outdir") or "").strip(),
                 ))
             elif path == "/api/revise/start":
                 self._send_json(refine.start_revise(
