@@ -47,6 +47,7 @@ import word_input  # S2a：Word → .md 输入增强（独立后处理层，冻�
 import word_export  # S2b：.md → .docx 导出（独立后处理层，纯标准库 OOXML）
 import audio_transcribe  # S3：音频 → .md（本机 whisper 适配器，冻结内核零改动）
 import video_transcribe  # S4：视频 → .md（独立 video handler，绝不复用音频路径）
+import refine  # S7：精读提纯 / 修订增修（本机 ollama，独立后处理层，冻结内核零改动）
 import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行中的程序并重启）
 
 HOST = "127.0.0.1"
@@ -2119,6 +2120,18 @@ class Handler(BaseHTTPRequestHandler):
                     since = 0
                 self._send_json(self._api_video_status(since))
                 return
+            if path == "/api/refine/status":
+                # S7：精读 / 修订进度独立轮询（S7a 地基当前恒空闲）。
+                _touch_heartbeat()
+                self._send_json(refine.status())
+                return
+            if path == "/api/refine/models":
+                # S7：列出本机 ollama 已就绪模型（S7a 地基：缺工具诚实拒绝，不编造模型名）。
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+                self._send_json(refine.listed_models(refresh=refresh))
+                return
             if path == "/api/update/check":
                 # v0.4.8：只查版本（当前 / 最新 / 有无安装包），不下载、不安装。
                 _touch_heartbeat()
@@ -2201,6 +2214,9 @@ class Handler(BaseHTTPRequestHandler):
         # S4：视频能力同样只走顶层增量字段；ffprobe 是 video_transcribe
         # 自有 tools 子结构，绝不并入 media_tools.TOOL_SPECS / probe["tools"]。
         data["video_transcribe"] = video_transcribe.capability(refresh=refresh)
+        # S7：精读 / 修订能力同样走顶层增量字段；ollama 是 refine 自有 tools
+        # 子结构，绝不并入 media_tools.TOOL_SPECS / probe["tools"]（S1 契约锁死 3 工具）。
+        data["refine"] = refine.capability(refresh=refresh)
         return data
 
     def _api_state(self) -> dict:
@@ -2358,6 +2374,21 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/video/cancel":
                 self._send_json(self._api_video_cancel())
+            # ---- S7：精读提纯 / 修订增修（独立后处理层，均为增量端点）----
+            elif path == "/api/refine/inspect":
+                self._send_json(refine.inspect(str(data.get("path") or "").strip()))
+            elif path == "/api/refine/start":
+                self._send_json(refine.start_refine(
+                    str(data.get("path") or "").strip(),
+                    str(data.get("model") or "").strip(),
+                ))
+            elif path == "/api/revise/start":
+                self._send_json(refine.start_revise(
+                    str(data.get("path") or "").strip(),
+                    str(data.get("model") or "").strip(),
+                ))
+            elif path == "/api/refine/cancel":
+                self._send_json(refine.cancel())
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态

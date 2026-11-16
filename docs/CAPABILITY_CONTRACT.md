@@ -266,3 +266,10 @@
   4. **动效降级（WCAG 2.3.3）**：补 `@media (prefers-reduced-motion: reduce)`，过渡压到 **0.01ms**（而非 none，保留 `transitionend` 触发，避免依赖过渡完成的脚本失效）；另给 `.btn` / `.nav-item` / `.link-btn` 补 **160ms** 过渡（skill 建议窗口 150–300ms）。
   5. **已知取舍（不修）**：`.file-list` 空态↔列表切换会有布局跳动（右侧独立卡片，不挤压主内容），强制固定高度会让空态出现大片空白，**判定为可接受不动**。
   6. 测试基线由 73 → **74 用例**（`test_46`，含对比度实算断言：正文/次级/主色/成功/错误各 ≥4.5:1、焦点环 ≥3:1）。
+
+- **v0.8.4（2026-11-16 · S7a 精读/修订能力地基，用户放行但停在 S7a 闸门）**：
+  1. 新增 `refine.py` 独立 handler——精读（提纯核心）/ 修订（补写+修改，新增/修改须样式区分）两阶段地基；只做能力声明、ollama 探测、来源只读检查、诚实降级，**真实推理留 S7b/S7c，S7a 调用显式拒绝、零伪文档**。
+  2. ollama 探测独立挂 `refine.capability()['tools']['ollama']`，**绝不进 TOOL_SPECS / capabilities()**（S1 契约锁死 3 工具 + 占位清单）；真实状态走 `/api/tools/probe` 顶层增量字段 `refine`。
+  3. 六个增量端点：`POST /api/refine/inspect|start|cancel`、`POST /api/revise/start`、`GET /api/refine/status|models`；缺工具/空输入诚实拒绝，**不改 `/api/summarize` / `/api/transcribe` 等既有端点**。
+  4. 双产物契约声明：`.refine.md`（精读）+ `.revise.md`（符号标记）+ `.revise.html`（彩色样式）；产物只落 `out/derived/`，冻结对账盘只读。S7a 只声明不渲染。
+  5. 测试基线 74 → **75 用例**（`test_47`）；冻结态实测 probe 顶层 refine + 新端点可用、缺工具诚实降级；SPEC.md / extract.py 零改动。

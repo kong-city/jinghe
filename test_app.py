@@ -3429,6 +3429,102 @@ class AppContractTest(unittest.TestCase):
         self.assertRegex(css, r"\.btn \{[^}]*transition:[^}]*160ms",
                          ".btn 缺少 160ms 过渡（hover 会生硬跳变）")
 
+    # ------------------------------------------------------------------ #
+    # 47) S7a 精读 / 修订能力地基：独立 handler / 探测隔离 / 诚实降级
+    # ------------------------------------------------------------------ #
+    def test_47_s7a_refine_foundation(self):
+        import refine
+        import media_tools
+
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        refine_src = (ROOT / "refine.py").read_text(encoding="utf-8")
+
+        # ① 独立 handler + 冻结内核零改动
+        self.assertIn("import refine", app_src, "app.py 未挂接 refine handler")
+        extract_src = (ROOT / "extract.py").read_text(encoding="utf-8")
+        self.assertIn("if args.dry_run:", extract_src, "extract.py 冻结主流水线被改动")
+        spec_src = (ROOT / "SPEC.md").read_text(encoding="utf-8")
+        self.assertIn("不提前实现", spec_src, "SPEC.md 冻结规格被改动")
+
+        # ② ollama 探测隔离：绝不进 TOOL_SPECS / 占位清单
+        self.assertNotIn("ollama", [s[0] for s in media_tools.TOOL_SPECS],
+                         "ollama 不得并入 TOOL_SPECS（S1 契约锁死 3 工具）")
+        self.assertEqual([s[0] for s in media_tools.TOOL_SPECS],
+                         ["ffmpeg", "whisper", "yt-dlp"])
+        self.assertIn("绝不并入", refine_src, "refine.py 缺少探测隔离声明")
+        self.assertNotIn("capabilities()[", refine_src, "不应改写占位清单")
+
+        # ③ probe 顶层增量字段 + 既有端点不变
+        self.assertIn('data["refine"] = refine.capability', app_src,
+                      "probe 未挂顶层 refine 字段")
+        for frozen in ('/api/summarize', '/api/transcribe'):
+            self.assertIn('path == "%s"' % frozen, app_src,
+                          "冻结端点 %s 被改动" % frozen)
+
+        # ④ 六个新端点齐全（4 POST + 2 GET）
+        for ep in ('/api/refine/inspect', '/api/refine/start',
+                   '/api/revise/start', '/api/refine/cancel',
+                   '/api/refine/status', '/api/refine/models'):
+            self.assertIn(ep, app_src, "缺少端点：%s" % ep)
+
+        # ⑤ S7a 诚实降级：缺工具 / 空输入一律拒绝，零产物、不写真推理
+        cap = refine.capability()
+        self.assertIsInstance(cap, dict)
+        self.assertIn("capability", cap)
+        self.assertIn("tools", cap)
+        self.assertIn("ollama", cap["tools"])
+        self.assertIn("refine", cap["stages"])
+        self.assertIn("revise", cap["stages"])
+        # 无论本机是否装 ollama，start 在 S7a 阶段都必须诚实拒绝真实推理
+        refused = refine.start_refine(str(ROOT / "不存在.md"))
+        self.assertIs(refused["ok"], False, "S7a 不得静默启动真实推理")
+        self.assertIn("capability", refused)
+        # 空输入必须拒绝
+        empty = refine.check_source("")
+        self.assertIs(empty["ok"], False)
+        self.assertIn("请先选择", empty["error"])
+        # status/cancel 地基形状
+        self.assertIs(refine.status()["running"], False)
+        self.assertIs(refine.cancel()["ok"], True)
+
+        # ⑥ 双产物契约声明（S7a 只声明不渲染）
+        self.assertIn(".refine.md", refine_src)
+        self.assertIn(".revise.md", refine_src)
+        self.assertIn(".revise.html", refine_src)
+        self.assertIn("MD_ADD_OPEN", refine_src, "缺少新增标记语法声明")
+        self.assertIn("MD_MOD_OPEN", refine_src, "缺少修改标记语法声明")
+
+        # ⑦ 真实 HTTP：probe 含顶层 refine；六个新端点形状正确、诚实拒绝
+        srv = self.start()
+        status, probe = srv.get_json("/api/tools/probe")
+        self.assertEqual(status, 200, "probe 应 200")
+        self.assertIn("refine", probe, "probe 缺少顶层 refine 字段")
+        self.assertIn("capability", probe["refine"])
+        # GET status / models
+        st, st_body = srv.get_json("/api/refine/status")
+        self.assertEqual(st, 200, "GET /api/refine/status 应 200")
+        self.assertIn("running", st_body)
+        st, models = srv.get_json("/api/refine/models")
+        self.assertEqual(st, 200, "GET /api/refine/models 应 200")
+        self.assertIn("models", models)
+        # POST inspect / start / revise / cancel —— 空输入或地基阶段一律诚实拒绝
+        st, insp = srv.post_json("/api/refine/inspect", {"path": ""})
+        self.assertEqual(st, 200, "POST /api/refine/inspect 应 200")
+        self.assertIs(insp["ok"], False, "空输入 inspect 应拒绝")
+        st, started = srv.post_json("/api/refine/start", {"path": ""})
+        self.assertEqual(st, 200, "POST /api/refine/start 应 200")
+        self.assertIs(started["ok"], False, "空输入 start 应拒绝")
+        st, revised = srv.post_json("/api/revise/start", {"path": ""})
+        self.assertEqual(st, 200, "POST /api/revise/start 应 200")
+        self.assertIs(revised["ok"], False, "空输入 revise 应拒绝")
+        st, cancelled = srv.post_json("/api/refine/cancel", {})
+        self.assertEqual(st, 200, "POST /api/refine/cancel 应 200")
+        self.assertIs(cancelled["ok"], True)
+        # 冻结端点未变：/api/summarize 行为照旧（空 outdir 诚实拒绝）
+        st, summ = srv.post_json("/api/summarize", {"outdir": ""})
+        self.assertEqual(st, 200)
+        self.assertIs(summ["ok"], False)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

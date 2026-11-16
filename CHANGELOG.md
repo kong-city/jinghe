@@ -304,3 +304,12 @@
 ## [0.2.0] - 2026-11-14 及更早
 
 本地网页界面与基础提取能力；v0.2.1 修文件多选与中文 PDF 提取，v0.2.2 修对话框失败无反馈等 4 处，v0.2.4 多选文件对话框改为 Win32 原生 API，v0.2.5 治理前端请求无超时隐患并新增「打开合并文档」，v0.2.6 新增「打开输出目录」按钮。
+
+### S7a · 精读 / 修订能力地基（用户放行「按你的节奏走」；停在 S7a 闸门）
+
+- 新增 `refine.py`（S7a 地基）：能力声明、本机 ollama 探测、来源只读检查、诚实降级骨架；**不写真调模型逻辑**（S7b/S7c 才接），任何真实推理调用显式拒绝、绝不产伪文档。
+- `/api/tools/probe` 顶层新增 `refine` 字段；**ollama 独立 tools 子结构，不进 TOOL_SPECS**（S1 契约锁死 3 工具）。
+- 六个增量端点：`POST /api/refine/inspect|start|cancel`、`POST /api/revise/start`、`GET /api/refine/status|models`；缺工具/空输入一律诚实拒绝，零产物。
+- 双产物契约已声明（`.refine.md` / `.revise.md` + `.revise.html`），S7a 只声明不渲染。
+- 新增 `test_47`（S7a 地基契约），测试基线 74 → **75**；全量 75 + 门禁 9 项全绿；冻结态实起验证 probe 顶层 refine 与新端点可用。
+- **严格不碰**：`SPEC.md` / `extract.py` / `/api/summarize` / `/api/transcribe` 全部原样。
