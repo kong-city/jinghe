@@ -258,3 +258,11 @@
   2. **torch 版本裁决**：官方最新 `torch 2.15.0+cpu` 依赖精简系统缺失的 `VCRUNTIME140_THREADS.dll`，加载失败；降级 **torch 2.6.0+cpu** 后 `import torch` / `import whisper` 正常。不修改系统 VC++ 运行库、不往 torch/lib 塞 DLL。
   3. **探测超时（关键修复）**：whisper 启动 import torch + numba 实测 6–8s、yt-dlp 首次启动也慢，原统一 `DEFAULT_TIMEOUT=2.0` 会把「已装好」误判「未启用」。`media_tools.py` 新增 `PROBE_TIMEOUTS={"whisper":15.0,"yt-dlp":10.0}`，`_adapters()` 按工具名覆盖；**TOOL_SPECS 三元组结构与 capabilities() 占位清单不变**（S1 契约锁死）。仍真跑探测命令、超时仍诚实标未启用，只是给足重依赖 CLI 启动窗口。
   4. **验收**：冻结态 exe 实起 `/api/tools/probe?refresh=1`，ffmpeg/whisper/yt-dlp 三项 `available=true`；`audio_transcribe` / `video_transcribe` 均 `enabled=true, capability=available, missing=[]`。全量 73 用例 + 门禁 9 项全绿；`test_33` 扩展断言 per-tool 超时与三工具结构。
+
+- **v0.8.3（2026-11-16 · 首页 UI 可访问性审查修复）**：用 `ui-ux-pro-max` 对首页做系统审查并**量化核对**（对比度实算 + 焦点规则清点 + 标签检查 + 动效检查），修 4 类问题，**§1 不变量一条未改、冻结内核零改动**：
+  1. **焦点可见性（WCAG 2.4.7）**：审查发现全站仅 2 处 `:focus`，且 `.drop-zone` / `.text-input` 直接 `outline: none` 却不给替代 → 键盘用户无法定位焦点。修法：统一 `:focus-visible` 焦点环（鼠标点击不显示、Tab 显示），`outline: 2px solid #185FA5` + `outline-offset: 2px`（不用 box-shadow，不影响布局、不被裁切），环色对白底 6.52:1（≥3:1 非文本门槛）；输入框额外内发光。**所有 `outline:none` 一律移除**，由 `test_46` 逐行正则清点锁死。
+  2. **可见文字对比度（WCAG 1.4.3）**：占位符 `#9A9890` 对白底仅 **2.89:1**；另有 `.feature-btn.is-soon`、`.file-empty`、`.card-sub`、`.set-text em`、`.side-foot`、`.drop-zone small` 共 6 处同色可见文字同样不合格。统一改 `#6F6D66`（白底 5.18:1 / `#FAFAF8` 4.63:1 / `#FBFAF7` 4.63:1），仍弱于正文 `#1F1F1D`（16.51:1）以保留层级。**只改文字色，不动边框/背景色**（那些是装饰，不适用 4.5:1）。
+  3. **输入标签（WCAG 3.3.2）**：`#inputPath` / `#outPath` 只靠 placeholder → 补 `aria-label`；拖拽框 `role="button"` 补可访问名称。设置页输入框本已隐式关联 `<label class="set-row">`，**不动**。
+  4. **动效降级（WCAG 2.3.3）**：补 `@media (prefers-reduced-motion: reduce)`，过渡压到 **0.01ms**（而非 none，保留 `transitionend` 触发，避免依赖过渡完成的脚本失效）；另给 `.btn` / `.nav-item` / `.link-btn` 补 **160ms** 过渡（skill 建议窗口 150–300ms）。
+  5. **已知取舍（不修）**：`.file-list` 空态↔列表切换会有布局跳动（右侧独立卡片，不挤压主内容），强制固定高度会让空态出现大片空白，**判定为可接受不动**。
+  6. 测试基线由 73 → **74 用例**（`test_46`，含对比度实算断言：正文/次级/主色/成功/错误各 ≥4.5:1、焦点环 ≥3:1）。

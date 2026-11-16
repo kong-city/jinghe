@@ -3354,6 +3354,81 @@ class AppContractTest(unittest.TestCase):
         # ④ 死代码清理：旧的 renderBuckets 已被 inputMeta 覆盖，不应再残留
         self.assertNotIn("function renderBuckets", js, "残留无调用的 renderBuckets 死代码")
 
+    # ------------------------------------------------------------------ #
+    # 46) v0.4.9 可访问性审查修复：焦点环 / 对比度 / 标签 / 动效降级
+    #     （依据 ui-ux-pro-max 审查；冻结内核与主流水线零改动）
+    # ------------------------------------------------------------------ #
+    def test_46_v049_accessibility_audit_fixes(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+
+        def _lum(hexs):
+            h = hexs.lstrip("#")
+            if len(h) == 3:
+                h = "".join(c * 2 for c in h)
+            ch = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+            f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+            r, g, b = [f(c) for c in ch]
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        def _ratio(a, b):
+            l1, l2 = sorted([_lum(a), _lum(b)], reverse=True)
+            return (l1 + 0.05) / (l2 + 0.05)
+
+        # ① 焦点可见性：不得有「移除 outline 却不给替代」的情况
+        #    先完整剥离 CSS 注释块（注释里会引用 outline:none 这个词，不能误伤），
+        #    再检查所有写法：outline:none / outline: none / outline:none;
+        css_no_comment = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for line in css_no_comment.splitlines():
+            self.assertNotRegex(line, r"outline\s*:\s*none",
+                                "仍有 outline:none 且未提供替代焦点环：%s" % line.strip())
+        self.assertIn(":focus-visible", css, "缺少 :focus-visible 焦点环规则")
+        for sel in (".btn:focus-visible", ".nav-item:focus-visible",
+                    ".link-btn:focus-visible", ".text-input:focus-visible",
+                    ".drop-zone:focus-visible"):
+            self.assertIn(sel, css, "焦点环未覆盖：%s" % sel)
+        self.assertIn("outline: 2px solid #185FA5", css, "焦点环样式缺失")
+        # 焦点环颜色本身要够醒目（对白底 ≥3:1）
+        self.assertGreaterEqual(_ratio("#185FA5", "#FFFFFF"), 3.0,
+                                "焦点环颜色对白底对比度不足 3:1")
+
+        # ② 可见文字对比度：正文级文字全部达 WCAG AA 4.5:1
+        for fg, bg, what in (
+            ("#6F6D66", "#FFFFFF", "次级文字"),
+            ("#6F6D66", "#FAFAF8", "虚线按钮文字"),
+            ("#6F6D66", "#FBFAF7", "拖拽框副文案"),
+            ("#1F1F1D", "#FFFFFF", "正文"),
+            ("#185FA5", "#FFFFFF", "主色链接与按钮"),
+            ("#1F6B3B", "#EDF7F0", "成功提示"),
+            ("#9A3B2F", "#FCEEEC", "错误提示"),
+        ):
+            self.assertGreaterEqual(_ratio(fg, bg), 4.5,
+                                    "%s 对比度 %.2f:1 未达 AA" % (what, _ratio(fg, bg)))
+        # 低对比度的旧色不得再作为前景色出现（注释里提及不算）
+        for line in css_no_comment.splitlines():
+            if "color:" in line and "#9A9890" in line:
+                self.fail("仍有 #9A9890 被用作前景色：%s" % line.strip())
+
+        # ③ 输入框不能只靠 placeholder 当标签
+        for fid in ("inputPath", "outPath"):
+            m = re.search(r'<input id="%s"[^>]*>' % fid, html, re.S)
+            self.assertIsNotNone(m, "找不到 #%s" % fid)
+            tag = m.group(0)
+            self.assertIn("aria-label=", tag,
+                          "#%s 缺少 aria-label（输入框只靠 placeholder 不可访问）" % fid)
+        self.assertIn('aria-label="拖拽输入区', html,
+                      "拖拽框（role=button）缺少可访问名称")
+
+        # ④ 动效降级：必须尊重系统的「减少动态效果」
+        self.assertIn("@media (prefers-reduced-motion: reduce)", css,
+                      "缺少 prefers-reduced-motion 降级")
+        self.assertIn("transition-duration: 0.01ms", css,
+                      "reduced-motion 未关闭过渡")
+
+        # ⑤ 微交互过渡窗口 150–300ms（skill 规范），按钮须有平滑反馈
+        self.assertRegex(css, r"\.btn \{[^}]*transition:[^}]*160ms",
+                         ".btn 缺少 160ms 过渡（hover 会生硬跳变）")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

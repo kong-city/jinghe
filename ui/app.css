@@ -134,6 +134,7 @@ button, input { font-family: inherit; }
   border: none;
   border-radius: 8px;
   cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
 }
 
 .nav-item:hover { background: #F4F6F8; color: #1F1F1D; }
@@ -157,7 +158,8 @@ button, input { font-family: inherit; }
   padding-top: 8px;
   border-top: 1px solid #EDEBE5;
   font-size: 11px;
-  color: #9A9890;
+  /* 版本号是可见文字，原 #9A9890 对白底 2.89:1 未达 AA */
+  color: #6F6D66;
   text-align: center;
 }
 
@@ -261,7 +263,6 @@ button, input { font-family: inherit; }
   color: #6B6A65;
   cursor: pointer;
   transition: border-color .15s ease, background .15s ease, color .15s ease;
-  outline: none;
 }
 .drop-zone svg {
   width: 24px; height: 24px;
@@ -269,7 +270,8 @@ button, input { font-family: inherit; }
   stroke-linecap: round; stroke-linejoin: round;
 }
 .drop-zone span { font-size: 12.5px; }
-.drop-zone small { font-size: 11px; color: #9A9890; }
+/* 引导副文案是可见文字，对比度需达 AA（原 #9A9890 仅 2.89:1） */
+.drop-zone small { font-size: 11px; color: #6F6D66; }
 .drop-zone:hover, .drop-zone:focus-visible {
   border-color: #185FA5; color: #185FA5; background: #F3F7FC;
 }
@@ -309,7 +311,8 @@ button, input { font-family: inherit; }
 .card-sub {
   margin: -4px 0 10px;
   font-size: 12px;
-  color: #9A9890;
+  /* 卡片副标题承载重要说明（如"只保存在本机，不上传数据"），必须可读 */
+  color: #6F6D66;
 }
 
 /* S1 · 本机工具健康探测：缺工具时诚实显示「未启用」 */
@@ -336,12 +339,14 @@ button, input { font-family: inherit; }
   background: #FFFFFF;
   border: 1px solid #E5E3DC;
   border-radius: 8px;
-  outline: none;
 }
 
 .text-input:focus { border-color: #185FA5; }
 .text-input:disabled { background: #F1EFE8; color: #6B6A65; }
-.text-input::placeholder { color: #9A9890; }
+/* 占位符色：原 #9A9890 对白底仅 2.89:1，未达 WCAG AA 4.5:1。
+   改为 #6F6D66 —— 白底 5.18:1 / 灰底 4.50:1，两种底色都达标，
+   同时仍明显弱于正文 #1F1F1D（16.51:1），保留"占位符比正文轻"的层级。 */
+.text-input::placeholder { color: #6F6D66; }
 
 .btn {
   height: 32px;
@@ -353,6 +358,8 @@ button, input { font-family: inherit; }
   border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
+  /* ui-ux-pro-max：hover 需要平滑反馈，150–300ms 为微交互的合理窗口 */
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
 .btn:hover:not(:disabled) { border-color: #C9C6BC; }
@@ -372,6 +379,41 @@ button, input { font-family: inherit; }
 }
 
 .btn-ghost { background: #FFFFFF; }
+
+/* ---------- v0.4.9 焦点可见性（ui-ux-pro-max 审查项 A1） ----------
+   审查发现：全站仅 2 处 :focus，且 drop-zone / text-input 直接 `outline: none`
+   却不给替代 —— 键盘用户完全无法定位焦点（WCAG 2.4.7 失败）。
+   修法：统一用 :focus-visible 画焦点环（鼠标点击不显示，键盘 Tab 显示），
+   环色用主蓝 #185FA5（对白底 6.52:1，远超 3:1 的非文本对比要求），
+   用 outline 而非 box-shadow —— 不影响布局、不被相邻元素裁切。 */
+.btn:focus-visible,
+.nav-item:focus-visible,
+.link-btn:focus-visible,
+.feature-btn:focus-visible,
+.nav-toggle:focus-visible,
+.text-input:focus-visible,
+.drop-zone:focus-visible,
+.check input:focus-visible,
+.file-item input[type="checkbox"]:focus-visible {
+  outline: 2px solid #185FA5;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* 拖拽框与输入框额外加一层内发光，保证在浅色底上焦点环也足够醒目 */
+.text-input:focus-visible {
+  border-color: #185FA5;
+  box-shadow: 0 0 0 3px rgba(24, 95, 165, 0.16);
+}
+.drop-zone:focus-visible {
+  border-color: #185FA5;
+  background: #F3F7FC;
+}
+/* 复选框的焦点环贴着方框画，别把行高撑开 */
+.check input:focus-visible,
+.file-item input[type="checkbox"]:focus-visible {
+  outline-offset: 1px;
+}
 
 /* ---------- 后处理功能区 ---------- */
 .features { background: #FBFCFE; border-color: #D8E4F1; }
@@ -399,7 +441,9 @@ button, input { font-family: inherit; }
 .feature-btn:disabled { opacity: 0.45; cursor: default; }
 
 .feature-btn.is-soon {
-  color: #9A9890;
+  /* 这是真实可见文字（"即将推出"），不是占位符，必须达 AA。
+     原 #9A9890 对 #FAFAF8 仅 2.55:1，改为 #6F6D66（4.63:1）。 */
+  color: #6F6D66;
   border-style: dashed;
   border-color: #D9D7CE;
   background: #FAFAF8;
@@ -683,7 +727,8 @@ button, input { font-family: inherit; }
 .set-text em {
   font-style: normal;
   font-size: 12px;
-  color: #9A9890;
+  /* 设置项说明文字是用户判断行为的重要依据，原色仅 2.89:1 */
+  color: #6F6D66;
 }
 
 .set-num { flex: 0 0 92px; width: 92px; text-align: center; }
@@ -780,7 +825,8 @@ button, input { font-family: inherit; }
   align-items: center;
   font-size: 12px;
   line-height: 1.6;
-  color: #9A9890;
+  /* 空态提示是真实可见文本，原 #9A9890 对白底仅 2.89:1，改为 #6F6D66（5.18:1） */
+  color: #6F6D66;
 }
 .card-files .file-list {
   flex: 1 1 auto;
@@ -805,6 +851,7 @@ button, input { font-family: inherit; }
   background: none;
   border: none;
   cursor: pointer;
+  transition: color 160ms ease;
 }
 
 .link-btn:hover { text-decoration: underline; }
@@ -963,3 +1010,21 @@ button, input { font-family: inherit; }
 .export-check input { width: 15px; height: 15px; }
 
 .about-item b.mono { font-size: 12px; }
+
+/* ---------- v0.4.9 动效降级（ui-ux-pro-max 审查项 A3） ----------
+   审查发现：全站零 prefers-reduced-motion 处理。
+   系统开启「减少动态效果」时，过渡与动画应被关闭 —— 前庭敏感用户会因
+   位移/缩放动画产生不适。这里统一把所有过渡压到 0.01ms（而非 none），
+   以保留 transitionend 事件触发，避免依赖过渡完成的脚本逻辑失效。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* 侧栏宽度拖拽反馈依赖过渡，关掉后仍是即时的，不影响功能 */
+  .sidebar { transition: none; }
+}

@@ -75,11 +75,13 @@
           <div class="card-title">输入</div>
           <div class="row">
             <input id="inputPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
+                   aria-label="输入文件或文件夹路径"
                    placeholder="粘贴文件 / 文件夹路径，或点击「打开」选择文件">
             <button id="btnPickFiles" class="btn btn-ghost" type="button">打开</button>
           </div>
           <!-- v0.4.9：拖拽输入区——把文件 / 音频 / 视频直接拖进框内即识别为输入 -->
           <div id="dropZone" class="drop-zone" role="button" tabindex="0"
+               aria-label="拖拽输入区：把文件、音频或视频拖到这里识别为输入，也可点击选择文件"
                title="把文件、音频或视频拖到这里，即可识别为输入">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>
             <span>拖入文件 / 音频 / 视频到这里</span>
@@ -92,6 +94,7 @@
           <div class="card-title">输出</div>
           <div class="row">
             <input id="outPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
+                   aria-label="输出目录路径"
                    placeholder="输出目录">
             <button id="btnBrowseOut" class="btn btn-ghost" type="button">更改</button>
           </div>
