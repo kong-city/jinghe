@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     for rel in ("app.py", "extract.py", "test_app.py", "test_extract.py",
                 "format_registry.py", "media_tools.py", "media_runtime.py",
                 "word_input.py", "word_export.py", "audio_transcribe.py",
-                "video_transcribe.py"):
+                "video_transcribe.py", "self_update.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:

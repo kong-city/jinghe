@@ -47,6 +47,7 @@ import word_input  # S2a：Word → .md 输入增强（独立后处理层，冻�
 import word_export  # S2b：.md → .docx 导出（独立后处理层，纯标准库 OOXML）
 import audio_transcribe  # S3：音频 → .md（本机 whisper 适配器，冻结内核零改动）
 import video_transcribe  # S4：视频 → .md（独立 video handler，绝不复用音频路径）
+import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行中的程序并重启）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -62,6 +63,8 @@ RELEASES_LATEST_URL = REPO_URL + "/releases/latest"
 RELEASES_API_URL = "https://api.github.com/repos/kong-city/jinghe/releases/latest"
 # 检查更新的网络超时（秒）：桌面软件不能被慢网络卡住，超时即诚实降级。
 UPDATE_TIMEOUT = 4.0
+# v0.4.8 自更新任务整体超时（秒）：查版本 + 下载 + 替换，给足余量但不允许无限挂着。
+UPDATE_JOB_TIMEOUT = 600.0
 # 仅预览（--dry-run）超时：extract.py 会 rglob 全量递归（extract.py:1690-1693）
 # 并对每个文件读全盘算 sha256（extract.py:1756），网络盘 / 被占用文件 /
 # 超大目录会显著拖慢；600 秒对「预览」不可接受，收敛到 30 秒并给前端准确文案，
@@ -166,6 +169,22 @@ def _download_release_asset(url: str, version: str) -> dict:
         return {"ok": False, "error": "下载失败：%s" % exc}
     _append_log("[INFO] 新版本安装包已下载：%s（%d 字节）" % (dest, total))
     return {"ok": True, "path": str(dest), "bytes": total}
+
+
+def _schedule_restart(delay: float = 2.0) -> None:
+    """安排进程退出，让替换脚本接手覆盖程序文件并启动新版。
+
+    只在「打包态 + 替换脚本已派发」之后调用；源码模式永远走不到这里。
+    用 os._exit 是刻意的：此刻要的就是立刻交棒，避免服务线程继续占着端口。
+    """
+    def _go() -> None:
+        time.sleep(max(0.5, float(delay)))
+        try:
+            _append_log("[INFO] 自更新完成，退出进程以完成程序替换")
+        except Exception:
+            pass
+        os._exit(0)
+    threading.Thread(target=_go, daemon=True, name="jinghe-restart").start()
 
 
 # 全局唯一的日志 sink：_append_log 与 stdout/stderr 共用，
@@ -782,6 +801,31 @@ _AUDIO_LOCK = threading.Lock()
 # 各自独立事件队列，绝不污染 /api/progress 与 md/ 件数对账。
 _VIDEO_JOB: Job | None = None
 _VIDEO_LOCK = threading.Lock()
+
+# v0.4.8 自更新任务：与 _JOB（阶段 1）/_AUDIO_JOB（S3）/_VIDEO_JOB（S4）
+# 四者互不相交，事件队列独立，绝不污染 /api/progress 与 md 件数对账。
+_UPDATE_JOB: Job | None = None
+_UPDATE_LOCK = threading.Lock()
+
+# 安装条件探测带缓存：install_plan() 会试写临时文件判断目录可写，
+# 而 /api/state 是 400ms 高频轮询——不缓存就会疯狂造/删探针文件。
+_UPDATE_PLAN_CACHE: tuple[float, dict] | None = None
+_UPDATE_PLAN_TTL = 60.0
+
+
+def _update_plan() -> dict:
+    """带 TTL 缓存的安装条件探测结果。"""
+    global _UPDATE_PLAN_CACHE
+    now = time.time()
+    if (_UPDATE_PLAN_CACHE is not None
+            and now - _UPDATE_PLAN_CACHE[0] < _UPDATE_PLAN_TTL):
+        return _UPDATE_PLAN_CACHE[1]
+    try:
+        plan = self_update.install_plan()
+    except Exception as exc:
+        plan = {"ok": False, "reason": "安装条件探测失败：%s" % exc}
+    _UPDATE_PLAN_CACHE = (now, plan)
+    return plan
 
 
 def start_job_watchdog(job: Job, timeout_sec: float) -> threading.Event | None:
@@ -1936,6 +1980,21 @@ class Handler(BaseHTTPRequestHandler):
                     since = 0
                 self._send_json(self._api_video_status(since))
                 return
+            if path == "/api/update/check":
+                # v0.4.8：只查版本（当前 / 最新 / 有无安装包），不下载、不安装。
+                _touch_heartbeat()
+                self._send_json(self._api_update_check())
+                return
+            if path == "/api/update/status":
+                # v0.4.8：自更新进度独立轮询，不污染阶段 1 / 音频 / 视频三条队列。
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                try:
+                    since = int((qs.get("since") or ["0"])[0])
+                except (TypeError, ValueError):
+                    since = 0
+                self._send_json(self._api_update_status(since))
+                return
             if path == "/favicon.ico":
                 self._send_bytes(b"", "image/x-icon", 204)
                 return
@@ -2011,6 +2070,7 @@ class Handler(BaseHTTPRequestHandler):
             job = _JOB
         running = bool(job and job.running)
         converter = (job.converter if job and job.converter else _CONVERTER)
+        plan = _update_plan()
         return {
             # app 标记：让「占用端口的是不是精核自己」可以被外部判定
             # （单实例保护据此区分「已有实例」与「端口被别的程序占用」）
@@ -2026,6 +2086,13 @@ class Handler(BaseHTTPRequestHandler):
             "converter": converter,
             "cwd": os.getcwd(),
             "log_file": str(LOG_FILE),
+            # v0.4.8：自更新能力现状（能否自动替换运行中的程序文件）
+            "update": {
+                "frozen": self_update.is_frozen(),
+                "executable": self_update.current_exe() or "",
+                "can_install": bool(plan.get("ok")),
+                "install_reason": str(plan.get("reason") or ""),
+            },
         }
 
     def _api_progress(self, since: int) -> dict:
@@ -2095,6 +2162,12 @@ class Handler(BaseHTTPRequestHandler):
                     str(data.get("outdir") or "").strip()))
             elif path == "/api/update":
                 self._send_json(self._api_update())
+            elif path == "/api/update/start":
+                self._send_json(self._api_update_start())
+            elif path == "/api/update/cancel":
+                self._send_json(self._api_update_cancel())
+            elif path == "/api/update/apply":
+                self._send_json(self._api_update_apply())
             elif path == "/api/open-latest":
                 self._send_json(self._api_open_latest())
             elif path == "/api/pick-log-dest":
@@ -2280,56 +2353,27 @@ class Handler(BaseHTTPRequestHandler):
         而 release 又从未上传 exe，导致「检查更新」拿到的是一个没有安装包
         可下的网页。这里解析出 Jinghe*.exe 资产的直链、大小，供 /api/update
         直接下载；URL 必须落在 RELEASES_DOWNLOAD_PREFIX 白名单内。
+
+        v0.4.8：真正的解析逻辑收敛到 self_update.check（单点真源），
+        本方法只保留旧端点的字段形状，避免两处各写一套解析规则。
         """
-        current = _current_version()
+        info = self_update.check(_current_version())
         out = {
             "ok": True,
-            "current": current,
-            "latest": None,
-            "latest_url": RELEASES_LATEST_URL,
+            "current": info.get("current"),
+            "latest": info.get("latest"),
+            "latest_url": info.get("release_url") or RELEASES_LATEST_URL,
             "repo_url": REPO_URL,
-            "up_to_date": None,
-            "offline": False,
-            "error": None,
-            "has_asset": False,
-            "asset_name": None,
-            "asset_size": 0,
-            "asset_url": None,
+            "up_to_date": info.get("up_to_date"),
+            "offline": info.get("offline"),
+            "error": info.get("error"),
+            "has_asset": info.get("has_asset"),
+            "asset_name": info.get("asset_name"),
+            "asset_size": info.get("asset_size"),
+            "asset_url": info.get("asset_url"),
         }
-        try:
-            req = urllib.request.Request(
-                RELEASES_API_URL,
-                headers={"User-Agent": "jinghe-desktop",
-                         "Accept": "application/vnd.github+json"},
-            )
-            with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode("utf-8", "replace"))
-            tag = str(data.get("tag_name") or "").strip()
-            html_url = str(data.get("html_url") or "").strip()
-            if tag:
-                out["latest"] = tag
-                out["up_to_date"] = _version_tuple(current) >= _version_tuple(tag.lstrip("vV"))
-                if html_url.startswith(REPO_URL):
-                    out["latest_url"] = html_url
-            for asset in (data.get("assets") or []):
-                if not isinstance(asset, dict):
-                    continue
-                name = str(asset.get("name") or "")
-                dl = str(asset.get("browser_download_url") or "")
-                if not (name.lower().startswith("jinghe") and name.lower().endswith(".exe")):
-                    continue
-                if not dl.startswith(RELEASES_DOWNLOAD_PREFIX):
-                    continue
-                size = asset.get("size")
-                out["has_asset"] = True
-                out["asset_name"] = name
-                out["asset_size"] = size if isinstance(size, int) and size > 0 else 0
-                out["asset_url"] = dl
-                break
-        except Exception as exc:
-            out["offline"] = True
-            out["error"] = "检查更新请求失败：%s" % exc
-            _append_log("[WARN] 检查更新失败（离线降级）：%s" % exc)
+        if info.get("offline"):
+            _append_log("[WARN] 检查更新失败（离线降级）：%s" % info.get("error"))
         return out
 
     def _api_update(self) -> dict:
@@ -2777,6 +2821,202 @@ class Handler(BaseHTTPRequestHandler):
                 "current": job.current,
                 "current_name": job.current_name,
             }
+
+
+# ---------------------------- v0.4.8 · 自更新 ---------------------------- #
+    def _api_update_check(self) -> dict:
+        """只查版本：返回当前版本与最新版本，由界面如实对比后再决定是否更新。
+
+        这一步**不下载、不安装、不弹浏览器**，纯粹回答"现在最新是多少"。
+        """
+        info = self_update.check(_current_version())
+        out = dict(info)
+        out["checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        return out
+
+    def _api_update_start(self) -> dict:
+        """启动自更新后台任务（查版本 → 下载 → 替换 → 重启），立即返回。"""
+        global _UPDATE_JOB
+        with _UPDATE_LOCK:
+            job = _UPDATE_JOB
+            if job is not None and job.running:
+                return {"ok": False, "error": "已有更新任务在运行"}
+            job = Job([], "")
+            job.state = "checking"
+            job.total = 0
+            job.current = 0
+            _UPDATE_JOB = job
+        thread = threading.Thread(target=self._run_update_job, args=(job,),
+                                  name="jinghe-update", daemon=True)
+        thread.start()
+        return {"ok": True, "started": True, "state": job.state,
+                "current": _current_version()}
+
+    def _api_update_cancel(self) -> dict:
+        """取消更新：下载循环会在下一次分块时中止并清理临时文件。"""
+        with _UPDATE_LOCK:
+            job = _UPDATE_JOB
+        if job is None or not job.running:
+            return {"ok": False, "error": "当前无更新任务"}
+        job.cancelled = True
+        job.add("log", "用户取消更新")
+        return {"ok": True}
+
+    def _api_update_apply(self) -> dict:
+        """手动触发替换（正常流程由后台任务自动完成，这里是补救入口）。"""
+        with _UPDATE_LOCK:
+            job = _UPDATE_JOB
+        summary = job.summary if job is not None else None
+        if not isinstance(summary, dict):
+            return {"ok": False, "error": "没有可安装的更新"}
+        staged = summary.get("staged")
+        target = summary.get("target")
+        if not staged or not target:
+            return {"ok": False, "error": "没有可安装的更新"}
+        inst = self_update.schedule_install(
+            staged, target, version=str(summary.get("version") or ""))
+        if not inst.get("ok"):
+            return {"ok": False, "error": inst.get("error") or "无法安排更新替换"}
+        _schedule_restart(2.0)
+        return {"ok": True, "message": "更新已安装，程序即将重启"}
+
+    def _api_update_status(self, since: int) -> dict:
+        """自更新进度：独立事件队列，与阶段 1 / 音频 / 视频完全隔离。"""
+        with _UPDATE_LOCK:
+            job = _UPDATE_JOB
+        if job is None:
+            return {"events": [], "next": since, "running": False,
+                    "state": "idle", "message": "", "progress": 0.0,
+                    "percent": 0, "current": _current_version(),
+                    "latest": None, "error": None}
+        with job.lock:
+            events = [dict(ev) for ev in job.events if ev["i"] > since]
+            state = job.state
+            err = job.error
+            total = job.total
+            current = job.current
+        summary = job.summary if isinstance(job.summary, dict) else {}
+        message = ""
+        if events:
+            message = str(events[-1].get("text") or "")
+        pct = 0
+        if total > 0:
+            pct = int(max(0.0, min(1.0, current / float(total))) * 100)
+        return {"events": events,
+                "next": events[-1]["i"] if events else since,
+                "running": job.running,
+                "state": state,
+                "message": message,
+                "progress": pct / 100.0,
+                "percent": pct,
+                "current": _current_version(),
+                "latest": summary.get("latest"),
+                "error": err}
+
+    def _run_update_job(self, job: Job) -> None:
+        """自更新后台任务：查版本 → 下载 → 替换 → 安排重启。
+
+        状态机：checking → downloading → installing → restarting → done。
+        任何一步失败都收敛到 failed / cancelled，绝不谎报"更新完成"。
+        """
+        stop = start_job_watchdog(job, UPDATE_JOB_TIMEOUT)
+        try:
+            job.add("log", "正在查询最新版本…")
+            info = self_update.check(_current_version())
+            job.summary = info
+            if info.get("offline"):
+                job.error = info.get("error") or "无法连接版本服务"
+                job.state = "failed"
+                job.add("log", str(job.error))
+                return
+            if info.get("error") and not info.get("latest"):
+                job.error = info.get("error")
+                job.state = "failed"
+                job.add("log", str(job.error))
+                return
+            if info.get("up_to_date") is True:
+                job.state = "done"
+                job.add("log", "已是最新版本 %s" % (info.get("latest") or ""))
+                return
+            if not (info.get("has_asset") and info.get("asset_url")):
+                job.error = "新版本没有可下载的安装包（发布里没有 Jinghe*.exe）"
+                job.state = "failed"
+                job.add("log", str(job.error))
+                return
+
+            plan = self_update.install_plan()
+            version = str(info.get("latest") or info.get("latest_version") or "")
+            target = ""
+            if plan.get("ok"):
+                staged = str(plan.get("staged") or "")
+                target = str(plan.get("target") or "")
+            else:
+                # 退化：无法自动替换（源码模式 / 程序目录只读）→ 落到下载文件夹并说明
+                staged = self_update.fallback_path(version)
+                job.add("log", str(plan.get("reason") or "无法自动替换程序文件"))
+            job.state = "downloading"
+            size = int(info.get("asset_size") or 0)
+            last_pct = [-1]
+
+            def _on_progress(got: int, total: int) -> None:
+                whole = total or size or got
+                pct = int(got * 100 / whole) if whole else 0
+                if pct == last_pct[0]:
+                    return
+                last_pct[0] = pct
+                job.total = whole
+                job.current = got
+                job.add("progress",
+                        "正在下载 %d%%（%s / %s）"
+                        % (pct, self_update.human_bytes(got),
+                           self_update.human_bytes(whole)),
+                        progress=pct / 100.0)
+
+            res = self_update.download_asset(
+                info["asset_url"], staged, progress=_on_progress,
+                cancel_check=lambda: job.cancelled, expected_size=size)
+            if not res.get("ok"):
+                if res.get("cancelled"):
+                    job.state = "cancelled"
+                    job.error = "更新已取消"
+                else:
+                    job.state = "failed"
+                    job.error = res.get("error") or "下载失败"
+                job.add("log", str(job.error))
+                return
+            job.add("log", "下载完成：%s（%s）"
+                    % (res.get("path"),
+                       self_update.human_bytes(int(res.get("bytes") or 0))))
+            job.summary = {"ok": True, "latest": info.get("latest"),
+                           "version": version, "staged": staged,
+                           "target": target,
+                           "downloaded": True,
+                           "download_path": res.get("path")}
+            if not target:
+                # 源码模式 / 目录只读：只能给出手动替换指引，绝不谎称已更新
+                job.state = "done"
+                job.add("log", "安装包已下载，请手动替换程序文件后重新启动")
+                return
+            job.state = "installing"
+            job.add("log", "正在替换程序文件…")
+            inst = self_update.schedule_install(staged, target, version=version)
+            if not inst.get("ok"):
+                job.state = "failed"
+                job.error = inst.get("error") or "无法安排更新替换"
+                job.add("log", "%s（安装包保留在 %s）" % (job.error, staged))
+                return
+            job.state = "restarting"
+            job.add("log", "更新已安装，程序即将重启")
+            _schedule_restart(2.0)
+        except Exception as exc:
+            _log_error("API:/api/update/start", "自更新任务异常", exc)
+            job.state = "failed"
+            job.error = "更新异常：%s" % exc
+            job.add("log", str(job.error))
+        finally:
+            if stop is not None:
+                stop.set()
+            job.running = False
 
 
 # --------------------------------------------------------------------------- #

@@ -83,8 +83,14 @@
     btnOpenSettingsFile: $("btnOpenSettingsFile"),
     // 关于页 · 版本更新
     aboutVersion: $("aboutVersion"),
+    aboutNewVersion: $("aboutNewVersion"),
     btnCheckUpdate: $("btnCheckUpdate"),
+    btnUpdateNow: $("btnUpdateNow"),
+    btnUpdateCancel: $("btnUpdateCancel"),
     updateStatus: $("updateStatus"),
+    updateProgress: $("updateProgress"),
+    updateProgressBar: $("updateProgressBar"),
+    updateProgressText: $("updateProgressText"),
     // 关于页 · 运行日志
     aboutVersion2: $("aboutVersion2"),
     aboutPython: $("aboutPython"),
@@ -350,13 +356,14 @@
     }).catch(function () { /* 读不到就保持占位符 */ });
   }
 
-  /* v0.3.9：关于页「版本更新」卡片只保留左侧「检查更新」按钮与右侧
-     「当前版本」；说明段、仓库链接显示与离线长文案全部清除。
-     点击按钮 → /api/update 自动查询 GitHub 仓库最新版本：
-       · 已是最新 → 简短绿色提示；
-       · 发现新版本 → 简短蓝色提示 + 自动打开下载页；
-       · 离线 → 不弹浏览器、不显示离线长文案（状态条隐藏），
-         由按钮从「检查中…」恢复给出「已检查」反馈。*/
+  /* v0.4.8：关于页「版本更新」改两步走
+       ① 检查更新 → 只查版本，如实回显「当前版本 / 最新版本 / 是否有新版本」；
+       ② 立即更新 → 后台下载安装包并替换运行中的程序，进度条实时显示百分比，
+          替换完成后程序自动重启。
+     离线、发布里没有安装包、下载失败都如实回显，绝不谎报"已是最新"。*/
+  var updatePollTimer = null;
+  var updateSince = 0;
+
   function setUpdateStatus(text, cls) {
     if (!el.updateStatus) return;
     var s = text || "";
@@ -365,30 +372,140 @@
     el.updateStatus.className = "update-status" + (cls && s ? " " + cls : "");
   }
 
+  function setUpdateProgress(percent, text) {
+    if (!el.updateProgress) return;
+    var p = Math.max(0, Math.min(100, Math.round(percent || 0)));
+    el.updateProgress.hidden = false;
+    if (el.updateProgressBar) el.updateProgressBar.style.width = p + "%";
+    if (el.updateProgressText) el.updateProgressText.textContent = text || (p + "%");
+  }
+
+  function hideUpdateProgress() {
+    if (el.updateProgress) el.updateProgress.hidden = true;
+    if (el.updateProgressBar) el.updateProgressBar.style.width = "0";
+  }
+
   function checkUpdate() {
     if (!el.btnCheckUpdate) return;
     var old = el.btnCheckUpdate.textContent;
     el.btnCheckUpdate.disabled = true;
     el.btnCheckUpdate.textContent = "检查中…";
-    setUpdateStatus("", "");  // 检查期间不显示冗余文字
-
-    // v0.4.0：发现新版本时后端会顺便下载 exe（最多 30 秒），超时放宽到 60 秒，
-    // 避免下载还没结束前端就先报「检查更新失败」。
-    api("/api/update", {}, 60000).then(function (r) {
-      var status = (r && r.status) || "";
-      if (status === "offline") {
-        // 按需求清除离线长文案：既不显示状态条，也不自动弹浏览器
-        setUpdateStatus("", "");
+    setUpdateStatus("", "");
+    api("/api/update/check", {}, 20000).then(function (r) {
+      if (!r) throw new Error("无响应");
+      if (r.offline) {
+        setUpdateStatus("无法连接版本服务，请检查网络后重试", "is-err");
+        if (el.aboutNewVersion) el.aboutNewVersion.textContent = "获取失败";
         return;
       }
-      var cls = status === "up_to_date" ? "is-ok"
-        : status === "new_version" ? "is-new" : "is-err";
-      setUpdateStatus((r && r.message) || "检查完成", cls);
+      if (r.error && !r.latest) {
+        setUpdateStatus(r.error || "检查更新失败", "is-err");
+        if (el.aboutNewVersion) el.aboutNewVersion.textContent = "获取失败";
+        return;
+      }
+      var latest = r.latest_version || r.latest || "—";
+      if (el.aboutNewVersion) el.aboutNewVersion.textContent = latest;
+      if (r.up_to_date === true) {
+        setUpdateStatus("已是最新版本 " + latest + "（当前 " + (r.current || "—") + "）", "is-ok");
+        if (el.btnUpdateNow) el.btnUpdateNow.hidden = true;
+        return;
+      }
+      if (r.up_to_date === false) {
+        if (!r.has_asset) {
+          setUpdateStatus("发现新版本 " + latest + "，但发布里没有安装包，请到发布页手动下载", "is-err");
+          if (el.btnUpdateNow) el.btnUpdateNow.hidden = true;
+          return;
+        }
+        setUpdateStatus("发现新版本 " + latest + "（当前 " + (r.current || "—") + "），可以立即更新", "is-new");
+        if (el.btnUpdateNow) {
+          el.btnUpdateNow.hidden = false;
+          el.btnUpdateNow.disabled = false;
+          el.btnUpdateNow.textContent = "立即更新到 " + latest;
+          el.btnUpdateNow.title = r.can_install ? "" : (r.install_reason || "");
+        }
+        return;
+      }
+      setUpdateStatus(r.error || "无法比较版本", "is-err");
     }).catch(function (err) {
       setUpdateStatus("检查更新失败：" + (err.message || String(err)), "is-err");
     }).finally(function () {
       el.btnCheckUpdate.disabled = false;
       el.btnCheckUpdate.textContent = old;
+    });
+  }
+
+  /* 启动更新：后端跑后台任务（查版本 → 下载 → 替换 → 重启），
+     前端只轮询进度，绝不长时间阻塞在一次请求上。*/
+  function startUpdate() {
+    if (!el.btnUpdateNow) return;
+    el.btnUpdateNow.disabled = true;
+    el.btnUpdateNow.textContent = "更新中…";
+    if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = false;
+    setUpdateStatus("正在更新…", "is-new");
+    setUpdateProgress(0, "0%");
+    updateSince = 0;
+    api("/api/update/start", {}, 20000).then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.error) || "无法启动更新");
+      pollUpdateStatus();
+    }).catch(function (err) {
+      setUpdateStatus("更新失败：" + (err.message || String(err)), "is-err");
+      el.btnUpdateNow.disabled = false;
+      el.btnUpdateNow.textContent = "立即更新";
+      if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = true;
+    });
+  }
+
+  function pollUpdateStatus() {
+    if (updatePollTimer) { window.clearTimeout(updatePollTimer); updatePollTimer = null; }
+    api("/api/update/status?since=" + updateSince, undefined, 8000).then(function (s) {
+      if (!s) return;
+      if (s.next) updateSince = s.next;
+      var evs = s.events || [];
+      if (evs.length && s.message) {
+        if (s.percent) setUpdateProgress(s.percent, s.percent + "%");
+        setUpdateStatus(s.message, "is-new");
+      }
+      if (s.state === "done" || s.state === "failed" ||
+          s.state === "cancelled" || s.state === "restarting") {
+        finishUpdate(s);
+        return;
+      }
+      updatePollTimer = window.setTimeout(pollUpdateStatus, 700);
+    }).catch(function () {
+      // 轮询失败不打断更新本身，退避后重试
+      updatePollTimer = window.setTimeout(pollUpdateStatus, 1500);
+    });
+  }
+
+  function finishUpdate(s) {
+    if (updatePollTimer) { window.clearTimeout(updatePollTimer); updatePollTimer = null; }
+    if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = true;
+    if (el.btnUpdateNow) { el.btnUpdateNow.hidden = true; }
+    if (s.state === "restarting") {
+      setUpdateProgress(100, "100%");
+      setUpdateStatus("更新完成，程序即将重启…", "is-ok");
+      return;
+    }
+    if (s.state === "done") {
+      setUpdateProgress(100, "100%");
+      setUpdateStatus(s.message || "更新完成", "is-ok");
+      return;
+    }
+    if (s.state === "cancelled") {
+      hideUpdateProgress();
+      setUpdateStatus("更新已取消", "is-err");
+      return;
+    }
+    hideUpdateProgress();
+    setUpdateStatus(s.error || "更新失败", "is-err");
+  }
+
+  function cancelUpdate() {
+    api("/api/update/cancel", {}, 5000).then(function (r) {
+      if (!r || !r.ok) setUpdateStatus((r && r.error) || "取消失败", "is-err");
+      else setUpdateStatus("已请求取消更新", "is-new");
+    }).catch(function (err) {
+      setUpdateStatus("取消失败：" + (err.message || err), "is-err");
     });
   }
 
@@ -1453,6 +1570,12 @@
     }
     if (el.btnCheckUpdate) {
       el.btnCheckUpdate.addEventListener("click", function () { checkUpdate(); });
+    }
+    if (el.btnUpdateNow) {
+      el.btnUpdateNow.addEventListener("click", function () { startUpdate(); });
+    }
+    if (el.btnUpdateCancel) {
+      el.btnUpdateCancel.addEventListener("click", function () { cancelUpdate(); });
     }
     if (el.btnExportLog) {
       el.btnExportLog.addEventListener("click", function () { exportLog(); });

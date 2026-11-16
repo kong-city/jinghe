@@ -1447,14 +1447,18 @@ class AppContractTest(unittest.TestCase):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
 
-        # ① 关于页：保留「当前版本」，「最新版本」信息格换成检查更新按钮
+        # ① 关于页：保留「当前版本」；v0.4.8 起按用户新要求恢复「最新版本」格
+        #    （要求原文：「给出结果反馈 当前最新和正在更新」），
+        #    但仍不恢复独立「下载最新版本」按钮——更新改由「立即更新」一键完成。
         self.assertIn("<span>当前版本</span>", html, "关于页缺少「当前版本」")
         self.assertIn('class="about-grid about-grid-update"', html,
                       "版本更新卡片未改为 about-grid-update")
         self.assertIn('id="btnCheckUpdate"', html, "缺少检查更新按钮")
         self.assertIn('class="btn btn-primary about-check-btn"', html,
                       "检查更新按钮未放到「最新版本」原来的格子里")
-        self.assertNotIn("<span>最新版本</span>", html, "「最新版本」信息格未移除")
+        self.assertIn("<span>最新版本</span>", html,
+                      "v0.4.8：缺少「最新版本」信息格（用户要求显示当前与最新）")
+        self.assertIn('id="aboutNewVersion"', html, "v0.4.8：缺少最新版本显示位")
         self.assertNotIn('id="aboutLatest"', html, "仍残留 aboutLatest 元素")
         self.assertNotIn('id="btnDownloadLatest"', html, "「下载最新版本」按钮未取消")
         self.assertIn('id="updateStatus" class="update-status" hidden', html,
@@ -1577,13 +1581,16 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn(offline_msg, src, "后端仍生成离线长文案")
         self.assertNotIn("is-warn", css, "离线专用警告样式未清除")
 
-        # ④ 状态条默认隐藏，离线时前端隐藏、后端不弹浏览器
+        # ④ 状态条默认隐藏；离线时给的是**短句诚实反馈**（v0.4.8 起不再静默隐藏，
+        #    用户要求「按实际情况给出结果反馈」），但仍不弹浏览器、不用旧长文案
         self.assertIn('id="updateStatus" class="update-status" hidden', html,
                       "状态条应默认隐藏，不显示任何占位文案")
         self.assertIn("el.updateStatus.hidden = !s", js,
                       "前端未实现空文案隐藏状态条")
-        self.assertIn('if (status === "offline")', js,
-                      "前端未对离线状态做静默处理")
+        self.assertIn('if (r.offline)', js,
+                      "前端未对离线状态做单独处理")
+        self.assertIn("无法连接版本服务", js,
+                      "离线时必须给出可读反馈，不得静默无反应")
         self.assertIn('if info.get("up_to_date") is False:', src,
                       "后端只在发现新版本时自动打开下载页")
         self.assertNotIn("need_open = bool(info.get(\"offline\")", src,
@@ -1655,15 +1662,23 @@ class AppContractTest(unittest.TestCase):
                          "发版门禁未通过：%s" % (gate.stdout + gate.stderr)[-800:])
 
         # ④ 更新闭环：解析 assets、URL 白名单、大小上限、下载结果字段
+        #    v0.4.8：assets 解析与白名单收敛迁到 self_update.py（单点真源），
+        #    app.py 只保留字段形状与旧端点兼容。
+        su_src = (ROOT / "self_update.py").read_text(encoding="utf-8")
         for token in ("RELEASES_DOWNLOAD_PREFIX", "MAX_UPDATE_BYTES",
-                      "_download_release_asset", 'data.get("assets")',
-                      "has_asset", "asset_url", "downloaded", "download_path",
-                      "_current_version", "extract.__version__"):
+                      "_download_release_asset", "has_asset", "asset_url",
+                      "downloaded", "download_path", "_current_version",
+                      "extract.__version__"):
             self.assertIn(token, src, "后端缺少 v0.4.0 更新闭环实现：%s" % token)
-        self.assertIn("dl.startswith(RELEASES_DOWNLOAD_PREFIX)", src,
+        for token in ('data.get("assets")', "RELEASES_DOWNLOAD_PREFIX",
+                      "is_asset_url"):
+            self.assertIn(token, su_src,
+                          "self_update.py 缺少更新资产解析实现：%s" % token)
+        self.assertIn("is_asset_url(dl)", su_src,
                       "资产直链未做白名单收敛")
-        self.assertIn('"/api/update", {}, 60000', js,
-                      "前端未放宽下载场景的请求超时")
+        # v0.4.8：前端改为「先查版本、再后台更新」两步，不再一次性等下载
+        self.assertIn('"/api/update/check"', js, "前端未调用版本检查接口")
+        self.assertIn('"/api/update/start"', js, "前端未调用更新启动接口")
 
         # ⑤ unknown 版本回退 + 下载地址白名单（直接测模块函数，不联网）
         sys.path.insert(0, str(ROOT))
@@ -3080,6 +3095,135 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("v0.6", contract)
         self.assertIn("留给 S5", contract,
                       "契约须订正：/api/media/run 不再留给 S4")
+
+
+# ------------------------------------------------------------------ #
+    # 43) v0.4.8：自更新闭环（查版本 → 下载 → 替换运行中的程序 → 重启）
+    # ------------------------------------------------------------------ #
+    def test_43_v048_self_update_contract(self):
+        sys.path.insert(0, str(ROOT))
+        try:
+            import self_update as su
+        finally:
+            sys.path.remove(str(ROOT))
+        from unittest import mock
+
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        spec = (ROOT / "build.spec").read_text(encoding="utf-8")
+        contract = (ROOT / "docs" / "CAPABILITY_CONTRACT.md").read_text(
+            encoding="utf-8")
+
+        # ① 下载白名单：只认本仓库 releases/download 下的 Jinghe*.exe
+        self.assertTrue(su.is_asset_url(
+            "https://github.com/kong-city/jinghe/releases/download/v0.4.8/Jinghe.exe"))
+        for bad in ("https://evil.example.com/Jinghe.exe",
+                    "https://github.com/other/repo/releases/download/v1/Jinghe.exe",
+                    "https://github.com/kong-city/jinghe/releases/download/v0.4.8/readme.md",
+                    "https://github.com/kong-city/jinghe/releases/latest/Jinghe.exe"):
+            self.assertFalse(su.is_asset_url(bad), "白名单放行了非法地址：%s" % bad)
+
+        # ② 白名单外地址：零网络请求、零落盘
+        with mock.patch.object(su.urllib.request, "urlopen") as fake:
+            res = su.download_asset("https://evil.example.com/Jinghe.exe",
+                                    self.tmp / "never.exe")
+        self.assertIs(res.get("ok"), False)
+        self.assertIn("白名单", res.get("error") or "")
+        self.assertFalse(fake.called, "白名单外地址竟发起了网络请求")
+        self.assertFalse((self.tmp / "never.exe").exists())
+
+        # ③ 替换脚本：等待退出 / 备份 / 覆盖 / 启动 / 回滚；变量名不得用只读的 $PID
+        script = su.build_install_script(r"C:\Jinghe\Jinghe.new.exe",
+                                         r"C:\Jinghe\Jinghe.exe", 4321, "v0.4.8")
+        for token in ("Wait-Process", "$targetPid = 4321", "Copy-Item",
+                      "Start-Process", "HasExited", ".bak"):
+            self.assertIn(token, script, "替换脚本缺少：%s" % token)
+        self.assertNotIn("$pid =", script, "替换脚本误用 PowerShell 只读变量 $PID")
+
+        # ④ 安装红线：源码模式不可自动替换；目标必须是程序自身
+        plan = su.install_plan()
+        self.assertIs(plan.get("ok"), False, "源码模式竟声称可自动替换")
+        self.assertIn("源码", plan.get("reason") or "")
+        res = su.schedule_install(self.tmp / "fake.exe",
+                                  r"C:\Windows\System32\cmd.exe")
+        self.assertIs(res.get("ok"), False, "竟允许替换非自身程序")
+        res = su.schedule_install(self.tmp / "not-exist.exe",
+                                  r"C:\Windows\System32\cmd.exe")
+        self.assertIs(res.get("ok"), False)
+
+        # ⑤ 后端接线：四个新端点 + 独立进度队列
+        for token in ('path == "/api/update/check"',
+                      'path == "/api/update/start"',
+                      'path == "/api/update/status"',
+                      'path == "/api/update/cancel"',
+                      'path == "/api/update/apply"',
+                      "_UPDATE_JOB", "import self_update",
+                      "def _run_update_job"):
+            self.assertIn(token, app_src, "后端缺少自更新接线：%s" % token)
+
+        # ⑥ 真实 HTTP：查版本 / 进度 / 取消 / 手动替换
+        srv = self.start()
+        status, chk = srv.get_json("/api/update/check")
+        self.assertEqual(status, 200)
+        for key in ("current", "latest", "up_to_date", "has_asset",
+                    "offline", "error"):
+            self.assertIn(key, chk, "/api/update/check 缺少字段 %s" % key)
+        self.assertTrue(re.match(r"^\d+\.\d+\.\d+", str(chk.get("current"))),
+                        "current 不应是 unknown：%s" % chk.get("current"))
+        if chk.get("offline"):
+            self.assertIsNone(chk.get("latest"), "离线时不得伪造最新版本号")
+
+        status, st = srv.get_json("/api/update/status?since=0")
+        self.assertEqual(status, 200)
+        self.assertEqual(st["state"], "idle")
+        self.assertEqual(st["events"], [])
+
+        status, cancel = srv.post_json("/api/update/cancel", {})
+        self.assertEqual(status, 200)
+        self.assertIs(cancel.get("ok"), False, "无任务时取消竟返回成功")
+
+        status, applied = srv.post_json("/api/update/apply", {})
+        self.assertEqual(status, 200)
+        self.assertIs(applied.get("ok"), False, "无更新时竟允许安装")
+
+        # ⑦ 启动更新任务：立即返回，状态在有限时间内收敛到终态
+        status, started = srv.post_json("/api/update/start", {})
+        self.assertEqual(status, 200)
+        self.assertIs(started.get("ok"), True)
+        self.assertIs(started.get("started"), True)
+        deadline = time.time() + 60
+        state = ""
+        while time.time() < deadline:
+            _, st = srv.get_json("/api/update/status?since=0")
+            state = st.get("state")
+            if state in ("done", "failed", "cancelled", "restarting"):
+                break
+            time.sleep(0.5)
+        self.assertIn(state, ("done", "failed", "cancelled", "restarting"),
+                      "更新任务未收敛到终态：%s" % state)
+        self.assertIs(st.get("running"), False)
+
+        # ⑧ 关于页：当前 / 最新 / 立即更新 / 取消 / 进度条
+        for needle in ('id="aboutNewVersion"', 'id="btnUpdateNow"',
+                       'id="btnUpdateCancel"', 'id="updateProgress"',
+                       'id="updateProgressBar"', 'id="updateProgressText"',
+                       "<span>最新版本</span>"):
+            self.assertIn(needle, html, "关于页缺少：%s" % needle)
+        for needle in ("/api/update/check", "/api/update/start",
+                       "/api/update/status", "/api/update/cancel",
+                       "startUpdate", "pollUpdateStatus", "cancelUpdate",
+                       "setUpdateProgress"):
+            self.assertIn(needle, js, "前端缺少：%s" % needle)
+        self.assertIn(".update-progress", css)
+        self.assertIn(".update-progress-bar", css)
+
+        # ⑨ 打包清单与契约文档
+        self.assertIn("self_update.py", gate)
+        self.assertIn("'self_update'", spec)
+        self.assertIn("自更新", contract)
 
 
 def print_summary(result=None) -> None:

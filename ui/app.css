@@ -829,6 +829,46 @@ button, input { font-family: inherit; }
 .update-status.is-err  { color: #9A3B2F; background: #FCEEEC; border-color: #F1D4CF; }
 /* v0.3.9：离线不再显示长文案，状态条整体隐藏；仓库链接样式一并移除 */
 
+/* ---------- v0.4.8：版本更新三格 + 更新进度 ---------- */
+/* 检查更新 / 当前版本 / 最新版本 三格；窄窗口降级单列 */
+.about-grid-update {
+  grid-template-columns: minmax(132px, 1fr) 1fr 1fr;
+}
+.update-actions {
+  margin-top: 10px;
+  gap: 8px;
+}
+.update-progress {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-progress-track {
+  flex: 1 1 auto;
+  height: 8px;
+  border-radius: 999px;
+  background: #EAECEF;
+  overflow: hidden;
+}
+.update-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: #185FA5;
+  transition: width .25s ease;
+}
+.update-progress-text {
+  flex: 0 0 auto;
+  min-width: 92px;
+  text-align: right;
+  font-size: 12px;
+  color: #6B6A65;
+}
+@media (max-width: 900px) {
+  .about-grid-update { grid-template-columns: 1fr; }
+}
+
 .export-check {
   display: inline-flex;
   align-items: center;
