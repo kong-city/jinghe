@@ -3306,6 +3306,40 @@ class AppContractTest(unittest.TestCase):
         self.assertEqual(Path(body["path"]).read_bytes(), b"v0.4.9 drag payload")
         self.assertEqual(Path(body["path"]).name, "dragged.txt")
 
+    # ------------------------------------------------------------------ #
+    # 45) v0.4.9 交互打磨：清单不被子集覆盖 / 更新门闩 / 拖拽整页防护
+    # ------------------------------------------------------------------ #
+    def test_45_v049_interaction_polish(self):
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+
+        # ① 勾选预览是只读盘点：绝不能拿选中子集重建「已识别清单」，
+        #    否则未勾选文件消失、勾选态归零。
+        self.assertIn("var isSubsetPreview = explicit.length > 0;", js,
+                      "前端未区分勾选预览与全量预览")
+        # doPreview 的 then 块内：renderFileList 只在非子集预览时调用
+        dp = js[js.index("function doPreview"):js.index("/* ------------------------------ 输出目录选择")]
+        self.assertIn("if (!isSubsetPreview) renderFileList(r);", dp,
+                      "勾选预览仍会重建清单（未勾选文件会消失）")
+        self.assertIn("已按勾选的", dp, "勾选预览缺少明确的反馈文案")
+
+        # ② 更新任务门闩：更新中重复点检查更新不得再启动一次任务
+        self.assertIn("var updateRunning = false;", js, "缺少更新任务门闩")
+        cu = js[js.index("function checkUpdate"):js.index("function startUpdate")]
+        self.assertIn("if (updateRunning)", cu, "检查更新未拦截更新中的重复点击")
+        self.assertIn("hideUpdateProgress()", cu, "检查更新未清掉上次进度条残留")
+        su = js[js.index("function startUpdate"):js.index("function pollUpdateStatus")]
+        self.assertIn("updateRunning = true;", su, "启动更新未置位门闩")
+        fu = js[js.index("function finishUpdate"):]
+        self.assertIn("updateRunning = false;", fu[:fu.index("function cancelUpdate")],
+                      "更新收尾未复位门闩")
+
+        # ③ 拖拽整页防护：拖到框外的文件不得被浏览器默认打开
+        self.assertIn("document.addEventListener(evt", js,
+                      "缺少整页 dragover/drop 默认行为拦截")
+
+        # ④ 死代码清理：旧的 renderBuckets 已被 inputMeta 覆盖，不应再残留
+        self.assertNotIn("function renderBuckets", js, "残留无调用的 renderBuckets 死代码")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

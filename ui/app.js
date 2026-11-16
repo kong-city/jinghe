@@ -371,6 +371,7 @@
      离线、发布里没有安装包、下载失败都如实回显，绝不谎报"已是最新"。*/
   var updatePollTimer = null;
   var updateSince = 0;
+  var updateRunning = false;  // v0.4.9：更新任务门闩，更新期间禁止再次点「检查更新」
 
   function setUpdateStatus(text, cls) {
     if (!el.updateStatus) return;
@@ -401,10 +402,16 @@
      否则 api() 会把它当 POST 发出，命中「未知接口」404。*/
   function checkUpdate() {
     if (!el.btnCheckUpdate) return;
+    // 更新进行中再次点击：只做一次轻提示，绝不重复启动更新任务。
+    if (updateRunning) {
+      showToast("正在更新中，请稍候", false);
+      return;
+    }
     var old = el.btnCheckUpdate.textContent;
     el.btnCheckUpdate.disabled = true;
     el.btnCheckUpdate.textContent = "检查中…";
     setUpdateStatus("", "");
+    hideUpdateProgress();  // 清掉上一次更新残留的进度条
     api("/api/update/check", undefined, 20000).then(function (r) {
       if (!r) throw new Error("无响应");
       if (r.offline) {
@@ -460,6 +467,8 @@
      前端只轮询进度，绝不长时间阻塞在一次请求上。*/
   function startUpdate() {
     if (!el.btnUpdateNow) return;
+    if (updateRunning) return;
+    updateRunning = true;
     el.btnUpdateNow.disabled = true;
     el.btnUpdateNow.textContent = "更新中…";
     if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = false;
@@ -470,6 +479,7 @@
       if (!r || !r.ok) throw new Error((r && r.error) || "无法启动更新");
       pollUpdateStatus();
     }).catch(function (err) {
+      updateRunning = false;
       setUpdateStatus("更新失败：" + (err.message || String(err)), "is-err");
       el.btnUpdateNow.disabled = false;
       el.btnUpdateNow.textContent = "立即更新";
@@ -500,6 +510,7 @@
   }
 
   function finishUpdate(s) {
+    updateRunning = false;
     if (updatePollTimer) { window.clearTimeout(updatePollTimer); updatePollTimer = null; }
     if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = true;
     if (el.btnUpdateNow) { el.btnUpdateNow.hidden = true; }
@@ -622,22 +633,6 @@
   }
 
   /* ------------------------------ 分流展示 ------------------------------ */
-  function renderBuckets(data) {
-    var b = data.buckets || {};
-    var parts = [];
-    var labels = [
-      ["文本类", "文本"], ["富文档", "富文档"], ["阶段3预留", "音视频"],
-      ["需预处理", "需预处理"], ["不支持", "不支持"]
-    ];
-    labels.forEach(function (pair) {
-      var n = Number(b[pair[0]] || 0);
-      if (n > 0) parts.push(pair[1] + " " + n);
-    });
-    var total = Number(data.total || 0);
-    el.inputMeta.textContent = total + " 个文件" + (parts.length ? " · " + parts.join(" / ") : "");
-    el.inputMeta.classList.toggle("filled", total > 0);
-  }
-
   var KIND_CLASS = {
     "文本类": "text",
     "富文档": "rich",
@@ -782,25 +777,32 @@
 
     var chosen = explicit.length ? explicit : currentInputs();
     var body = chosen.length ? { inputs: chosen } : { input: input };
+    // v0.4.9 交互打磨：勾选预览是「只读盘点」，只用选中文件算一次分类统计，
+    // 绝不能拿子集去重建「已识别清单」——那会让未勾选的文件凭空消失、勾选态归零。
+    var isSubsetPreview = explicit.length > 0;
     // 40000 = 后端 _dry_run 的 DRY_RUN_TIMEOUT(30s) + 10s 余量，
     // 避免前端误杀合法的长盘点。
     api("/api/dry-run", body, 40000).then(function (r) {
       if (!r.ok) throw new Error(r.error || "预览分流失败");
-      renderBuckets(r);
-      renderFileList(r);
+      if (!isSubsetPreview) renderFileList(r);
       // U1：常驻可见的完成反馈，每次重写且带本地时间戳，
       // 即便数字与上次完全相同，用户也能看出「这次点下去了、程序回应了」。
       var b = r.buckets || {};
       var total = Number(r.total || 0);
       var stamp = nowHMS();
+      var lead = isSubsetPreview
+        ? "已按勾选的 " + chosen.length + " 个文件预览 · 命中 " + total + " 个 · "
+        : "预览完成 · 共 " + total + " 个文件 · ";
       if (total > 0) {
-        el.inputMeta.textContent = "预览完成 · 共 " + total + " 个文件 · " +
+        el.inputMeta.textContent = lead +
           "文本类 " + Number(b["文本类"] || 0) + " / 富文档 " + Number(b["富文档"] || 0) +
           " / 阶段3预留 " + Number(b["阶段3预留"] || 0) + " / 需预处理 " +
           Number(b["需预处理"] || 0) + " / 不支持 " + Number(b["不支持"] || 0) +
           " · " + stamp;
       } else {
-        el.inputMeta.textContent = "预览完成 · 未发现可识别文件 · " + stamp;
+        el.inputMeta.textContent = isSubsetPreview
+          ? "勾选的 " + chosen.length + " 个文件未发现可识别内容 · " + stamp
+          : "预览完成 · 未发现可识别文件 · " + stamp;
       }
       el.inputMeta.classList.add("filled");
     }).catch(function (err) {
@@ -902,6 +904,11 @@
   function setupDropZone() {
     var zone = el.dropZone;
     if (!zone) return;
+    // v0.4.9：整页兜底——拖到框外的文件若被浏览器默认处理会直接打开文件、
+    // 跳出应用。整页禁掉 dragover/drop 默认行为，引导用户拖进框内。
+    ["dragover", "drop"].forEach(function (evt) {
+      document.addEventListener(evt, function (e) { e.preventDefault(); });
+    });
     // 点击拖拽框 = 触发原生多选（与「打开」一致），文件或目录都支持。
     zone.addEventListener("click", function () {
       if (!running && !previewing) pickFiles();
