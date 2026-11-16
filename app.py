@@ -2399,6 +2399,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(refine.start_revise(
                     str(data.get("path") or "").strip(),
                     str(data.get("model") or "").strip(),
+                    str(data.get("outdir") or "").strip(),
+                    str(data.get("instruction") or "").strip(),
                 ))
             elif path == "/api/refine/cancel":
                 self._send_json(refine.cancel())

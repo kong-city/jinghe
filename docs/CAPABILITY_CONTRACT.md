@@ -296,3 +296,11 @@
   4. 诚实边界写进产物："块号有效≠内容出自该块"，标注请核对，不宣称零幻觉。
   5. 测试基线 76 → **77 用例**（test_49）；冻结态实测端点形状 + 空输入诚实降级；SPEC.md / extract.py 零改动。
   6. 停在 S7b 闸门；真模型质量验证待用户环境，后续 S7c 修订双产物、S7d UI、S7e 收口。
+
+- **v0.8.8（2026-11-16 · S7c 修订双产物落地，mock 验证，用户放行上传）**：
+  1. 新增 `revise_engine.py`：parse_core（anchor 与来源块号须一致）/ build_prompt / parse_changes（block 有效 + type 合法 + modify 的 old 匹配原文，否则丢弃）/ render_both / verify_marks。
+  2. **双产物同源渲染**：单一真源=changes，`.revise.md`（`[++ 新增 ++]` / `[[~~ 旧 ~~ → 新]]`）+ `.revise.html`（内联 style 彩色）均由 changes 渲染；交付前 `verify_marks` 逐条校验两份产物标记，篡改任一即零产物（杜绝"改了没标记"）。
+  3. WCAG AA 颜色：新增 `#1F6B3B` on `#EDF7F0`、修改旧 `#A32D2D` 删除线、修改新 `#185FA5`、原文 `#1F1F1D`，test_50 实算 ≥4.5:1。
+  4. refine.py 的 start_revise 接 `_run_revise_inner`（doc_id 从 refine 文件名提取，与精读同 id），provenance stage=revise 读旧追加，冻结快照比对。
+  5. 测试基线 77 → **78 用例**（test_50）；冻结态实测端点 + 产物声明；SPEC.md / extract.py 零改动。
+  6. 停在 S7 收尾：S7d UI（导航两项 + 配置页 + 双产物预览）、S7e 收口；真模型质量验证待用户环境。

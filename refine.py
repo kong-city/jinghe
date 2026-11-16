@@ -19,11 +19,13 @@
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
 import media_runtime
 import backend  # S7b：可插拔多后端适配层（Local ollama / Cloud OpenAI兼容）
+import revise_engine as _revise  # S7c：修订双产物（md 符号标记 + html 彩色）
 
 # --------------------------------------------------------------------------- #
 # 常量
@@ -309,20 +311,128 @@ def start_refine(path: str, model: str = DEFAULT_MODEL, outdir: str = "",
     return {"ok": True, "capability": cap["capability"], "started": True}
 
 
-def _not_implemented(stage: str) -> dict:
-    return {"ok": False, "capability": STATUS_UNAVAILABLE,
-            "error": "%s 将在后续阶段接入" % stage}
+def _run_revise_inner(path: str, model: str, outdir: str, backend_obj,
+                      cap: dict, instruction: str = "") -> None:
+    """修订任务线程体：读 .refine.md 核心 → 调后端补写/修改 → 双产物同源渲染。"""
+    global _TASK
+    try:
+        _task_add("log", "读取精读核心…", 0.05)
+        src = Path(path)
+        text = src.read_text(encoding="utf-8", errors="replace")
+        cores = _revise.parse_core(text)
+        _task_add("log", "解析到 %d 条核心" % len(cores), 0.15)
+        if not cores:
+            _task_add("error", "精读文档无可修订的核心", 1.0)
+            with _TASK_LOCK:
+                _TASK["state"] = "failed"
+                _TASK["error"] = "精读文档无可修订的核心"
+            return
+
+        with _TASK_LOCK:
+            if _TASK["cancelled"]:
+                _TASK["state"] = "cancelled"
+                return
+
+        _task_add("log", "调用后端修订…", 0.35)
+        try:
+            response = backend_obj.chat([
+                {"role": "system", "content": "你是文档修订助手，只输出 JSON。"},
+                {"role": "user", "content": _revise.build_prompt(cores, instruction)},
+            ])
+        except Exception as exc:
+            _task_add("error", "后端调用失败：%s" % type(exc).__name__, 1.0)
+            with _TASK_LOCK:
+                _TASK["state"] = "failed"
+                _TASK["error"] = "后端调用失败：%s" % type(exc).__name__
+            return
+
+        changes, skipped = _revise.parse_changes(response, cores)
+        _task_add("log", "校验变更：有效 %d 条，丢弃 %d 条" % (len(changes), skipped), 0.65)
+        if not changes:
+            _task_add("error", "无有效修订（锚点校验后为空），未产出文档", 1.0)
+            with _TASK_LOCK:
+                _TASK["state"] = "failed"
+                _TASK["error"] = "无有效修订，未产出文档"
+            return
+
+        # doc_id 从精读产物名提取（doc_xxx.refine.md），保证与精读同一 id
+        m = re.search(r"(doc_[0-9a-f]{12})", src.name)
+        doc_id = m.group(1) if m else "doc_" + media_runtime.source_info(src)["doc_id"][4:16]
+        meta = {
+            "stem": src.name.split(".")[0],
+            "doc_id": doc_id,
+            "backend_kind": cap["tools"]["backend"].get("kind", ""),
+            "model": model or "后端默认",
+            "skipped": skipped,
+        }
+        md_text, html_text = _revise.render_both(cores, changes, meta)
+        # 红线：交付前逐条校验标记完整性，对不上零产物
+        ok, why = _revise.verify_marks(changes, md_text, html_text)
+        if not ok:
+            _task_add("error", "标记完整性校验失败：%s" % why, 1.0)
+            with _TASK_LOCK:
+                _TASK["state"] = "failed"
+                _TASK["error"] = "标记完整性校验失败：%s" % why
+            return
+
+        before = media_runtime.frozen_snapshot(outdir)
+        derived = media_runtime.ensure_derived(outdir)
+        md_path = derived / (doc_id + REVISE_MD_SUFFIX)
+        html_path = derived / (doc_id + REVISE_HTML_SUFFIX)
+        md_path.write_text(md_text, encoding="utf-8")
+        html_path.write_text(html_text, encoding="utf-8")
+        _engine.append_provenance(outdir, {
+            "capability": "refine", "stage": "revise", "doc_id": doc_id,
+            "source": src.name, "backend": meta["backend_kind"], "model": meta["model"],
+            "changes": len(changes), "skipped": skipped,
+            "outputs": [md_path.name, html_path.name], "status": "成功",
+        })
+        frozen_ok = media_runtime.frozen_unchanged(before, outdir)
+        _task_add("log", "产物：%s + %s" % (md_path.name, html_path.name), 0.95)
+        with _TASK_LOCK:
+            _TASK["state"] = "done" if frozen_ok else "failed"
+            _TASK["output"] = str(md_path)
+            _TASK["error"] = None if frozen_ok else "冻结对账盘被改动（异常）"
+        _task_add("log", "完成" if frozen_ok else "冻结盘校验失败", 1.0)
+    except Exception as exc:
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "修订失败：%s" % type(exc).__name__
+        _task_add("error", "修订失败：%s" % type(exc).__name__, 1.0)
 
 
-def start_revise(path: str, model: str = DEFAULT_MODEL, refresh: bool = False) -> dict:
-    """POST /api/revise/start（S7c 实现，当前显式拒绝）。"""
+def start_revise(path: str, model: str = DEFAULT_MODEL, outdir: str = "",
+                 instruction: str = "", refresh: bool = False) -> dict:
+    """POST /api/revise/start：校验后启动修订线程（输入为 .refine.md），立即返回。"""
+    global _TASK
     cap = capability(refresh=refresh)
     if not cap["enabled"]:
         return {"ok": False, "capability": STATUS_UNAVAILABLE, "error": cap["reason"]}
     chk = check_source(path)
     if not chk["ok"]:
         return {"ok": False, "capability": cap["capability"], "error": chk["error"]}
-    return _not_implemented("修订增修（S7c）")
+    out = Path(outdir) if outdir else Path(path).resolve().parent
+    with _TASK_LOCK:
+        if _TASK is not None and _TASK["running"]:
+            return {"ok": False, "error": "已有精读/修订任务在运行"}
+        _TASK = {"state": "running", "running": True, "cancelled": False,
+                 "events": [], "output": "", "error": None}
+    be = backend.current_backend()
+    t = _threading.Thread(
+        target=_revise_run_wrapped,
+        args=(chk["path"], model, str(out), be, cap, instruction),
+        daemon=True)
+    t.start()
+    return {"ok": True, "capability": cap["capability"], "started": True}
+
+
+def _revise_run_wrapped(path, model, outdir, be, cap, instruction):
+    try:
+        _run_revise_inner(path, model, outdir, be, cap, instruction)
+    finally:
+        with _TASK_LOCK:
+            if _TASK is not None:
+                _TASK["running"] = False
 
 
 def status(since: int = 0) -> dict:

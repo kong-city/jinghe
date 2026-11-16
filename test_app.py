@@ -3734,6 +3734,114 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('data.get("outdir")', app_src.split("/api/refine/start")[1][:300])
         self.assertIn("refine.status(since)", app_src)
 
+    # ------------------------------------------------------------------ #
+    # 50) S7c 修订双产物：同源渲染 / 标记完整性 / 反编造 / WCAG AA
+    # ------------------------------------------------------------------ #
+    def test_50_s7c_revise_dual_output(self):
+        import backend
+        import refine
+        import revise_engine as R
+        import refine_engine
+
+        core_md = ("<!-- src: x -->\n## 核心知识点\n\n"
+                   "<!-- anchor: doc_abc123456789 | block: 2 -->\n- 注重隐私（来源块 2）\n\n"
+                   "<!-- anchor: doc_abc123456789 | block: 4 -->\n- 本地处理（来源块 4）\n")
+        cores = R.parse_core(core_md)
+        self.assertEqual([c["block"] for c in cores], [2, 4])
+        # anchor 块号与「来源块」不一致的脏数据应被跳过
+        dirty = ("<!-- anchor: doc_abc123456789 | block: 2 -->\n- 文本（来源块 9）\n")
+        self.assertEqual(R.parse_core(dirty), [])
+
+        # 解析变更：编造块/错误 type/old 不匹配 一律丢弃
+        resp = json.dumps({"changes": [
+            {"type": "add", "block": 2, "text": "尤其零依赖"},
+            {"type": "modify", "block": 4, "old": "本地处理", "text": "全程离线处理"},
+            {"type": "add", "block": 999, "text": "编造块"},
+            {"type": "delete", "block": 2, "text": "非法类型"},
+            {"type": "modify", "block": 4, "old": "错误的原文", "text": "改"},
+        ]})
+        changes, skipped = R.parse_changes(resp, cores)
+        self.assertEqual(len(changes), 2)
+        self.assertEqual(skipped, 3)
+
+        # 双产物同源渲染 + 标记完整性
+        meta = {"stem": "x", "doc_id": "doc_abc123456789",
+                "backend_kind": "cloud", "model": "m", "skipped": skipped}
+        md_out, html_out = R.render_both(cores, changes, meta)
+        ok, why = R.verify_marks(changes, md_out, html_out)
+        self.assertTrue(ok, "标记完整性校验失败：%s" % why)
+        self.assertIn("[++ 尤其零依赖 ++]", md_out)
+        self.assertIn("[[~~ 本地处理 ~~ → 全程离线处理]]", md_out)
+        self.assertIn('class="add"', html_out)
+        self.assertIn('text-decoration:line-through', html_out)
+        # 篡改任一份产物都应被校验抓出
+        self.assertFalse(R.verify_marks(changes, md_out.replace("尤其零依赖", "被改"), html_out)[0])
+        self.assertFalse(R.verify_marks(changes, md_out, html_out.replace("+ 尤其零依赖", "+ 被改"))[0])
+
+        # WCAG AA：颜色常量对比度实算
+        def lum(h):
+            h = h.lstrip("#")
+            ch = [int(h[i:i+2], 16)/255 for i in (0, 2, 4)]
+            f = lambda c: c/12.92 if c <= 0.03928 else ((c+0.055)/1.055)**2.4
+            r, g, b = [f(c) for c in ch]
+            return 0.2126*r + 0.7152*g + 0.0722*b
+        def ratio(a, b):
+            l1, l2 = sorted([lum(a), lum(b)], reverse=True)
+            return (l1+0.05)/(l2+0.05)
+        self.assertGreaterEqual(ratio(R.C_ADD_FG, R.C_ADD_BG), 4.5, "新增字色未达 AA")
+        self.assertGreaterEqual(ratio(R.C_MOD_OLD, "#FFFFFF"), 4.5, "修改前字色未达 AA")
+        self.assertGreaterEqual(ratio(R.C_MOD_NEW, "#FFFFFF"), 4.5, "修改后字色未达 AA")
+        self.assertGreaterEqual(ratio(R.C_TEXT, "#FFFFFF"), 4.5, "原文黑未达 AA")
+
+        # 端到端：mock 后端跑修订，落双产物 + provenance，冻结盘只读
+        class FakeRevise(backend.Backend):
+            kind = "cloud"
+            def chat(self, messages):
+                return resp
+        derived = Path(self.tmp) / "derived"
+        derived.mkdir(exist_ok=True)
+        core_file = derived / "doc_abc123456789.refine.md"
+        core_file.write_text(core_md, encoding="utf-8")
+        refine_engine.append_provenance(self.tmp, {"capability": "prior2", "status": "历史"})
+        cap = {"tools": {"backend": {"kind": "cloud"}}, "capability": "available"}
+        refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                        "events": [], "output": "", "error": None}
+        refine._run_revise_inner(str(core_file), "m", str(self.tmp), FakeRevise({}), cap)
+        st = refine.status()
+        self.assertEqual(st["state"], "done", "修订失败：%s" % st["error"])
+        md_path = Path(st["output"])
+        html_path = md_path.with_name(md_path.name.replace(".revise.md", ".revise.html"))
+        self.assertTrue(md_path.is_file() and html_path.is_file(), "双产物未落盘")
+        self.assertIn("<html", html_path.read_text(encoding="utf-8"))
+        prov = refine_engine.load_provenance(Path(self.tmp))
+        entries = prov.get("entries") or []
+        self.assertEqual(len(entries), 2, "provenance 未读旧追加")
+        self.assertEqual(entries[1]["stage"], "revise")
+        self.assertFalse((Path(self.tmp) / "md").exists(), "冻结盘被创建")
+        # 同源：changes 里的每条标记都在两份落盘产物中
+        ok2, _ = R.verify_marks(changes, md_path.read_text(encoding="utf-8"),
+                                html_path.read_text(encoding="utf-8"))
+        self.assertTrue(ok2, "落盘双产物标记不一致")
+
+        # 全无效 → 零产物
+        class BadRevise(backend.Backend):
+            kind = "cloud"
+            def chat(self, messages):
+                return '{"changes":[{"type":"add","block":999,"text":"瞎编"}]}'
+        n_before = len(list(derived.glob("*.revise.md")))
+        refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                        "events": [], "output": "", "error": None}
+        refine._run_revise_inner(str(core_file), "", str(self.tmp), BadRevise({}), cap)
+        self.assertEqual(len(list(derived.glob("*.revise.md"))), n_before,
+                         "全无效修订仍产出文档")
+        self.assertEqual(refine.status()["state"], "failed")
+
+        # 端点：revise/start 透传 outdir 与 instruction
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        seg = app_src.split("/api/revise/start")[1][:400] if "/api/revise/start" in app_src else ""
+        self.assertIn("outdir", seg)
+        self.assertIn("instruction", seg)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
