@@ -252,3 +252,9 @@
   2. **更新任务门闩**：`updateRunning` 布尔量——`startUpdate()` 置位、`finishUpdate()` 与启动失败 catch 复位；`checkUpdate()` 开头若门闩已置位只弹「正在更新中」轻提示，杜绝更新中重复点检查更新触发第二个任务。检查开始时 `hideUpdateProgress()` 清掉上次残留进度条。
   3. **拖拽整页防护**：`setupDropZone()` 在 document 级拦截 `dragover` / `drop` 默认行为，防止文件拖到框外被 Edge 直接打开而跳出应用（zone 自身的 drop 处理仍在冒泡阶段正常执行）。
   4. 测试基线由 72 → **73 用例**（`test_45`），独立锁定以上打磨点；`test_06` / `test_11` / `test_34` / `test_38` 冻结断言原样保留。
+
+- **v0.8.2（2026-11-16 · 本机工具就绪 + 探测超时修正）**：用户要求「之前需要下载的相关组件全部下载」，在本机装齐三工具，**不改软件「不下载/不打包/不自动安装」的契约**——只是代用户在本机提供，工具仍在软件外部：
+  1. **安装清单**：ffmpeg + ffprobe（BtbN win64-gpl 静态构建，含两者）、openai-whisper CLI（提供 `whisper <file> --model/--task/--output_format json/--output_dir` 接口）、yt-dlp（S5 预留）。装在 `%USERPROFILE%\jinghe-tools\` 与本机 Python Scripts，加入用户 PATH；whisper 模型权重**不预下载**（首次转写时由 whisper 自行准备，符合「模型不下载不打包」约定）。
+  2. **torch 版本裁决**：官方最新 `torch 2.15.0+cpu` 依赖精简系统缺失的 `VCRUNTIME140_THREADS.dll`，加载失败；降级 **torch 2.6.0+cpu** 后 `import torch` / `import whisper` 正常。不修改系统 VC++ 运行库、不往 torch/lib 塞 DLL。
+  3. **探测超时（关键修复）**：whisper 启动 import torch + numba 实测 6–8s、yt-dlp 首次启动也慢，原统一 `DEFAULT_TIMEOUT=2.0` 会把「已装好」误判「未启用」。`media_tools.py` 新增 `PROBE_TIMEOUTS={"whisper":15.0,"yt-dlp":10.0}`，`_adapters()` 按工具名覆盖；**TOOL_SPECS 三元组结构与 capabilities() 占位清单不变**（S1 契约锁死）。仍真跑探测命令、超时仍诚实标未启用，只是给足重依赖 CLI 启动窗口。
+  4. **验收**：冻结态 exe 实起 `/api/tools/probe?refresh=1`，ffmpeg/whisper/yt-dlp 三项 `available=true`；`audio_transcribe` / `video_transcribe` 均 `enabled=true, capability=available, missing=[]`。全量 73 用例 + 门禁 9 项全绿；`test_33` 扩展断言 per-tool 超时与三工具结构。

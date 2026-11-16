@@ -28,6 +28,13 @@
 - **拖拽整页防护**：拖到拖拽框外的文件不再被 Edge 默认打开而跳出应用，统一引导拖入框内。
 - 新增 `test_45`（交互打磨契约），测试基线 72 → **73**。
 
+### 本机工具就绪（同版本增量）
+
+- 按用户要求在本机装齐可插拔工具：**ffmpeg + ffprobe**（win64-gpl 静态构建，约 500MB）、**openai-whisper CLI**（torch 走 CPU wheel）、**yt-dlp**。工具装在软件外部（软件仍不下载、不打包、不自动安装），只把目录加入用户 PATH。
+- torch 兼容性：官方最新 2.15+cpu 依赖系统缺失的 `VCRUNTIME140_THREADS.dll`，降级到 **torch 2.6.0+cpu** 后加载正常；whisper `--help` 实测提供项目所需的 `--model/--task/--output_format json/--output_dir` 参数。
+- **探测超时修正**：whisper 启动需 import torch + numba（实测 6–8s）、yt-dlp 首次启动解析依赖也慢，原统一 2s 超时会把"已装好"误判"未启用"。`media_tools.py` 新增 `PROBE_TIMEOUTS`（whisper 15s / yt-dlp 10s，ffmpeg 仍 2s），仍真跑探测命令验证可用，诚实原则不变。冻结态实测 `/api/tools/probe` 三工具全绿，S3 音频 / S4 视频能力均 `available=true`。
+- 模型权重按约定**不预下载**，首次转写时由 whisper 自行准备。
+
 ## [0.4.8] - 2026-11-16
 
 **自更新闭环**（运维阶段补齐）。关于页「检查更新」从「查一下版本号、顺便打开网页」升级为**真正能完成更新**：点击后如实回显**当前版本与最新版本**，发现新版本可一键**下载 → 替换正在运行的程序文件 → 自动重启**，全过程有**百分比进度**反馈。同时把仓库 `kong-city/jinghe` 由私有改为**公开**，匿名即可查询 release 与安装包（此前私有仓库让客户端匿名访问 GitHub Release API 一律 404，「检查更新」永远拿不到真实版本号）。

@@ -1802,6 +1802,20 @@ class AppContractTest(unittest.TestCase):
         self.assertIs(good["available"], True)
         self.assertEqual(good["version"], "6.1.1")
 
+        # ④b 重依赖 CLI 单独超时：whisper 启动 6–8s（import torch/numba），
+        #     必须比默认 2s 宽，否则「已装好」会被误判「未启用」。
+        self.assertGreater(media_tools.PROBE_TIMEOUTS.get("whisper", 2.0),
+                           media_tools.DEFAULT_TIMEOUT,
+                           "whisper 探测超时未放宽，重依赖 CLI 会被误判未启用")
+        adapters = media_tools._adapters()
+        self.assertGreater(adapters["whisper"].timeout, media_tools.DEFAULT_TIMEOUT)
+        self.assertEqual(adapters["ffmpeg"].timeout, media_tools.DEFAULT_TIMEOUT,
+                         "ffmpeg 是轻量 CLI，不应无故放宽超时")
+        self.assertGreaterEqual(adapters["yt-dlp"].timeout, media_tools.DEFAULT_TIMEOUT)
+        # TOOL_SPECS 三工具结构不变（S1 契约）
+        self.assertEqual([s[0] for s in media_tools.TOOL_SPECS],
+                         ["ffmpeg", "whisper", "yt-dlp"])
+
         # ⑤ 探测结果进程内缓存，不会每次请求都起外部子进程
         calls = {"n": 0}
 

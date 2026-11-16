@@ -27,6 +27,10 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # 每台工具一次轻量探测；超时刻意压短，避免启动界面被外部 CLI 拖住。
 DEFAULT_TIMEOUT = 2.0
+# 重依赖 CLI 的单独超时：whisper 每次启动要 import torch + numba（实测 6–8s），
+# 若沿用 2s 会把「已装好」误判为「未启用」。这里只放宽 whisper 的探测窗口，
+# 仍真跑 `--help` 验证可用（不是放宽成「文件存在就算可用」），诚实原则不变。
+PROBE_TIMEOUTS: dict[str, float] = {"whisper": 15.0, "yt-dlp": 10.0}
 
 # (工具名, 探测参数, 版本正则或 None)
 TOOL_SPECS: tuple[tuple[str, list[str], str | None], ...] = (
@@ -112,7 +116,9 @@ class ToolAdapter:
 
 
 def _adapters() -> dict[str, ToolAdapter]:
-    return {name: ToolAdapter(name, argv, ver)
+    # TOOL_SPECS 三元组结构保持不变（S1 契约锁死）；只按工具名覆盖探测超时。
+    return {name: ToolAdapter(name, argv, ver,
+                              timeout=PROBE_TIMEOUTS.get(name, DEFAULT_TIMEOUT))
             for name, argv, ver in TOOL_SPECS}
 
 
