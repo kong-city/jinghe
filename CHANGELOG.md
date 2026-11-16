@@ -350,3 +350,11 @@
 - JS 交互：能力状态复用 toolState.refine、GET 端点严格传 undefined、增量轮询 status?since、产物经只读端点取文本。
 - 新增 `test_51`（导航/页面/配置表单/aria-label/端点调用/artifact 安全边界/焦点环与 reduced-motion 未被破坏），测试基线 78 → **79**；全量 79 + 门禁 9 项全绿；Edge headless DOM 实测两个新按钮/页面/控件真实出现。
 - **严格不碰**：`SPEC.md` / `extract.py` / `/api/open` 白名单 / 既有端点原样。
+
+### S7e · 工程化收口与验收（2026-11-16）
+
+- 冻结契约复核：SPEC.md / extract.py / test_extract.py 相对起点提交与 v0.4.9 tag 双重 diff 为空；零第三方依赖（全标准库 + 自有模块）；单文件 exe 8,952,693 字节；build.spec 未收集外部工具/模型。
+- 不变量复核：`probe.tools` 恒锁 3 工具（ffmpeg/whisper/yt-dlp），新能力全走顶层增量字段；`/api/summarize`/`/api/transcribe`/`/api/open`/`/api/settings` 原样；新模块零写入冻结对账盘。
+- 收口总验：全量 **79/79** + 门禁 **9 项** + 冻结态 8 端点 HTTP 200 + Edge headless DOM 新按钮确认。
+- 新增 `docs/S7-精读修订验收.md`（边界/裁决演进/红线落地/验证矩阵/风险/闸门）；契约 v0.8.9 定稿。
+- 软件版本 v0.4.9（未随 S7 升号，符合双轨规则）；本轮 UI 未上传，停在 S7e 闸门。

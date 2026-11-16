@@ -311,3 +311,5 @@
   3. 新增只读端点 `GET /api/refine/artifact`（derived/ 内 + .md/.html + realpath 防穿越）与 `POST /api/refine/open`（独立，**不改 /api/open v0.4.0 白名单契约**）；JS 的 GET 一律传 undefined、status 走 since 增量轮询。
   4. 测试基线 78 → **79 用例**（test_51，含 artifact 安全边界与既有可访问性断言不回退）；Edge headless DOM 实测新 UI 元素出现；SPEC.md / extract.py 零改动。
   5. 停在 S7d 闸门；S7e 收口与上传待用户指令。真模型质量验证仍待用户环境。
+
+- **v0.8.9（2026-11-16 · S7e 工程化收口，契约定稿）**：S7 五阶段（立项/S7a/S7b/S7b后半/S7c/S7d）全部落地并逐阶段验收；收口复核冻结内核零改动、零依赖、单文件、3 工具占位锁死、既有端点不变、产物只落 derived；全量 79 用例 + 门禁 9 项 + 冻结态 + Edge DOM 全绿。验收报告 `docs/S7-精读修订验收.md`。软件版本仍 v0.4.9（与规格版本双轨，不互推）。停在 S7e 闸门：本轮 UI 未上传 GitHub，是否推送由用户决定。
