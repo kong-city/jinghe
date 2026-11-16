@@ -22,15 +22,14 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import media_tools
 import media_runtime
+import backend  # S7b：可插拔多后端适配层（Local ollama / Cloud OpenAI兼容）
 
 # --------------------------------------------------------------------------- #
 # 常量
 # --------------------------------------------------------------------------- #
 CAPABILITY_NAME = "refine"
-TOOL_NAME = "ollama"          # 本机可插拔大模型（用户本机提供，软件不下载/不打包）
-DEFAULT_MODEL = ""            # 不预设模型；由 ollama list 读取本机已就绪模型
+DEFAULT_MODEL = ""            # 不预设模型；由当前后端的 list_models() 读取
 
 MAX_BYTES = 8 * 1024 * 1024   # 单 md 上限 8MB（与 word_export 一致）
 MAX_LINES = 20000             # 单 md 上限 2 万行
@@ -52,47 +51,32 @@ STATUS_UNAVAILABLE = "unavailable"
 # --------------------------------------------------------------------------- #
 # 能力探测：ollama 独立 tools 子结构，绝不进 TOOL_SPECS / capabilities()
 # --------------------------------------------------------------------------- #
-# ollama 探测参数与版本正则（宽松：解析不出版本也判 available，仍真跑探测命令）
-_OLLAMA_PROBE_ARGV = ["--version"]
-_OLLAMA_VERSION_RE = None  # 版本格式因版本而异，不强行解析；available 由退出码判定
-
-
-def _ollama_adapter():
-    """用 S1 的统一 ToolAdapter 构造 ollama 探针，但不注册进全局 TOOL_SPECS。
-
-    ``ollama --version`` 是原生二进制，轻量（远快于 whisper 的 import torch），
-    用默认 2s 超时即可；推理耗时是 S7b/S7c 长任务的事，与探测无关。
-    """
-    return media_tools.ToolAdapter(
-        TOOL_NAME, list(_OLLAMA_PROBE_ARGV), _OLLAMA_VERSION_RE,
-        timeout=media_tools.PROBE_TIMEOUTS.get(TOOL_NAME, media_tools.DEFAULT_TIMEOUT))
-
-
 def capability(refresh: bool = False) -> dict:
-    """/api/tools/probe 的顶层增量字段 refine（S7a 地基版）。
+    """/api/tools/probe 的顶层增量字段 refine（S7b 可插拔多后端版）。
 
     S1 的 media_tools.capabilities() 是被 test_33 锁死的占位清单，恒 enabled=False；
     S7 的真实状态只走本字段（与 S2a/S2b/S3/S4 同一裁决）。
 
-    ollama 是本机可插拔大模型：本模块只探测、不下载、不打包、不自动安装。
-    本机未装或探测失败 → enabled=False + 可读原因，UI 显示「未启用」，零产物。
+    后端（方案 C）：客户在 backend.json 自选 Local(ollama) / Cloud(OpenAI兼容)，
+    未配置或探测失败 → enabled=False + 可读原因，UI 显示「未启用」，零产物。
+    本模块只探测、不下载、不打包、不自动安装任何组件。
     """
-    ollama = dict(_ollama_adapter().probe())
-    available = bool(ollama.get("available"))
-    missing = [] if available else [TOOL_NAME]
+    be = backend.probe_current(refresh=refresh)
+    available = bool(be.get("available"))
+    kind = be.get("kind", backend.KIND_NONE)
+    missing = [] if available else [kind if kind != backend.KIND_NONE else "backend"]
     return {
         "name": CAPABILITY_NAME,
         "enabled": available,
         "capability": "available" if available else STATUS_UNAVAILABLE,
         "engine": {
-            "name": "本机 ollama 可插拔大模型（未随软件分发）",
-            "reason": ("精读提纯与修订增修由本机 ollama 大模型完成；"
-                       "软件不下载模型、不打包工具、不自动安装、不外传内容"),
+            "name": "可插拔大模型后端（Local ollama / Cloud 兼容端点，均未随软件分发）",
+            "reason": ("精读提纯与修订增修由客户自选后端完成；本地后端不出本机、"
+                       "云端后端需客户配置即知情同意；软件不下载/不打包/不自动安装"),
         },
-        "tools": {"ollama": ollama},
+        "tools": {"backend": be},
         "missing": missing,
-        "reason": ("可用" if available else
-                   "未启用：本机未找到 %s，请安装后重试" % TOOL_NAME),
+        "reason": ("可用" if available else be.get("reason", "未启用：尚未配置精读后端")),
         "input": {"suffix": ".md", "max_bytes": MAX_BYTES, "max_lines": MAX_LINES},
         "output": {
             "dirname": media_runtime.DERIVED_DIRNAME,
@@ -106,22 +90,17 @@ def capability(refresh: bool = False) -> dict:
             "revise": "对核心补写缺失 + 修改已有，新增/修改须样式区分",
         },
         "note": ("精读/修订产物只落 derived/；绝不写 out/md、INDEX.md、MERGED.md；"
-                 "S7a 仅地基，真实推理调用将在 S7b/S7c 接入"),
+                 "S7b 仅适配层，真实推理调用将在后续阶段接入"),
     }
 
 
 def listed_models(refresh: bool = False) -> dict:
-    """读取本机 ollama 已就绪模型（S7a：仅探测能力形状，不真调 list）。
-
-    真调 ``ollama list`` 解析模型列表留 S7b；地基阶段若 ollama 可用但列表未实现，
-    如实返回空列表 + 提示，绝不编造模型名。
-    """
+    """列出当前后端可用模型（经 Backend.list_models()，绝不编造模型名）。"""
     cap = capability(refresh=refresh)
     if not cap["enabled"]:
         return {"ok": False, "capability": STATUS_UNAVAILABLE,
                 "models": [], "error": cap["reason"]}
-    return {"ok": True, "capability": "available", "models": [],
-            "note": "S7a 地基：模型列表将在 S7b 通过 ollama list 真实读取；此处不编造模型名"}
+    return backend.list_models_current(refresh=refresh)
 
 
 # --------------------------------------------------------------------------- #

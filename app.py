@@ -47,7 +47,8 @@ import word_input  # S2a：Word → .md 输入增强（独立后处理层，冻�
 import word_export  # S2b：.md → .docx 导出（独立后处理层，纯标准库 OOXML）
 import audio_transcribe  # S3：音频 → .md（本机 whisper 适配器，冻结内核零改动）
 import video_transcribe  # S4：视频 → .md（独立 video handler，绝不复用音频路径）
-import refine  # S7：精读提纯 / 修订增修（本机 ollama，独立后处理层，冻结内核零改动）
+import refine  # S7：精读提纯 / 修订增修（可插拔后端，独立后处理层，冻结内核零改动）
+import backend  # S7b：可插拔大模型后端适配层（Local ollama / Cloud 兼容端点）
 import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行中的程序并重启）
 
 HOST = "127.0.0.1"
@@ -2132,6 +2133,12 @@ class Handler(BaseHTTPRequestHandler):
                 refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
                 self._send_json(refine.listed_models(refresh=refresh))
                 return
+            if path == "/api/refine/backend":
+                # S7b：读后端配置 —— 必须走 public_config()（api_key 脱敏），
+                # 绝不回显 settings 或 backend.json 里的真实 key。
+                _touch_heartbeat()
+                self._send_json({"ok": True, "config": backend.public_config()})
+                return
             if path == "/api/update/check":
                 # v0.4.8：只查版本（当前 / 最新 / 有无安装包），不下载、不安装。
                 _touch_heartbeat()
@@ -2389,6 +2396,15 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/refine/cancel":
                 self._send_json(refine.cancel())
+            elif path == "/api/refine/backend":
+                # S7b：保存后端配置。写入真 key，但回显一律走 public_config() 脱敏。
+                backend.save_config({
+                    "kind": str(data.get("kind") or ""),
+                    "endpoint": str(data.get("endpoint") or ""),
+                    "api_key": str(data.get("api_key") or ""),
+                    "model": str(data.get("model") or ""),
+                })
+                self._send_json({"ok": True, "config": backend.public_config()})
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态

@@ -3472,7 +3472,8 @@ class AppContractTest(unittest.TestCase):
         self.assertIsInstance(cap, dict)
         self.assertIn("capability", cap)
         self.assertIn("tools", cap)
-        self.assertIn("ollama", cap["tools"])
+        # S7b 起 tools 子结构从 ollama 改为 backend（方案 C 可插拔多后端）
+        self.assertIn("backend", cap["tools"])
         self.assertIn("refine", cap["stages"])
         self.assertIn("revise", cap["stages"])
         # 无论本机是否装 ollama，start 在 S7a 阶段都必须诚实拒绝真实推理
@@ -3524,6 +3525,114 @@ class AppContractTest(unittest.TestCase):
         st, summ = srv.post_json("/api/summarize", {"outdir": ""})
         self.assertEqual(st, 200)
         self.assertIs(summ["ok"], False)
+
+    # ------------------------------------------------------------------ #
+    # 48) S7b 可插拔后端适配层（方案 C）：双实现 / 密钥脱敏 / 独立存储
+    # ------------------------------------------------------------------ #
+    def test_48_s7b_backend_adapter(self):
+        import backend
+        import media_tools
+        from unittest import mock
+
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        be_src = (ROOT / "backend.py").read_text(encoding="utf-8")
+        settings_src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 双实现 + 统一接口
+        self.assertTrue(issubclass(backend.LocalBackend, backend.Backend))
+        self.assertTrue(issubclass(backend.CloudBackend, backend.Backend))
+        for meth in ("probe", "list_models", "chat"):
+            self.assertTrue(hasattr(backend.Backend, meth), "接口缺方法：%s" % meth)
+        self.assertEqual(backend.LocalBackend.kind, backend.KIND_LOCAL)
+        self.assertEqual(backend.CloudBackend.kind, backend.KIND_CLOUD)
+
+        # ② 独立存储：backend.json 不放 settings.json
+        self.assertIn("backend.json", be_src)
+        self.assertNotIn("api_key", settings_src.split("DEFAULT_SETTINGS")[1].split("}")[0],
+                         "api_key 不得进 DEFAULT_SETTINGS（会被 /api/settings 回显）")
+        self.assertIn("CONFIG_FILE", be_src)
+
+        # ③ 脱敏：mask_key 各分支 + public_config 不泄漏真 key
+        self.assertEqual(backend.mask_key(""), "")
+        self.assertEqual(backend.mask_key("abc"), "****")
+        masked = backend.mask_key("sk-1234567890abcdef")
+        self.assertTrue(masked.startswith("****") and masked.endswith("cdef"))
+        self.assertNotIn("1234567890", masked)
+
+        cfg_file = Path(self.tmp) / "backend.json"
+        with mock.patch.object(backend, "CONFIG_FILE", cfg_file), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"kind": backend.KIND_CLOUD,
+                                 "endpoint": "https://api.example.com/v1",
+                                 "api_key": "sk-SUPERSECRET123456",
+                                 "model": "gpt-x"})
+            pub = backend.public_config()
+            self.assertNotIn("SUPERSECRET", json.dumps(pub, ensure_ascii=False),
+                             "public_config 泄漏了真实 key")
+            self.assertEqual(pub["api_key"], "****3456")
+            self.assertTrue(pub["has_key"])
+            # 空值 key 保存 = 保留原值（脱敏回显场景不覆盖）
+            backend.save_config({"kind": backend.KIND_CLOUD, "api_key": "",
+                                 "endpoint": "https://api.example.com/v1", "model": "gpt-x"})
+            self.assertEqual(backend.load_config(refresh=True)["api_key"],
+                             "sk-SUPERSECRET123456", "空 key 应保留原值")
+            # 真 key 不落日志文案：backend.py 里 _append_log 不应出现
+            self.assertNotIn("_append_log", be_src, "backend.py 不应写日志（防 key 泄漏）")
+
+        # ④ 缺配置诚实降级 + chat 真推理显式拒绝
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "none.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            probe = backend.probe_current(refresh=True)
+            self.assertIs(probe["available"], False)
+            self.assertEqual(probe["kind"], backend.KIND_NONE)
+            self.assertIn("尚未配置", probe["reason"])
+        with self.assertRaises(NotImplementedError):
+            backend.CloudBackend({"endpoint": "https://x", "api_key": "k"}).chat([])
+
+        # ⑤ 端到端：app.py 挂了两个配置端点且回显脱敏
+        self.assertIn('path == "/api/refine/backend"', app_src)
+        self.assertIn("public_config()", app_src, "配置端点必须走脱敏回显")
+        self.assertNotIn('data["api_key"]', app_src.split("elif path == \"/api/refine/backend\"")[1][:400]
+                         if 'elif path == "/api/refine/backend"' in app_src else "",
+                         "POST 回显不得直接带 data['api_key']")
+        self.assertIn("import backend", app_src)
+
+        # ⑥ 隔离：后端不进 TOOL_SPECS
+        self.assertEqual([s[0] for s in media_tools.TOOL_SPECS],
+                         ["ffmpeg", "whisper", "yt-dlp"])
+
+        # ⑦ 真实 HTTP：GET /api/refine/backend 脱敏、POST 保存后仍脱敏、日志无真 key
+        # 把 LOCALAPPDATA 指到临时目录，隔离 backend.json 与 app.log，不污染用户真实环境
+        appdata = self.tmp / "localappdata_s7b"
+        appdata.mkdir(exist_ok=True)
+        srv = self.start(env_extra={"LOCALAPPDATA": str(appdata)})
+        st, _ = srv.get_json("/api/state")
+        self.assertEqual(st, 200, "服务未就绪")
+        st, got = srv.get_json("/api/refine/backend")
+        self.assertEqual(st, 200)
+        self.assertIn("config", got)
+        self.assertIn("api_key", got["config"])
+        secret = "sk-E2E-SECRET-998877"
+        st, saved = srv.post_json("/api/refine/backend", {
+            "kind": "cloud", "endpoint": "https://api.example.com/v1",
+            "api_key": secret, "model": "m"})
+        self.assertEqual(st, 200)
+        self.assertTrue(saved["ok"])
+        self.assertNotIn(secret, json.dumps(saved, ensure_ascii=False),
+                         "POST 回显泄漏了真 key")
+        # 服务器输出（含日志）不得出现真 key
+        tail = srv.tail()
+        self.assertNotIn(secret, tail, "日志/输出泄漏了真 key")
+        # backend.json 落在隔离目录（真 key 明文存盘是设计预期，操作系统层面保护）
+        cfg_on_disk = appdata / "Jinghe" / "backend.json"
+        self.assertTrue(cfg_on_disk.is_file(), "隔离的 backend.json 未落盘")
+        self.assertIn(secret, cfg_on_disk.read_text(encoding="utf-8"),
+                      "key 应落盘到独立 backend.json（供重启后使用）")
+        # 但 app.log（可能被日志导出端点触及）绝不能出现真 key
+        app_log = appdata / "Jinghe" / "app.log"
+        if app_log.is_file():
+            self.assertNotIn(secret, app_log.read_text(encoding="utf-8"),
+                             "app.log 泄漏了真 key")
 
 
 def print_summary(result=None) -> None:

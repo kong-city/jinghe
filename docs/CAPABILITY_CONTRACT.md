@@ -273,3 +273,18 @@
   3. 六个增量端点：`POST /api/refine/inspect|start|cancel`、`POST /api/revise/start`、`GET /api/refine/status|models`；缺工具/空输入诚实拒绝，**不改 `/api/summarize` / `/api/transcribe` 等既有端点**。
   4. 双产物契约声明：`.refine.md`（精读）+ `.revise.md`（符号标记）+ `.revise.html`（彩色样式）；产物只落 `out/derived/`，冻结对账盘只读。S7a 只声明不渲染。
   5. 测试基线 74 → **75 用例**（`test_47`）；冻结态实测 probe 顶层 refine + 新端点可用、缺工具诚实降级；SPEC.md / extract.py 零改动。
+
+- **v0.8.5（2026-11-16 · S7 后端裁决改为方案 C 可插拔多后端，用户确认放行）**：原 S7 契约「本机 ollama 单后端」作废（用户连续追问体积/带宽后改定），改为 **方案 C**：
+  1. **统一 `Backend` 接口**（probe/list_models/chat）+ 两实现：`LocalBackend`（ollama `localhost:11434`，内容不出本机）、`CloudBackend`（客户填 OpenAI 兼容端点 + key，内容外传）。两者共用 `/chat/completions` 协议。B 方案 = C 选 CloudBackend，C 自动覆盖 B。
+  2. **客户自选、零强制**：只配云端=零膨胀（软件本体恒 9MB）、只配本地=客户自己装 ollama+模型、两者都配=运行时切换；软件不下载/不打包/不自动安装任何组件；未配置=未启用（与 S7a 诚实降级一致）。
+  3. **密钥安全**：后端配置独立存 `%LOCALAPPDATA%\Jinghe\backend.json`，**不放 settings.json**（后者被 /api/settings 明文回显 + 可被日志导出触及）；读端点 api_key 脱敏回显、写端点空值不改、绝不进日志/provenance/产物/异常堆栈。
+  4. **隔离不变**：后端探测走 `/api/tools/probe` 顶层 `refine` 的 `backend` 子结构，**绝不进 TOOL_SPECS**（S1 锁死 3 工具）。
+  5. 隐私条款改为「随后端而定」：Cloud 需客户配置即知情同意；新增风险登记「密钥泄漏」由 test_48 锁定。
+
+- **v0.8.6（2026-11-16 · S7b 可插拔后端适配层落地）**：
+  1. 新增 `backend.py`：`Backend` 统一接口（probe/list_models/chat）+ `LocalBackend`（ollama `localhost:11434`，GET /api/tags 探活）/ `CloudBackend`（客户端点 + Bearer key，GET /models 探活），共用 OpenAI 兼容协议。`chat()` 真推理显式 NotImplementedError（S7b 后半接入）。
+  2. **密钥安全**：独立 `backend.json`（隔离 settings.json）；`mask_key` 脱敏、public_config 只回显掩码、save_config 空 key 保留原值、backend.py 内部零日志；test_48 用隔离 LOCALAPPDATA 验证落盘有真 key（设计预期）但**回显/日志/app.log 零泄漏**。
+  3. `refine.py` 探测改走 `backend.probe_current()`，顶层 `refine.tools` 子结构由 `ollama` → `backend`（kind 三态 none/local/cloud，缺配置诚实降级）。
+  4. app.py 新增 `GET/POST /api/refine/backend`；POST 回显走 public_config 不回显真 key。
+  5. 测试基线 75 → **76 用例**（test_48）；修 `_LOCK` 非重入自死锁（save_config 锁内不再调 load_config）。冻结态实测脱敏全绿；SPEC.md / extract.py 零改动。
+  6. 停在 S7b 适配层闸门；真推理产出（精读 .refine.md）+ 修订双产物 + UI 留后续阶段。

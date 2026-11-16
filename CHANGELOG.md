@@ -313,3 +313,13 @@
 - 双产物契约已声明（`.refine.md` / `.revise.md` + `.revise.html`），S7a 只声明不渲染。
 - 新增 `test_47`（S7a 地基契约），测试基线 74 → **75**；全量 75 + 门禁 9 项全绿；冻结态实起验证 probe 顶层 refine 与新端点可用。
 - **严格不碰**：`SPEC.md` / `extract.py` / `/api/summarize` / `/api/transcribe` 全部原样。
+
+### S7b · 可插拔后端适配层（方案 C，用户放行；停在 S7b 闸门）
+
+- 后端裁决由「本机 ollama 单后端」改为 **方案 C 可插拔多后端**：统一 `Backend` 接口 + `LocalBackend`（ollama localhost:11434）/ `CloudBackend`（OpenAI 兼容端点+key）双实现，客户自选、零强制；软件本体恒定 9MB，不下载/不打包/不自动安装任何组件。B 方案 = C 选 CloudBackend。
+- 新增 `backend.py`：配置独立存 `%LOCALAPPDATA%\Jinghe\backend.json`（**不放 settings.json**，后者被 /api/settings 回显、可被日志导出触及）；`api_key` 读端点脱敏回显、写端点空值不改、**绝不进日志/产物/异常堆栈**；`chat()` 真推理显式拒绝（留 S7b 后半）。
+- `refine.py` 探测改走 `backend.probe_current()`，tools 子结构由 `ollama` 改为 `backend`；`listed_models()` 走当前后端 `list_models()`。
+- app.py 新增 `GET/POST /api/refine/backend`（配置读脱敏 / 写回显脱敏）。
+- 新增 `test_48`（双实现、密钥脱敏、独立存储、缺配置诚实降级、HTTP 回显/日志无 key），测试基线 75 → **76**；全量 76 + 门禁 9 项全绿；冻结态实测 probe.tools=backend、POST key 回显 `****1234`、日志零泄漏。
+- **修一个死锁**：`save_config` 持 `_LOCK` 时调 `load_config(refresh)` 再拿同一把非重入锁 → 自锁；改为锁内直接读当前 key。
+- **严格不碰**：`SPEC.md` / `extract.py` / 既有端点全部原样。真推理产出与 UI 仍留后续阶段。
