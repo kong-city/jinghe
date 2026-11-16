@@ -535,6 +535,41 @@ _RUN_DIRS: set[str] = set()
 # 只认这种精确形状，绝不按前缀模糊匹配，避免误伤同名前缀的其它目录
 _RUN_DIR_RE = re.compile(r"^jinghe-run-(\d+)-(\d+)$")
 
+# v0.4.9：拖拽输入暂存目录。普通 Edge 页面拿不到拖入文件的本地绝对路径，
+# 只能把文件内容上传到本机后端，落到独立暂存目录后再交回真实路径走识别。
+# 与 jinghe-run-* 同构：pid 归属 + 序号、锁内记账、启动清扫、atexit 兜底。
+_DROP_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 单文件上限 2GB（覆盖大视频）
+_DROP_LOCK = threading.Lock()
+_DROP_SEQ = 0
+_DROP_DIRS: set[str] = set()
+_DROP_DIR_RE = re.compile(r"^jinghe-drop-(\d+)-(\d+)$")
+
+
+def _new_drop_dir() -> Path:
+    global _DROP_SEQ
+    with _DROP_LOCK:
+        _DROP_SEQ += 1
+        seq = _DROP_SEQ
+    path = Path(tempfile.gettempdir()) / ("jinghe-drop-%d-%d" % (os.getpid(), seq))
+    path.mkdir(parents=True, exist_ok=True)
+    with _DROP_LOCK:
+        _DROP_DIRS.add(str(path))
+    return path
+
+
+def _sweep_drop_dirs() -> None:
+    """兜底：清掉本进程创建过的 jinghe-drop-*（正常退出 / atexit）。"""
+    with _DROP_LOCK:
+        dirs = list(_DROP_DIRS)
+        _DROP_DIRS.clear()
+    for item in dirs:
+        shutil.rmtree(item, ignore_errors=True)
+    try:
+        for child in Path(tempfile.gettempdir()).glob("jinghe-drop-%d-*" % os.getpid()):
+            shutil.rmtree(child, ignore_errors=True)
+    except Exception:
+        pass
+
 
 def _new_enc_dir() -> Path:
     global _RUN_SEQ
@@ -626,7 +661,32 @@ def _sweep_orphan_dirs() -> int:
     return swept
 
 
+def _sweep_orphan_drop_dirs() -> int:
+    """v0.4.9：启动时清掉已死进程遗留的 jinghe-drop-<pid>-<seq>。
+
+    安全边界与 _sweep_orphan_dirs 完全一致：只认精确名字，pid 仍存活一律跳过。
+    """
+    me = os.getpid()
+    swept = 0
+    try:
+        children = list(Path(tempfile.gettempdir()).iterdir())
+    except Exception:
+        return 0
+    for child in children:
+        m = _DROP_DIR_RE.match(child.name)
+        if not m or not child.is_dir():
+            continue
+        pid = int(m.group(1))
+        if pid == me or _pid_alive(pid):
+            continue
+        shutil.rmtree(str(child), ignore_errors=True)
+        if not child.exists():
+            swept += 1
+    return swept
+
+
 atexit.register(_sweep_run_dirs)
+atexit.register(_sweep_drop_dirs)
 
 
 def _child_env() -> dict[str, str]:
@@ -1697,6 +1757,28 @@ MIME = {
 }
 
 
+def _build_name_path_map(inputs: list[str]) -> dict[str, str]:
+    """v0.4.9：把输入（文件或目录）里的文件名映射到真实路径。
+
+    只用于给 dry-run 的 items 补 path，供「已识别清单勾选后按选中文件预览」。
+    目录只做浅层递归（os.walk），与 extract 的盘点口径无关；同名取首次出现，
+    这属于可接受近似——勾选预览的核心场景是拖拽进来的具体文件。
+    """
+    result: dict[str, str] = {}
+    for raw in inputs:
+        path = Path(os.path.abspath(os.path.expanduser(raw)))
+        if path.is_file():
+            result.setdefault(path.name, str(path))
+        elif path.is_dir():
+            try:
+                for root, _dirs, files in os.walk(str(path)):
+                    for name in files:
+                        result.setdefault(name, os.path.join(root, name))
+            except Exception:
+                pass
+    return result
+
+
 def _dry_run(inputs: list[str]) -> dict:
     try:
         proc = subprocess.run(
@@ -1752,6 +1834,13 @@ def _dry_run(inputs: list[str]) -> dict:
         m = CONV_RE.match(line)
         if m:
             _CONVERTER = m.group(1).strip()
+    # v0.4.9：extract.py 的 dry-run 只输出文件名（p.name），不含路径。
+    # 为支持「已识别清单勾选后按选中文件预览」，在不改冻结内核的前提下，
+    # 于 app.py 层把每个 item 的 basename 映射回真实路径（文件直接用，目录递归）。
+    name_to_path = _build_name_path_map(inputs)
+    for it in items:
+        it["path"] = name_to_path.get(it.get("name", ""), "")
+
     _LAST_INPUTS = list(inputs)
     _LAST_INPUT = inputs[0] if len(inputs) == 1 else ""
     return {"ok": True, "buckets": buckets, "total": total, "items": items}
@@ -1895,6 +1984,56 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             raise ValueError("请求体不是合法 JSON")
         return data if isinstance(data, dict) else {}
+
+    def _api_drop_files(self, query: str) -> None:
+        """v0.4.9：接收拖拽进来的单个文件（body = 原始字节），落到暂存目录并返回真实路径。
+
+        普通 Edge 页面通过 DataTransfer 只能拿到 File 对象与内容，拿不到本地绝对路径；
+        因此把内容上传到本机后端再交回路径，交给既有 /api/dry-run 识别。
+        安全边界：文件名为 basename 清洗、拒绝路径穿越；单文件 2GB 上限；流式落盘不整读进内存。
+        """
+        qs = parse_qs(query)
+        raw_name = (qs.get("name") or ["dropped.bin"])[0]
+        safe_name = os.path.basename(raw_name.replace("\\", "/")).strip()
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", safe_name)[:200]
+        if not safe_name or safe_name in (".", ".."):
+            safe_name = "dropped.bin"
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self._send_json({"ok": False, "error": "空文件"}, 400)
+            return
+        if length > _DROP_MAX_BYTES:
+            self._send_json({"ok": False, "error": "文件超过 2GB 上限，未接收"}, 413)
+            return
+        try:
+            work = _new_drop_dir()
+            # 同名去重：加序号前缀，绝不覆盖已接收的文件
+            target = work / safe_name
+            seq = 1
+            while target.exists():
+                stem, ext = os.path.splitext(safe_name)
+                target = work / ("%s_%d%s" % (stem, seq, ext))
+                seq += 1
+            remaining = length
+            with target.open("wb") as fh:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+            if remaining != 0:
+                target.unlink(missing_ok=True)
+                self._send_json({"ok": False, "error": "上传中断，未接收完整文件"}, 400)
+                return
+            self._send_json({"ok": True, "path": str(target),
+                             "name": target.name, "size": length})
+        except Exception as exc:
+            _log_error("API:/api/drop-files", "拖拽上传失败", exc)
+            self._send_json({"ok": False, "error": "保存文件失败：%s" % exc}, 500)
 
     def log_message(self, fmt: str, *args) -> None:
         path = self.path.split("?", 1)[0]
@@ -2121,7 +2260,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------- POST ---------------------------- #
     def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        # v0.4.9：拖拽上传——body 是文件原始字节而非 JSON，必须在 _read_json 之前拦截。
+        if path == "/api/drop-files":
+            self._api_drop_files(parsed.query)
+            return
         try:
             data = self._read_json()
         except ValueError as exc:
@@ -3172,6 +3316,14 @@ def main(argv: list[str] | None = None) -> int:
     _reconfigure_streams()
     args_list = list(sys.argv[1:] if argv is None else argv)
 
+    # v0.4.8 替换执行器：`<新版 exe> --self-update --staged … --target … --pid …`
+    # 由新版程序自己完成「等旧进程退出 → 覆盖 → 启动新版 → 失败回滚」，
+    # 不依赖 PowerShell / cmd / 任何外部解释器。这里必须先于 --cli 与
+    # argparse 处理，否则未知参数会让 argparse 直接报错退出。
+    if self_update.UPDATE_FLAG in args_list:
+        args_list.remove(self_update.UPDATE_FLAG)
+        return int(self_update.run_helper_from_argv(args_list, logger=_append_log))
+
     # 冻结后 exe 自我重入：Jinghe.exe --cli -i ... -o ... 直接跑提取，不启动界面
     if "--cli" in args_list:
         args_list.remove("--cli")
@@ -3222,11 +3374,23 @@ def main(argv: list[str] | None = None) -> int:
             video_transcribe.sweep_orphan_temps()
         except Exception:
             pass
-        if _n:
-            _append_log("启动清理：移除 %d 个已退出进程遗留的编码副本目录" % _n)
+        # v0.4.9：拖拽输入暂存目录的孤儿清扫（同 pid 归属安全边界）
+        _sweep_drop_dirs()  # 本 pid 上次遗留
+        _dn = _sweep_orphan_drop_dirs()  # 已死进程遗留
+        if _n or _dn:
+            _append_log("启动清理：移除 %d 个编码副本目录 / %d 个拖拽暂存目录" % (_n, _dn))
     except Exception as exc:
         _append_log("启动清理孤儿目录失败（不影响使用）：%r" % (exc,))
     capabilities()  # 预热：探测 extract.py 的 --version / --progress
+
+    # v0.4.8：清理上次更新遗留的暂存文件（<exe>.new.exe）。
+    # 替换执行器就跑在那个文件里，删不掉；由新启动的程序接手，
+    # 因此放到后台线程里带重试，绝不拖慢启动。
+    try:
+        threading.Thread(target=self_update.sweep_stale_staged, daemon=True,
+                         name="jinghe-sweep-staged").start()
+    except Exception:
+        pass
 
     httpd = _Server((HOST, args.port), Handler)
     httpd.daemon_threads = True

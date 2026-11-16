@@ -77,7 +77,13 @@
             <input id="inputPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
                    placeholder="粘贴文件 / 文件夹路径，或点击「打开」选择文件">
             <button id="btnPickFiles" class="btn btn-ghost" type="button">打开</button>
-            <button id="btnPreviewInline" class="btn btn-ghost" type="button">预览分流</button>
+          </div>
+          <!-- v0.4.9：拖拽输入区——把文件 / 音频 / 视频直接拖进框内即识别为输入 -->
+          <div id="dropZone" class="drop-zone" role="button" tabindex="0"
+               title="把文件、音频或视频拖到这里，即可识别为输入">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>
+            <span>拖入文件 / 音频 / 视频到这里</span>
+            <small>或点击此框选择文件</small>
           </div>
           <div id="inputMeta" class="meta">未选择输入</div>
         </div>
@@ -98,15 +104,23 @@
           </div>
         </div>
 
-        <!-- v0.3.8：已识别清单从输入卡片移出，放到原来输出所在的右列 -->
+        <!-- v0.4.9：已识别清单——「预览分流」按钮移到标题栏右对齐；
+             列表项带复选框，勾选后按钮只对选中文件预览分流（全不选=不动作并提示）。 -->
         <div class="card card-files" id="fileListWrap">
-          <div class="card-title">已识别</div>
+          <div class="card-title file-title-row">
+            <span>已识别</span>
+            <button id="btnPreviewInline" class="btn btn-ghost btn-preview-inline" type="button"
+                    title="对勾选的文件预览分流；未勾选时请先勾选文件">预览分流</button>
+          </div>
           <div class="file-list-head">
+            <label class="file-check-all" id="fileCheckAllWrap" hidden>
+              <input id="fileCheckAll" type="checkbox" checked><span>全选</span>
+            </label>
             <span id="fileListTitle">已识别 0 个文件</span>
             <button id="btnToggleFiles" class="link-btn" type="button" hidden>收起</button>
           </div>
           <ul id="fileList" class="file-list" hidden></ul>
-          <div id="fileListEmpty" class="file-empty">尚未识别文件。填写输入路径后点击「打开」或「预览分流」，清单会显示在这里。</div>
+          <div id="fileListEmpty" class="file-empty">把文件拖到左侧输入框，或点击「打开」选择；识别后清单显示在这里，勾选后点「预览分流」。</div>
         </div>
       </section>
 
@@ -257,15 +271,15 @@
 
     <!-- ==================== 关于 ==================== -->
     <section class="page" id="page-about" hidden>
-      <!-- v0.4.8：版本更新卡片改为「检查更新 / 当前版本 / 最新版本」三格，
-           查到新版本后出现「立即更新」按钮，下载与替换过程有进度条；
-           说明文字与仓库链接仍一律不显示。 -->
+      <!-- v0.4.9：版本更新卡片按交互专家建议收敛为「检查更新 / 当前版本」两格——
+           「最新版本」信息格取消，最新版本只通过检查结果反馈给出。
+           点击检查更新：有新版本直接进入更新流程，无新版本弹 3 秒自动消失的轻提示；
+           下载与替换过程有进度条，说明文字与仓库链接仍一律不显示。 -->
       <section class="card">
         <div class="card-title">版本更新</div>
         <div class="about-grid about-grid-update">
           <button id="btnCheckUpdate" class="btn btn-primary about-check-btn" type="button">检查更新</button>
           <div class="about-item"><span>当前版本</span><b class="mono" id="aboutVersion">—</b></div>
-          <div class="about-item"><span>最新版本</span><b class="mono" id="aboutNewVersion">—</b></div>
         </div>
         <div class="row update-actions">
           <button id="btnUpdateNow" class="btn btn-primary" type="button" hidden>立即更新</button>
@@ -319,6 +333,9 @@
         <p class="card-sub">全部处理都在本机完成，不上传任何文件内容；软件只依赖 Python 标准库，打包后是单个可执行文件。</p>
       </section>
     </section>
+
+    <!-- v0.4.9：轻量提示（检查更新无新版本时「当前是最新版本」，3 秒自动消失） -->
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
     <footer class="statusbar">
       <div class="status-left">

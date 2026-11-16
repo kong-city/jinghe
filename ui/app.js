@@ -20,10 +20,14 @@
     runStatus: $("runStatus"),
     progressBar: $("progressBar"),
     inputMeta: $("inputMeta"),
+    dropZone: $("dropZone"),
+    toast: $("toast"),
     fileListTitle: $("fileListTitle"),
     fileList: $("fileList"),
     fileListEmpty: $("fileListEmpty"),
     btnToggleFiles: $("btnToggleFiles"),
+    fileCheckAll: $("fileCheckAll"),
+    fileCheckAllWrap: $("fileCheckAllWrap"),
     mSuccess: $("mSuccess"),
     mSuccessLabel: $("mSuccessLabel"),
     mFailed: $("mFailed"),
@@ -81,9 +85,8 @@
     settingsFilePath: $("settingsFilePath"),
     btnOpenLogSettings: $("btnOpenLogSettings"),
     btnOpenSettingsFile: $("btnOpenSettingsFile"),
-    // 关于页 · 版本更新
+    // 关于页 · 版本更新（v0.4.9：「最新版本」信息格已取消）
     aboutVersion: $("aboutVersion"),
-    aboutNewVersion: $("aboutNewVersion"),
     btnCheckUpdate: $("btnCheckUpdate"),
     btnUpdateNow: $("btnUpdateNow"),
     btnUpdateCancel: $("btnUpdateCancel"),
@@ -118,6 +121,11 @@
 
   /* 多选文件路径；空数组表示单选（输入框路径）或文件夹模式 */
   var sel = { inputs: [] };
+
+  /* v0.4.9：已识别清单的逐项数据（name / kind / path）与勾选状态。
+     preview 时若清单有勾选，则只对勾选的文件预览分流。*/
+  var fileItems = [];      // [{name, kind, path}]
+  var fileChecked = [];    // 与 fileItems 等长的布尔数组
 
   function currentInputs() {
     return sel.inputs.length ? sel.inputs.slice() : [];
@@ -385,49 +393,63 @@
     if (el.updateProgressBar) el.updateProgressBar.style.width = "0";
   }
 
+  /* v0.4.9：点击检查更新 →
+       · 已是最新版本 → 弹「当前是最新版本」轻提示，3 秒自动消失；
+       · 有新版本 → 直接进入更新流程（无需再点「立即更新」）；
+       · 离线 / 报错 → 如实回显，绝不谎报「已是最新」。
+     关键修复：/api/update/check 是 GET 端点，body 必须传 undefined，
+     否则 api() 会把它当 POST 发出，命中「未知接口」404。*/
   function checkUpdate() {
     if (!el.btnCheckUpdate) return;
     var old = el.btnCheckUpdate.textContent;
     el.btnCheckUpdate.disabled = true;
     el.btnCheckUpdate.textContent = "检查中…";
     setUpdateStatus("", "");
-    api("/api/update/check", {}, 20000).then(function (r) {
+    api("/api/update/check", undefined, 20000).then(function (r) {
       if (!r) throw new Error("无响应");
       if (r.offline) {
-        setUpdateStatus("无法连接版本服务，请检查网络后重试", "is-err");
-        if (el.aboutNewVersion) el.aboutNewVersion.textContent = "获取失败";
+        var offMsg = "无法连接版本服务，请检查网络后重试";
+        setUpdateStatus(offMsg, "is-err");
+        showToast(offMsg, true);
         return;
       }
       if (r.error && !r.latest) {
-        setUpdateStatus(r.error || "检查更新失败", "is-err");
-        if (el.aboutNewVersion) el.aboutNewVersion.textContent = "获取失败";
+        var why = r.error || "检查更新失败";
+        setUpdateStatus(why, "is-err");
+        showToast(why, true);
         return;
       }
       var latest = r.latest_version || r.latest || "—";
-      if (el.aboutNewVersion) el.aboutNewVersion.textContent = latest;
       if (r.up_to_date === true) {
-        setUpdateStatus("已是最新版本 " + latest + "（当前 " + (r.current || "—") + "）", "is-ok");
+        setUpdateStatus("", "");
         if (el.btnUpdateNow) el.btnUpdateNow.hidden = true;
+        showToast("当前是最新版本", false);
         return;
       }
       if (r.up_to_date === false) {
         if (!r.has_asset) {
-          setUpdateStatus("发现新版本 " + latest + "，但发布里没有安装包，请到发布页手动下载", "is-err");
+          var noAsset = "发现新版本 " + latest + "，但发布里没有安装包，请到发布页手动下载";
+          setUpdateStatus(noAsset, "is-err");
           if (el.btnUpdateNow) el.btnUpdateNow.hidden = true;
           return;
         }
-        setUpdateStatus("发现新版本 " + latest + "（当前 " + (r.current || "—") + "），可以立即更新", "is-new");
+        // 有新版本：直接进入更新流程，不再要求用户二次点击「立即更新」。
         if (el.btnUpdateNow) {
           el.btnUpdateNow.hidden = false;
-          el.btnUpdateNow.disabled = false;
           el.btnUpdateNow.textContent = "立即更新到 " + latest;
           el.btnUpdateNow.title = r.can_install ? "" : (r.install_reason || "");
         }
+        setUpdateStatus("发现新版本 " + latest + "，正在更新…", "is-new");
+        startUpdate();
         return;
       }
-      setUpdateStatus(r.error || "无法比较版本", "is-err");
+      var unknown = r.error || "无法比较版本，请稍后重试";
+      setUpdateStatus(unknown, "is-err");
+      showToast(unknown, true);
     }).catch(function (err) {
-      setUpdateStatus("检查更新失败：" + (err.message || String(err)), "is-err");
+      var msg = "检查更新失败：" + (err.message || String(err));
+      setUpdateStatus(msg, "is-err");
+      showToast(msg, true);
     }).finally(function () {
       el.btnCheckUpdate.disabled = false;
       el.btnCheckUpdate.textContent = old;
@@ -542,6 +564,26 @@
 
   function showError(message) { showBar("error", message); }
   function showNotice(message) { showBar("notice", message); }
+
+  /* v0.4.9：轻量提示 toast——无新版本时「当前是最新版本」，3 秒自动消失。
+     用 setTimeout 而非 CSS 动画计时，确保「显示→淡出→隐藏」三段可控、可重复触发。*/
+  var toastTimer = null;
+  var toastFadeTimer = null;
+  function showToast(message, isError) {
+    if (!el.toast) return;
+    if (toastTimer) { window.clearTimeout(toastTimer); toastTimer = null; }
+    if (toastFadeTimer) { window.clearTimeout(toastFadeTimer); toastFadeTimer = null; }
+    el.toast.textContent = message || "";
+    el.toast.className = "toast" + (isError ? " is-err" : "");
+    el.toast.hidden = false;
+    toastTimer = window.setTimeout(function () {
+      el.toast.classList.add("is-fade");
+      toastFadeTimer = window.setTimeout(function () {
+        el.toast.hidden = true;
+        el.toast.classList.remove("is-fade");
+      }, 260);
+    }, 3000);
+  }
   function clearBar() { el.errorBar.hidden = true; el.errorBar.textContent = ""; }
 
   // 可选 statusEl：关于页自己有状态栏（首页 errorBar 在切换页面后不可见）
@@ -611,21 +653,58 @@
   function clearFileList() {
     el.fileList.textContent = "";
     el.fileList.hidden = true;
+    fileItems = [];
+    fileChecked = [];
     if (el.fileListTitle) el.fileListTitle.textContent = "已识别 0 个文件";
     if (el.btnToggleFiles) el.btnToggleFiles.hidden = true;
+    if (el.fileCheckAllWrap) el.fileCheckAllWrap.hidden = true;
+    if (el.fileCheckAll) el.fileCheckAll.checked = true;
     if (el.fileListEmpty) el.fileListEmpty.hidden = false;
+  }
+
+  /* 全选/取消全选：同时刷新每行的复选框、行高亮与内部勾选数组。*/
+  function setAllChecked(checked) {
+    fileChecked = fileItems.map(function () { return !!checked; });
+    var boxes = el.fileList.querySelectorAll('input[type="checkbox"][data-file-idx]');
+    for (var i = 0; i < boxes.length; i += 1) {
+      var idx = Number(boxes[i].getAttribute("data-file-idx"));
+      boxes[i].checked = !!checked;
+      var row = boxes[i].closest ? boxes[i].closest(".file-item") : boxes[i].parentNode;
+      if (row) row.classList.toggle("is-selected", !!checked);
+      if (Number.isNaN(idx)) continue;
+      fileChecked[idx] = !!checked;
+    }
   }
 
   function renderFileList(data) {
     var items = Array.isArray(data.items) ? data.items : [];
     if (!items.length) { clearFileList(); return; }
 
+    // 保存逐项数据与勾选状态（默认全选）
+    fileItems = items.map(function (it) {
+      return {name: it.name || "", kind: it.kind || "未知", path: it.path || ""};
+    });
+    fileChecked = fileItems.map(function () { return true; });
+
     el.fileList.textContent = "";
     var shown = items.length > FILE_LIST_MAX ? items.slice(0, FILE_LIST_MAX) : items;
 
-    shown.forEach(function (item) {
+    shown.forEach(function (item, i) {
       var li = document.createElement("li");
-      li.className = "file-item";
+      li.className = "file-item is-selected";
+
+      var check = document.createElement("input");
+      check.type = "checkbox";
+      check.setAttribute("data-file-idx", String(i));
+      check.checked = true;
+      check.title = "勾选后点「预览分流」只预览选中的文件";
+      check.addEventListener("change", function () {
+        var idx = Number(check.getAttribute("data-file-idx"));
+        if (!Number.isNaN(idx) && idx < fileChecked.length) fileChecked[idx] = check.checked;
+        li.classList.toggle("is-selected", check.checked);
+        syncCheckAll();
+      });
+      li.appendChild(check);
 
       var kind = item.kind || "未知";
       var chip = document.createElement("span");
@@ -636,7 +715,7 @@
       var name = document.createElement("span");
       name.className = "file-name";
       name.textContent = item.name || "—";
-      name.title = item.name || "";
+      name.title = it_path_title(item);
       li.appendChild(name);
 
       el.fileList.appendChild(li);
@@ -645,7 +724,7 @@
     if (items.length > shown.length) {
       var more = document.createElement("li");
       more.className = "file-more";
-      more.textContent = "…还有 " + (items.length - shown.length) + " 个文件未列出";
+      more.textContent = "…还有 " + (items.length - shown.length) + " 个文件未列出（未列出的按全选处理）";
       el.fileList.appendChild(more);
     }
 
@@ -659,12 +738,38 @@
       el.btnToggleFiles.hidden = false;
       el.btnToggleFiles.textContent = "收起";
     }
+    if (el.fileCheckAllWrap) el.fileCheckAllWrap.hidden = false;
+    if (el.fileCheckAll) el.fileCheckAll.checked = true;
+  }
+
+  function it_path_title(item) {
+    return item.path ? (item.name + "\n" + item.path) : (item.name || "");
+  }
+
+  function syncCheckAll() {
+    if (!el.fileCheckAll) return;
+    var anyFalse = fileChecked.some(function (v) { return !v; });
+    var anyTrue = fileChecked.some(function (v) { return !!v; });
+    el.fileCheckAll.checked = !anyFalse;
+    el.fileCheckAll.indeterminate = anyTrue && anyFalse;
+  }
+
+  /* 取勾选文件的真实路径作为预览输入；无 path 时回退用 name。
+     全不选返回空数组，由调用方给出「请先勾选」提示，避免误判成预览全部。*/
+  function checkedFilePaths() {
+    var out = [];
+    for (var i = 0; i < fileItems.length; i += 1) {
+      if (fileChecked[i]) out.push(fileItems[i].path || fileItems[i].name);
+    }
+    return out;
   }
 
   /* ------------------------------ 预览 ------------------------------ */
-  function doPreview() {
+  /* forcedInputs：v0.4.9 清单勾选后传入的选中文件路径；为空则走原有全量输入。*/
+  function doPreview(forcedInputs) {
     var input = el.inputPath.value.trim();
-    if (!input) { showError("请先填写输入路径"); return; }
+    var explicit = Array.isArray(forcedInputs) ? forcedInputs.slice() : [];
+    if (!input && !explicit.length) { showError("请先填写输入路径"); return; }
     if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
     rememberPaths();
     clearBar();
@@ -675,7 +780,8 @@
     el.btnPreviewInline.textContent = "预览中…";
     el.btnPreview.textContent = "预览中…";
 
-    var body = currentInputs().length ? { inputs: currentInputs() } : { input: input };
+    var chosen = explicit.length ? explicit : currentInputs();
+    var body = chosen.length ? { inputs: chosen } : { input: input };
     // 40000 = 后端 _dry_run 的 DRY_RUN_TIMEOUT(30s) + 10s 余量，
     // 避免前端误杀合法的长盘点。
     api("/api/dry-run", body, 40000).then(function (r) {
@@ -734,6 +840,91 @@
     }).finally(function () {
       btn.textContent = old;
       updateControls();
+    });
+  }
+
+  /* ------------------------------ 拖拽输入（v0.4.9） ------------------------------ */
+  /* 普通 Edge 页面拿不到拖入文件的本地绝对路径，只能把文件内容上传到本机后端，
+     由 /api/drop-files 落到暂存目录后返回真实路径，再走既有 dry-run 识别。 */
+  function uploadDropped(fileList) {
+    var files = [];
+    for (var i = 0; i < fileList.length; i += 1) files.push(fileList[i]);
+    if (!files.length) return;
+    if (running || previewing) { showNotice("正在处理，请稍候…"); return; }
+    var zone = el.dropZone;
+    if (zone) zone.classList.add("is-busy");
+    var oldMeta = el.inputMeta.textContent;
+    el.inputMeta.textContent = "正在接收 " + files.length + " 个拖入文件…";
+    el.inputMeta.classList.remove("filled");
+
+    var paths = [];
+    var errors = [];
+    var chain = Promise.resolve();
+    files.forEach(function (file) {
+      chain = chain.then(function () {
+        return fetch("/api/drop-files?name=" + encodeURIComponent(file.name || "dropped.bin"), {
+          method: "POST",
+          headers: {"Content-Type": "application/octet-stream"},
+          body: file
+        }).then(function (res) {
+          return res.text().then(function (text) {
+            var data = null;
+            try { data = JSON.parse(text); } catch (e) { data = null; }
+            if (!res.ok || !data || !data.ok) {
+              throw new Error((data && data.error) || ("HTTP " + res.status));
+            }
+            paths.push(data.path);
+          });
+        }).catch(function (err) {
+          errors.push((file.name || "文件") + "：" + (err.message || err));
+        });
+      });
+    });
+
+    chain.then(function () {
+      if (zone) zone.classList.remove("is-busy");
+      if (!paths.length) {
+        el.inputMeta.textContent = "拖入失败 · " + errors.join("；");
+        showError(errors.join("；") || "拖入失败");
+        return;
+      }
+      sel.inputs = paths;
+      el.inputPath.value = paths[0];
+      el.inputPath.title = paths.join("\n");
+      el.inputMeta.textContent = "已接收 " + paths.length + " 个拖入文件" +
+        (errors.length ? "（" + errors.length + " 个失败：" + errors.join("；") + "）" : "");
+      el.inputMeta.classList.add("filled");
+      // 接收完成后直接识别分流，与「打开」按钮保持一致的体验。
+      doPreview();
+    });
+  }
+
+  function setupDropZone() {
+    var zone = el.dropZone;
+    if (!zone) return;
+    // 点击拖拽框 = 触发原生多选（与「打开」一致），文件或目录都支持。
+    zone.addEventListener("click", function () {
+      if (!running && !previewing) pickFiles();
+    });
+    zone.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickFiles(); }
+    });
+    ["dragenter", "dragover"].forEach(function (evt) {
+      zone.addEventListener(evt, function (e) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+        zone.classList.add("is-over");
+      });
+    });
+    ["dragleave", "dragend"].forEach(function (evt) {
+      zone.addEventListener(evt, function () { zone.classList.remove("is-over"); });
+    });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault();
+      zone.classList.remove("is-over");
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        uploadDropped(e.dataTransfer.files);
+      }
     });
   }
 
@@ -1493,8 +1684,14 @@
       });
     }
 
-    el.btnPreview.addEventListener("click", doPreview);
-    el.btnPreviewInline.addEventListener("click", doPreview);
+    el.btnPreview.addEventListener("click", function () { doPreview(); });
+    // v0.4.9：清单标题栏的「预览分流」只对勾选文件生效；未识别任何文件时回退全量。
+    el.btnPreviewInline.addEventListener("click", function () {
+      if (!fileItems.length) { doPreview(); return; }
+      var picked = checkedFilePaths();
+      if (!picked.length) { showNotice("请先勾选要预览的文件"); return; }
+      doPreview(picked);
+    });
     el.btnRun.addEventListener("click", doRun);
     el.btnCancel.addEventListener("click", doCancel);
     el.btnOpenMerged.addEventListener("click", function () { openMerged(); });
@@ -1516,6 +1713,14 @@
       el.fileList.hidden = willHide;
       el.btnToggleFiles.textContent = willHide ? "展开" : "收起";
     });
+    // v0.4.9：全选框联动
+    if (el.fileCheckAll) {
+      el.fileCheckAll.addEventListener("change", function () {
+        setAllChecked(el.fileCheckAll.checked);
+        el.fileCheckAll.indeterminate = false;
+      });
+    }
+    setupDropZone();
     el.inputPath.addEventListener("keydown", function (e) {
       if (e.key === "Enter") { e.preventDefault(); doPreview(); }
     });

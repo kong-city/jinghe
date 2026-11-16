@@ -27,6 +27,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,10 @@ MIN_UPDATE_BYTES = 1024 * 1024
 # 安装脚本文件名与落盘目录（临时目录，随系统清理）。
 INSTALL_SCRIPT_NAME = "jinghe-update.ps1"
 INSTALL_WORK_DIRNAME = "jinghe-update"
+# 替换执行器：新版 exe 用自己的 --self-update 模式完成覆盖与重启。
+UPDATE_FLAG = "--self-update"
+# 暂存文件名（与目标同目录，便于原子替换）。
+STAGED_SUFFIX = ".new.exe"
 
 # Windows 进程创建标志：隐藏窗口 + 脱离父进程，父进程退出后脚本继续跑。
 _CREATE_NO_WINDOW = 0x08000000
@@ -390,12 +395,17 @@ def build_install_script(staged: str, target: str, pid: int,
 
 def schedule_install(staged: str | Path, target: str | Path, *,
                      version: str = "", pid: int | None = None) -> dict:
-    """派发替换脚本：等待本进程退出后覆盖程序文件并启动新版。
+    """派发替换执行：等待本进程退出后覆盖程序文件并启动新版。
 
     红线复核（不可绕过）：
       * 目标必须等于当前运行的 exe 自身——外部传入的任意路径一律拒绝；
       * 源码模式直接拒绝（此时 sys.executable 是 python.exe）；
       * 暂存文件必须真实存在。
+
+    执行方式有两条，优先用第一条：
+      1. **新版 exe 自己执行**（``<staged> --self-update …``）——纯自带能力，
+         不依赖 PowerShell / cmd / 任何外部解释器，最稳；
+      2. **PowerShell 脚本**（备选）——某些环境禁止运行 exe 时兜底。
     """
     exe = current_exe()
     if not exe:
@@ -406,27 +416,208 @@ def schedule_install(staged: str | Path, target: str | Path, *,
     staged_p = Path(staged)
     if not staged_p.is_file():
         return {"ok": False, "error": "新版本安装包不存在"}
+    wait_pid = int(pid or os.getpid())
+    errors: list[str] = []
+
+    # 方式 1：新版 exe 自我替换（首选，零外部依赖）
+    try:
+        argv = build_helper_argv(staged_p, target_p, wait_pid)
+        subprocess.Popen(argv, creationflags=_CREATE_NO_WINDOW | _DETACHED_PROCESS,
+                         close_fds=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"ok": True, "mode": "self-exe", "target": str(target_p),
+                "staged": str(staged_p)}
+    except OSError as exc:
+        errors.append("self-exe: %s" % exc)
+
+    # 方式 2：PowerShell 脚本（备选）
     try:
         work_dir = Path(tempfile.gettempdir()) / INSTALL_WORK_DIRNAME
         work_dir.mkdir(parents=True, exist_ok=True)
         script_path = work_dir / INSTALL_SCRIPT_NAME
         script = build_install_script(str(staged_p), str(target_p),
-                                      int(pid or os.getpid()), version)
+                                      wait_pid, version)
         # utf-8-sig：BOM 让 Windows PowerShell 5.1 正确识别中文路径
         script_path.write_text(script, encoding="utf-8-sig")
         enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         cmd = ["powershell", "-NoProfile", "-NonInteractive",
                "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
                "-EncodedCommand", enc]
-        flags = _CREATE_NO_WINDOW | _DETACHED_PROCESS
-        subprocess.Popen(cmd, creationflags=flags, close_fds=True,
-                         stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
+        subprocess.Popen(cmd, creationflags=_CREATE_NO_WINDOW | _DETACHED_PROCESS,
+                         close_fds=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"ok": True, "mode": "powershell", "script": str(script_path),
+                "target": str(target_p), "staged": str(staged_p)}
     except Exception as exc:
-        return {"ok": False, "error": "无法安排更新替换：%s" % exc}
-    return {"ok": True, "script": str(script_path),
-            "target": str(target_p), "staged": str(staged_p)}
+        errors.append("powershell: %s" % exc)
+        return {"ok": False, "error": "无法安排更新替换：%s" % "；".join(errors)}
+
+
+# --------------------------------------------------------------------------- #
+# ④ 替换执行器（由新版 exe 自己跑，零外部依赖）
+# --------------------------------------------------------------------------- #
+def build_helper_argv(staged: str | Path, target: str | Path, pid: int) -> list[str]:
+    """拼出替换执行器的命令行：新版 exe --self-update --staged … --target … --pid …"""
+    return [str(staged), UPDATE_FLAG,
+            "--staged", str(staged),
+            "--target", str(target),
+            "--pid", str(int(pid))]
+
+
+def _helper_arg_value(argv: list[str], flag: str, default: str = "") -> str:
+    try:
+        idx = argv.index(flag)
+    except ValueError:
+        return default
+    if idx + 1 < len(argv):
+        return argv[idx + 1]
+    return default
+
+
+def run_helper_from_argv(argv: list[str], logger=None) -> int:
+    """``--self-update`` 入口：解析参数并执行替换，返回进程退出码。"""
+    staged = _helper_arg_value(argv, "--staged")
+    target = _helper_arg_value(argv, "--target")
+    try:
+        pid = int(_helper_arg_value(argv, "--pid", "0") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if not staged or not target:
+        return 2
+    res = run_helper(staged, target, pid, logger=logger)
+    if logger is not None:
+        try:
+            logger("[INFO] 自更新替换执行器结束：%s"
+                   % json.dumps(res, ensure_ascii=False))
+        except Exception:
+            pass
+    return 0 if res.get("ok") else 1
+
+
+def _wait_target_released(target_p: Path, timeout: float = 90.0) -> bool:
+    """等旧进程释放程序文件的写锁。
+
+    Windows 上运行中的 exe 被独占：以读写方式打开会被拒绝；能打开即说明
+    旧进程已退出。文件不存在则直接视为已释放。
+    """
+    deadline = time.time() + max(1.0, float(timeout))
+    while time.time() < deadline:
+        try:
+            if not target_p.exists():
+                return True
+            with open(target_p, "r+b"):
+                pass
+            return True
+        except OSError:
+            time.sleep(0.5)
+    return False
+
+
+def run_helper(staged: str | Path, target: str | Path, pid: int = 0,
+               *, wait_timeout: float = 90.0,
+               verify_seconds: float = 5.0, logger=None) -> dict:
+    """替换执行器本体：等旧进程退出 → 备份 → 覆盖 → 启动新版 → 失败回滚。
+
+    跑在**新版 exe** 里（``--self-update``），因此不依赖 PowerShell / cmd /
+    任何外部解释器——这是"能真正完成更新"最稳的一条路。
+    """
+    def _log(text: str) -> None:
+        if logger is not None:
+            try:
+                logger(text)
+            except Exception:
+                pass
+
+    staged_p = Path(staged)
+    target_p = Path(target)
+    if not staged_p.is_file():
+        return {"ok": False, "error": "新版本安装包不存在"}
+    # ---- 安全红线：替换执行器只允许"覆盖同目录的同名单程序" ----
+    # 否则 `--self-update` 会变成"任意覆盖任意文件 + 任意启动"的危险入口。
+    helper = current_exe()
+    if not helper:
+        return {"ok": False, "error": "替换执行器只能在打包版运行"}
+    helper_p = Path(helper)
+    if os.path.normcase(str(staged_p)) != os.path.normcase(str(helper_p)):
+        return {"ok": False, "error": "安装包必须是替换执行器自身"}
+    if not helper_p.name.endswith(STAGED_SUFFIX):
+        return {"ok": False, "error": "替换执行器文件名不符合约定"}
+    expected = helper_p.with_name(helper_p.name[:-len(STAGED_SUFFIX)])
+    if os.path.normcase(str(expected)) != os.path.normcase(str(target_p)):
+        return {"ok": False, "error": "替换目标必须是同目录的同名单程序"}
+    backup_p = target_p.with_name(target_p.name + ".bak")
+    _log("[INFO] 替换执行器启动：等待旧进程 %d 退出…" % int(pid))
+    if not _wait_target_released(target_p, wait_timeout):
+        return {"ok": False, "error": "旧程序仍在运行，无法覆盖程序文件"}
+    try:
+        if target_p.exists():
+            shutil.copy2(target_p, backup_p)
+        shutil.copy2(staged_p, target_p)
+    except OSError as exc:
+        return {"ok": False, "error": "覆盖程序文件失败：%s" % exc}
+    _log("[INFO] 已覆盖程序文件：%s" % target_p)
+    try:
+        proc = subprocess.Popen([str(target_p)],
+                                creationflags=_CREATE_NO_WINDOW | _DETACHED_PROCESS,
+                                close_fds=True, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        _restore_backup(backup_p, target_p)
+        return {"ok": False, "error": "启动新版本失败：%s" % exc}
+    time.sleep(max(1.0, float(verify_seconds)))
+    if proc.poll() is not None:
+        # 新版起不来：回滚旧版并重新启动，绝不把用户留在"装坏了"的状态
+        restored = _restore_backup(backup_p, target_p)
+        return {"ok": False, "error": "新版本启动失败，已回滚到旧版本",
+                "rolled_back": restored}
+    _cleanup_quiet(backup_p)
+    _log("[INFO] 新版本已启动：%s" % target_p)
+    return {"ok": True, "target": str(target_p), "staged": str(staged_p)}
+
+
+def _restore_backup(backup_p: Path, target_p: Path) -> bool:
+    try:
+        if backup_p.is_file():
+            shutil.copy2(backup_p, target_p)
+            _cleanup_quiet(backup_p)
+            subprocess.Popen([str(target_p)],
+                             creationflags=_CREATE_NO_WINDOW | _DETACHED_PROCESS,
+                             close_fds=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _cleanup_quiet(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def sweep_stale_staged(retry_seconds: float = 60.0) -> bool:
+    """清理上次更新遗留的暂存文件（``<exe>.new.exe``）。
+
+    替换执行器自己就跑在暂存文件里，删不掉；由**新启动的程序**接手清理。
+    执行器退出前删除会失败，因此这里带重试。
+    """
+    exe = current_exe()
+    if not exe:
+        return False
+    staged_p = Path(exe).with_name(Path(exe).stem + STAGED_SUFFIX)
+    if not staged_p.exists():
+        return False
+    deadline = time.time() + max(0.0, float(retry_seconds))
+    while True:
+        try:
+            staged_p.unlink()
+            return True
+        except OSError:
+            if time.time() >= deadline:
+                return False
+            time.sleep(1.0)
 
 
 def fallback_path(version: str = "") -> str:
@@ -462,5 +653,6 @@ __all__ = [
     "MAX_UPDATE_BYTES", "MIN_UPDATE_BYTES", "is_frozen", "current_exe",
     "version_tuple", "is_asset_url", "check", "download_asset",
     "install_plan", "build_install_script", "schedule_install",
-    "fallback_path", "human_bytes",
+    "fallback_path", "human_bytes", "build_helper_argv",
+    "run_helper_from_argv", "run_helper", "sweep_stale_staged", "UPDATE_FLAG",
 ]

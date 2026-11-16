@@ -1447,18 +1447,18 @@ class AppContractTest(unittest.TestCase):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
 
-        # ① 关于页：保留「当前版本」；v0.4.8 起按用户新要求恢复「最新版本」格
-        #    （要求原文：「给出结果反馈 当前最新和正在更新」），
-        #    但仍不恢复独立「下载最新版本」按钮——更新改由「立即更新」一键完成。
+        # ① 关于页：保留「当前版本」；v0.4.9 起按用户新要求取消「最新版本」栏——
+        #    最新版本只通过检查结果反馈（「当前是最新版本」轻提示 / 直接更新）给出，
+        #    不再单列信息格。仍不恢复独立「下载最新版本」按钮。
         self.assertIn("<span>当前版本</span>", html, "关于页缺少「当前版本」")
         self.assertIn('class="about-grid about-grid-update"', html,
                       "版本更新卡片未改为 about-grid-update")
         self.assertIn('id="btnCheckUpdate"', html, "缺少检查更新按钮")
         self.assertIn('class="btn btn-primary about-check-btn"', html,
-                      "检查更新按钮未放到「最新版本」原来的格子里")
-        self.assertIn("<span>最新版本</span>", html,
-                      "v0.4.8：缺少「最新版本」信息格（用户要求显示当前与最新）")
-        self.assertIn('id="aboutNewVersion"', html, "v0.4.8：缺少最新版本显示位")
+                      "检查更新按钮样式异常")
+        self.assertNotIn("<span>最新版本</span>", html,
+                         "v0.4.9：「最新版本」信息格应已取消")
+        self.assertNotIn('id="aboutNewVersion"', html, "v0.4.9：最新版本显示位应已移除")
         self.assertNotIn('id="aboutLatest"', html, "仍残留 aboutLatest 元素")
         self.assertNotIn('id="btnDownloadLatest"', html, "「下载最新版本」按钮未取消")
         self.assertIn('id="updateStatus" class="update-status" hidden', html,
@@ -3206,12 +3206,15 @@ class AppContractTest(unittest.TestCase):
                       "更新任务未收敛到终态：%s" % state)
         self.assertIs(st.get("running"), False)
 
-        # ⑧ 关于页：当前 / 最新 / 立即更新 / 取消 / 进度条
-        for needle in ('id="aboutNewVersion"', 'id="btnUpdateNow"',
+        # ⑧ 关于页：当前 / 立即更新 / 取消 / 进度条 / 轻提示
+        #    v0.4.9：「最新版本」信息格已取消（用户新要求），改用 toast 反馈。
+        for needle in ('id="aboutVersion"', 'id="btnUpdateNow"',
                        'id="btnUpdateCancel"', 'id="updateProgress"',
                        'id="updateProgressBar"', 'id="updateProgressText"',
-                       "<span>最新版本</span>"):
+                       'id="toast"'):
             self.assertIn(needle, html, "关于页缺少：%s" % needle)
+        self.assertNotIn("<span>最新版本</span>", html,
+                         "v0.4.9：「最新版本」信息格应已取消")
         for needle in ("/api/update/check", "/api/update/start",
                        "/api/update/status", "/api/update/cancel",
                        "startUpdate", "pollUpdateStatus", "cancelUpdate",
@@ -3224,6 +3227,84 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("self_update.py", gate)
         self.assertIn("'self_update'", spec)
         self.assertIn("自更新", contract)
+
+
+    # ------------------------------------------------------------------ #
+    # 44) v0.4.9：检查更新交互修复 + 拖拽输入 + 已识别清单勾选预览
+    # ------------------------------------------------------------------ #
+    def test_44_v049_update_feedback_and_drop_input(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 检查更新 GET 修复：传 undefined 才会走 GET；POST 同路径会 404。
+        self.assertIn('api("/api/update/check", undefined, 20000)', js,
+                      "检查更新仍把空对象当 body 发出（会变 POST → 未知接口 404）")
+        self.assertIn('body === undefined ? "GET" : "POST"',
+                      js, "api() 的 GET/POST 判据被改动")
+
+        # ② 关于页：最新版本栏取消、轻提示 toast、无新版本与直接更新两条反馈
+        self.assertNotIn('id="aboutNewVersion"', html, "最新版本栏应已取消")
+        self.assertIn('id="toast" class="toast"', html, "缺少轻提示 toast 容器")
+        self.assertIn("showToast", js, "前端缺少 showToast 实现")
+        self.assertIn("当前是最新版本", js, "无新版本未弹「当前是最新版本」")
+        self.assertIn("3000", js, "轻提示未在 3 秒后消失")
+        # 有新版本直接进更新流程（checkUpdate 内调用 startUpdate）
+        chk_fn = js[js.index("function checkUpdate"):js.index("function startUpdate")]
+        self.assertIn("startUpdate()", chk_fn, "发现新版本未直接进入更新流程")
+        self.assertIn(".toast", css, "缺少 toast 样式")
+
+        # ③ 拖拽输入：拖拽框 + 上传端点 + 接收后触发识别
+        self.assertIn('id="dropZone" class="drop-zone"', html, "输入卡片缺少拖拽框")
+        self.assertIn("拖入文件 / 音频 / 视频", html, "拖拽框缺少引导文案")
+        self.assertIn("function setupDropZone", js, "前端缺少拖拽事件绑定")
+        self.assertIn("function uploadDropped", js, "前端缺少拖入文件上传逻辑")
+        self.assertIn('"/api/drop-files?name="', js, "前端未调用拖拽上传端点")
+        self.assertIn("dropEffect", js, "拖拽未设置 copy 效果")
+        for token in ('path == "/api/drop-files"', "def _api_drop_files",
+                      "_DROP_MAX_BYTES", "_new_drop_dir",
+                      "def _build_name_path_map", "_sweep_orphan_drop_dirs"):
+            self.assertIn(token, src, "后端缺少拖拽上传实现：%s" % token)
+        self.assertIn(".drop-zone.is-over", css, "缺少拖拽悬停高亮样式")
+
+        # ④ 已识别清单：勾选框 + 全选 + 预览按钮移到标题栏右侧 + 按勾选预览
+        self.assertIn('class="card-title file-title-row"', html,
+                      "「已识别」标题行未改为 file-title-row")
+        title_row = html[html.index('class="card-title file-title-row"'):]
+        title_row_end = title_row.index("</div>")
+        title_row = title_row[:title_row_end]
+        self.assertIn('id="btnPreviewInline"', title_row,
+                      "预览分流按钮未移到「已识别」标题栏")
+        self.assertIn('id="fileCheckAll"', html, "缺少全选框")
+        self.assertIn('data-file-idx', js, "清单项未带勾选索引")
+        self.assertIn("function checkedFilePaths", js, "缺少勾选路径收集")
+        self.assertIn("请先勾选要预览的文件", js, "未勾选时缺少提示")
+        self.assertIn("doPreview(picked)", js, "点预览分流未走勾选子集")
+        self.assertIn('it["path"]', src, "dry-run 未给清单项补真实路径")
+
+        # ⑤ 冻结契约：test_06 / test_11 与原主流水线不得被本轮改动碰过
+        extract_src = (ROOT / "extract.py").read_text(encoding="utf-8")
+        self.assertIn('__version__ = "0.4.9"', extract_src, "版本号未升到 0.4.9")
+        self.assertIn("if args.dry_run:", extract_src, "extract.py 冻结主流水线被改动")
+
+        # ⑥ 真实 HTTP：GET 检查更新 200、POST 同路径仍 404（锁死根因）、上传落盘
+        srv = self.start()
+        status, chk = srv.get_json("/api/update/check")
+        self.assertEqual(status, 200, "GET /api/update/check 应 200")
+        self.assertIn("up_to_date", chk)
+        up = Path(self.tmp) / "dragged.txt"
+        up.write_bytes(b"v0.4.9 drag payload")
+        req = urllib.request.Request(
+            srv.base + "/api/drop-files?name=dragged.txt",
+            data=up.read_bytes(), method="POST",
+            headers={"Content-Type": "application/octet-stream"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        self.assertTrue(body.get("ok"), "拖拽上传失败：%s" % body)
+        self.assertTrue(Path(body["path"]).is_file(), "上传文件未落盘")
+        self.assertEqual(Path(body["path"]).read_bytes(), b"v0.4.9 drag payload")
+        self.assertEqual(Path(body["path"]).name, "dragged.txt")
 
 
 def print_summary(result=None) -> None:
