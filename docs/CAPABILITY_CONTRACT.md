@@ -304,3 +304,10 @@
   4. refine.py 的 start_revise 接 `_run_revise_inner`（doc_id 从 refine 文件名提取，与精读同 id），provenance stage=revise 读旧追加，冻结快照比对。
   5. 测试基线 77 → **78 用例**（test_50）；冻结态实测端点 + 产物声明；SPEC.md / extract.py 零改动。
   6. 停在 S7 收尾：S7d UI（导航两项 + 配置页 + 双产物预览）、S7e 收口；真模型质量验证待用户环境。
+
+- **v0.8.9（2026-11-16 · S7d UI 接入落地，用户放行，本次不上传）**：
+  1. 导航新增「精读」「修订」两项 + 两页面容器 + PAGE_META/pages 映射；设置页新增精读后端配置区（类型/端点/key/model，key password+脱敏+留空不改，云端知情同意）。
+  2. 精读页（源 md + 模型 + 开始/取消 + 进度 + 结果预览）、修订页（refine.md + 指令 + 双产物预览：iframe srcdoc sandbox 彩色 + details 符号 md）。
+  3. 新增只读端点 `GET /api/refine/artifact`（derived/ 内 + .md/.html + realpath 防穿越）与 `POST /api/refine/open`（独立，**不改 /api/open v0.4.0 白名单契约**）；JS 的 GET 一律传 undefined、status 走 since 增量轮询。
+  4. 测试基线 78 → **79 用例**（test_51，含 artifact 安全边界与既有可访问性断言不回退）；Edge headless DOM 实测新 UI 元素出现；SPEC.md / extract.py 零改动。
+  5. 停在 S7d 闸门；S7e 收口与上传待用户指令。真模型质量验证仍待用户环境。

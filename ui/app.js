@@ -70,6 +70,8 @@
     headerTag: $("headerTag"),
     pages: {
       home: $("page-home"),
+      refine: $("page-refine"),
+      revise: $("page-revise"),
       settings: $("page-settings"),
       about: $("page-about")
     },
@@ -85,6 +87,36 @@
     settingsFilePath: $("settingsFilePath"),
     btnOpenLogSettings: $("btnOpenLogSettings"),
     btnOpenSettingsFile: $("btnOpenSettingsFile"),
+    // S7d：精读 / 修订页 + 后端配置
+    refineCap: $("refineCap"),
+    refineSource: $("refineSource"),
+    refineModel: $("refineModel"),
+    btnPickRefine: $("btnPickRefine"),
+    btnStartRefine: $("btnStartRefine"),
+    btnCancelRefine: $("btnCancelRefine"),
+    refineProgress: $("refineProgress"),
+    refineResult: $("refineResult"),
+    refineResultPath: $("refineResultPath"),
+    refinePreview: $("refinePreview"),
+    btnOpenRefine: $("btnOpenRefine"),
+    reviseCap: $("reviseCap"),
+    reviseSource: $("reviseSource"),
+    reviseInstruction: $("reviseInstruction"),
+    btnPickRevise: $("btnPickRevise"),
+    btnStartRevise: $("btnStartRevise"),
+    btnCancelRevise: $("btnCancelRevise"),
+    reviseProgress: $("reviseProgress"),
+    reviseResult: $("reviseResult"),
+    revisePreviewHtml: $("revisePreviewHtml"),
+    revisePreviewMd: $("revisePreviewMd"),
+    btnOpenReviseHtml: $("btnOpenReviseHtml"),
+    beKind: $("beKind"),
+    beEndpoint: $("beEndpoint"),
+    beApiKey: $("beApiKey"),
+    beModel: $("beModel"),
+    btnSaveBackend: $("btnSaveBackend"),
+    btnProbeBackend: $("btnProbeBackend"),
+    backendStatus: $("backendStatus"),
     // 关于页 · 版本更新（v0.4.9：「最新版本」信息格已取消）
     aboutVersion: $("aboutVersion"),
     btnCheckUpdate: $("btnCheckUpdate"),
@@ -232,6 +264,8 @@
 
   var PAGE_META = {
     home: { title: "精核 · 文件提取", sub: "阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪" },
+    refine: { title: "精读 · 提纯核心", sub: "对已转换 md 提取核心知识点（模型由本机可插拔后端提供）" },
+    revise: { title: "修订 · 补写与修改", sub: "补写缺失 + 修改核心，变更内容以颜色/标记区分" },
     settings: { title: "设置", sub: "只保存在本机，改动即时生效" },
     about: { title: "关于", sub: "版本、路线与隐私说明" }
   };
@@ -305,8 +339,9 @@
     var meta = PAGE_META[name] || PAGE_META.home;
     if (el.pageTitle) el.pageTitle.textContent = meta.title;
     if (el.pageSub) el.pageSub.textContent = meta.sub;
-    if (name === "settings") loadSettingsIntoForm();
+    if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); }
     if (name === "about") loadAbout();
+    if (name === "refine" || name === "revise") refreshRefineCap();
   }
 
   function applySettings(cfg) {
@@ -1344,12 +1379,185 @@
       toolState = (r && r.ok) ? r : null;
       renderToolStatus();
       updateFeatureButtons();
+      refreshRefineCap();
     }).catch(function () {
       // 探测失败也必须诚实：不能默认当成「可用」而点亮按钮。
       toolState = null;
       renderToolStatus();
       updateFeatureButtons();
+      refreshRefineCap();
     });
+  }
+
+  // ---------------- S7d：精读 / 修订 ----------------
+  var refinePolling = null;
+  var refineSince = 0;
+
+  function setBar(node, text, ok) {
+    if (!node) return;
+    node.textContent = text;
+    node.classList.toggle("bar-ok", !!ok);
+    node.classList.toggle("bar-warn", !ok);
+    node.hidden = false;
+  }
+
+  function refineCapability() {
+    return ((toolState || {}).refine) || null;
+  }
+
+  function refreshRefineCap() {
+    var cap = refineCapability();
+    var enabled = !!(cap && cap.enabled);
+    var reason = (cap && cap.reason) || "尚未探测到精读后端";
+    setBar(el.refineCap, enabled ? "精读后端：已启用" : "精读后端：未启用（" + reason + "）", enabled);
+    setBar(el.reviseCap, enabled ? "精读后端：已启用" : "精读后端：未启用（" + reason + "）", enabled);
+    if (el.btnStartRefine) el.btnStartRefine.disabled = !enabled;
+    if (el.btnStartRevise) el.btnStartRevise.disabled = !enabled;
+    if (enabled) loadRefineModels();
+  }
+
+  function loadRefineModels() {
+    api("/api/refine/models", undefined, 15000).then(function (r) {
+      if (!el.refineModel) return;
+      el.refineModel.innerHTML = "";
+      var models = (r && Array.isArray(r.models)) ? r.models : [];
+      if (!models.length) {
+        var o = document.createElement("option");
+        o.value = ""; o.textContent = "（用后端默认模型）";
+        el.refineModel.appendChild(o);
+        return;
+      }
+      models.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m; opt.textContent = m;
+        el.refineModel.appendChild(opt);
+      });
+    }).catch(function () {
+      if (el.refineModel) {
+        el.refineModel.innerHTML = "";
+        var o = document.createElement("option");
+        o.value = ""; o.textContent = "（无法读取模型列表）";
+        el.refineModel.appendChild(o);
+      }
+    });
+  }
+
+  function loadBackendForm() {
+    api("/api/refine/backend", undefined, 10000).then(function (r) {
+      var cfg = (r && r.config) || {};
+      if (el.beKind) el.beKind.value = cfg.kind || "none";
+      if (el.beEndpoint) el.beEndpoint.value = cfg.endpoint || "";
+      if (el.beApiKey) el.beApiKey.value = cfg.api_key || "";  // 掩码，真 key 不回显
+      if (el.beModel) el.beModel.value = cfg.model || "";
+    }).catch(function () {
+      if (el.backendStatus) el.backendStatus.textContent = "读取后端配置失败";
+    });
+  }
+
+  function saveBackendCfg(thenProbe) {
+    var payload = {
+      kind: (el.beKind && el.beKind.value) || "none",
+      endpoint: (el.beEndpoint && el.beEndpoint.value || "").trim(),
+      api_key: (el.beApiKey && el.beApiKey.value || "").trim(),
+      model: (el.beModel && el.beModel.value || "").trim()
+    };
+    if (el.backendStatus) el.backendStatus.textContent = "保存中…";
+    api("/api/refine/backend", payload, 10000).then(function (r) {
+      if (!r || !r.ok) {
+        if (el.backendStatus) el.backendStatus.textContent = "保存失败：" + ((r && r.error) || "未知");
+        return;
+      }
+      // 回显是掩码；把输入框也刷成掩码，避免用户以为真 key 被清空
+      if (el.beApiKey && r.config) el.beApiKey.value = r.config.api_key || "";
+      if (el.backendStatus) el.backendStatus.textContent = "已保存";
+      if (thenProbe) {
+        api("/api/tools/probe", { refresh: true }, 15000).then(function (p) {
+          toolState = (p && p.ok) ? p : null;
+          refreshRefineCap();
+          var cap = refineCapability();
+          setBar(el.backendStatus, cap && cap.enabled ? "连接成功：后端可用" : ("连接失败：" + (cap && cap.reason || "不可用")), !!(cap && cap.enabled));
+        }).catch(function () {
+          if (el.backendStatus) el.backendStatus.textContent = "连接探测失败";
+        });
+      }
+    }).catch(function (err) {
+      if (el.backendStatus) el.backendStatus.textContent = "保存失败：" + (err.message || err);
+    });
+  }
+
+  function renderRefineEvents(events) {
+    events.forEach(function (ev) {
+      if (el.refineProgress) el.refineProgress.textContent = ev.text || "";
+    });
+  }
+
+  function stopRefinePolling() {
+    if (refinePolling) { clearInterval(refinePolling); refinePolling = null; }
+    if (el.btnCancelRefine) el.btnCancelRefine.disabled = true;
+    if (el.btnStartRefine) el.btnStartRefine.disabled = false;
+    if (el.btnStartRevise) el.btnStartRevise.disabled = false;
+  }
+
+  function startRefinePolling(isRevise) {
+    refineSince = 0;
+    if (refinePolling) clearInterval(refinePolling);
+    if (el.btnCancelRefine) el.btnCancelRefine.disabled = false;
+    refinePolling = setInterval(function () {
+      api("/api/refine/status?since=" + refineSince, undefined, 8000).then(function (st) {
+        if (!st) return;
+        renderRefineEvents(st.events || []);
+        if (typeof st.next === "number") refineSince = st.next;
+        if (!st.running) {
+          stopRefinePolling();
+          if (st.state === "done") {
+            loadRefineResult(isRevise, st.output || "");
+          } else if (st.error) {
+            showError("任务失败：" + st.error);
+          }
+        }
+      }).catch(function () { /* 轮询偶发失败不打断，下轮重试 */ });
+    }, 500);
+  }
+
+  function loadRefineResult(isRevise, output) {
+    if (isRevise) {
+      // 修订：彩色 html 内嵌预览（经只读端点取文本 + srcdoc，sandbox 隔离）+ 符号标记 md
+      if (el.reviseResult && output) {
+        var htmlPath = output.replace(/\.revise\.md$/, ".revise.html");
+        el.reviseResult.dataset.html = htmlPath;
+        api("/api/refine/artifact?path=" + encodeURIComponent(htmlPath), undefined, 8000)
+          .then(function (r) {
+            if (el.revisePreviewHtml && r && r.ok) el.revisePreviewHtml.srcdoc = r.text;
+          }).catch(function () { /* 预览失败不影响产物本身 */ });
+      }
+      if (output && el.revisePreviewMd) {
+        api("/api/refine/artifact?path=" + encodeURIComponent(output), undefined, 8000)
+          .then(function (r) {
+            el.revisePreviewMd.textContent = (r && r.ok) ? r.text : "（无法读取 md 预览，请打开产物查看）";
+          }).catch(function () { el.revisePreviewMd.textContent = "（无法读取 md 预览）"; });
+      }
+      if (el.reviseResult) el.reviseResult.hidden = false;
+    } else {
+      if (el.refineResultPath) el.refineResultPath.textContent = output || "";
+      if (el.refineResult && output) {
+        api("/api/refine/artifact?path=" + encodeURIComponent(output), undefined, 8000)
+          .then(function (r) {
+            if (el.refinePreview) el.refinePreview.textContent = (r && r.ok) ? r.text : "（无法读取预览，请打开产物查看）";
+          }).catch(function () { if (el.refinePreview) el.refinePreview.textContent = "（无法读取预览）"; });
+        el.refineResult.dataset.path = output;
+        el.refineResult.hidden = false;
+      }
+    }
+  }
+
+  function pickRefineSource(isRevise) {
+    api("/api/pick-files", { initial: "" }, 0).then(function (r) {
+      if (r && r.error) { showError(r.error); return; }
+      var paths = (r && Array.isArray(r.paths)) ? r.paths : [];
+      if (!paths.length) return;
+      var node = isRevise ? el.reviseSource : el.refineSource;
+      if (node) node.value = paths[0];
+    }).catch(function (err) { showError(err.message || err); });
   }
 
   // S2a：只要选择了 Word 文件就能用；没跑提取也可以（产物落独立 derived 区）。
@@ -1756,6 +1964,44 @@
         activatePage(this.getAttribute("data-page"));
       });
     }
+    // S7d：精读 / 修订 / 后端配置
+    if (el.btnSaveBackend) el.btnSaveBackend.addEventListener("click", function () { saveBackendCfg(false); });
+    if (el.btnProbeBackend) el.btnProbeBackend.addEventListener("click", function () { saveBackendCfg(true); });
+    if (el.btnPickRefine) el.btnPickRefine.addEventListener("click", function () { pickRefineSource(false); });
+    if (el.btnPickRevise) el.btnPickRevise.addEventListener("click", function () { pickRefineSource(true); });
+    if (el.btnStartRefine) el.btnStartRefine.addEventListener("click", function () {
+      var path = (el.refineSource && el.refineSource.value || "").trim();
+      if (!path) { showError("请先选择已转换的 md 文件"); return; }
+      var model = (el.refineModel && el.refineModel.value || "").trim();
+      api("/api/refine/start", { path: path, model: model }, 15000).then(function (r) {
+        if (!r || !r.ok) { showError("精读启动失败：" + ((r && r.error) || "未知")); return; }
+        el.btnStartRefine.disabled = true;
+        startRefinePolling(false);
+      }).catch(function (err) { showError(err.message || err); });
+    });
+    if (el.btnStartRevise) el.btnStartRevise.addEventListener("click", function () {
+      var path = (el.reviseSource && el.reviseSource.value || "").trim();
+      if (!path) { showError("请先选择精读产物 .refine.md"); return; }
+      var instruction = (el.reviseInstruction && el.reviseInstruction.value || "").trim();
+      api("/api/revise/start", { path: path, instruction: instruction }, 15000).then(function (r) {
+        if (!r || !r.ok) { showError("修订启动失败：" + ((r && r.error) || "未知")); return; }
+        el.btnStartRevise.disabled = true;
+        startRefinePolling(true);
+      }).catch(function (err) { showError(err.message || err); });
+    });
+    if (el.btnCancelRefine) el.btnCancelRefine.addEventListener("click", function () {
+      api("/api/refine/cancel", {}, 10000).then(function () {
+        if (el.refineProgress) el.refineProgress.textContent = "已请求取消";
+      });
+    });
+    if (el.btnOpenRefine) el.btnOpenRefine.addEventListener("click", function () {
+      var p = el.refineResult && el.refineResult.dataset.path;
+      if (p) api("/api/refine/open", { path: p }, 10000);
+    });
+    if (el.btnOpenReviseHtml) el.btnOpenReviseHtml.addEventListener("click", function () {
+      var p = el.reviseResult && el.reviseResult.dataset.html;
+      if (p) api("/api/refine/open", { path: p }, 10000);
+    });
     if (el.btnSaveSettings) {
       el.btnSaveSettings.addEventListener("click", function () {
         saveSettings(readSettingsForm(), "已保存");

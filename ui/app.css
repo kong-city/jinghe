@@ -1011,6 +1011,66 @@ button, input { font-family: inherit; }
 
 .about-item b.mono { font-size: 12px; }
 
+/* ---------- S7d：精读 / 修订页 ---------- */
+/* 结果区：预留最小高度，避免异步产出时布局跳动（ui-ux-pro-max 内容跳动项） */
+.result-box {
+  margin-top: 12px;
+  min-height: 120px;
+  border: 1px solid #E5E3DC;
+  border-radius: 10px;
+  background: #FBFCFE;
+  padding: 12px;
+}
+.result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #6F6D66;
+}
+.preview-md {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #1F1F1D;
+  background: #FFFFFF;
+  border: 1px solid #EDEBE5;
+  border-radius: 8px;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.preview-frame {
+  width: 100%;
+  height: 360px;
+  border: 1px solid #E5E3DC;
+  border-radius: 8px;
+  background: #FFFFFF;
+}
+.md-details { margin-top: 10px; font-size: 12px; color: #6F6D66; }
+.md-details summary { cursor: pointer; padding: 4px 0; }
+.md-details summary:hover { color: #185FA5; }
+.md-details .preview-md { margin-top: 8px; }
+/* 后端能力提示条：未启用用琥珀，可用用绿，均与白底达 AA */
+.bar-warn { background: #FAEEDA; border: 1px solid #EF9F27; color: #633806; }
+.bar-ok { background: #EAF3DE; border: 1px solid #97C459; color: #27500A; }
+select.text-input {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  color: #1F1F1D;
+  background: #FFFFFF;
+  border: 1px solid #E5E3DC;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
 /* ---------- v0.4.9 动效降级（ui-ux-pro-max 审查项 A3） ----------
    审查发现：全站零 prefers-reduced-motion 处理。
    系统开启「减少动态效果」时，过渡与动画应被关闭 —— 前庭敏感用户会因

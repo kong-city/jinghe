@@ -2144,6 +2144,13 @@ class Handler(BaseHTTPRequestHandler):
                 _touch_heartbeat()
                 self._send_json({"ok": True, "config": backend.public_config()})
                 return
+            if path == "/api/refine/artifact":
+                # S7d：只读预览精读/修订产物；限定 derived/ 内 + .md/.html，防路径穿越。
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                artifact = (qs.get("path") or [""])[0]
+                self._send_json(self._api_refine_artifact(artifact))
+                return
             if path == "/api/update/check":
                 # v0.4.8：只查版本（当前 / 最新 / 有无安装包），不下载、不安装。
                 _touch_heartbeat()
@@ -2413,6 +2420,9 @@ class Handler(BaseHTTPRequestHandler):
                     "model": str(data.get("model") or ""),
                 })
                 self._send_json({"ok": True, "config": backend.public_config()})
+            elif path == "/api/refine/open":
+                # S7d：打开精读/修订产物（独立端点，不动 /api/open 的白名单契约）
+                self._send_json(self._api_refine_open(str(data.get("path") or "").strip()))
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态
@@ -2506,6 +2516,42 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % exc}
         return {"ok": True, "path": str(target)}
+
+    def _api_refine_artifact(self, raw: str) -> dict:
+        """S7d：只读返回精读/修订产物文本，供 UI 预览。
+
+        安全三重收敛：① 必须落在某 ``out/derived/`` 目录内；② 后缀仅 .md/.html；
+        ③ realpath 解析防符号链接/``..`` 穿越。只返回文本，不执行、不打开外部程序。
+        """
+        if not raw:
+            return {"ok": False, "error": "请提供产物路径"}
+        try:
+            target = Path(raw).expanduser().resolve()
+        except (OSError, ValueError):
+            return {"ok": False, "error": "路径无效"}
+        if target.suffix.lower() not in (".md", ".html"):
+            return {"ok": False, "error": "只允许预览 .md / .html 产物"}
+        if target.parent.name != media_runtime.DERIVED_DIRNAME or not target.is_file():
+            return {"ok": False, "error": "只允许预览 derived/ 目录内已存在的产物"}
+        # 再防一层：目标须在某个 derived 目录下（父目录名匹配仍可能被符号链接欺骗）
+        try:
+            if media_runtime.DERIVED_DIRNAME not in [p.name for p in target.parents]:
+                return {"ok": False, "error": "路径不在允许的产物区"}
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            return {"ok": False, "error": "读取产物失败"}
+        return {"ok": True, "path": str(target), "text": text}
+
+    def _api_refine_open(self, raw: str) -> dict:
+        """S7d：打开 derived/ 内的精读/修订产物；与 /api/open 白名单互不干扰。"""
+        chk = self._api_refine_artifact(raw)
+        if not chk.get("ok"):
+            return chk
+        try:
+            _open_document(Path(chk["path"]))
+        except Exception as exc:
+            return {"ok": False, "error": "打开失败：%s" % type(exc).__name__}
+        return {"ok": True, "path": chk["path"]}
 
     def _api_merged_status(self, outdir: str) -> dict:
         """探测输出目录里是否已有 MERGED.md（重启后恢复「打开合并文档」入口）。"""

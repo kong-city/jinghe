@@ -60,6 +60,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import unittest
 import urllib.error
 import urllib.parse
@@ -3841,6 +3842,97 @@ class AppContractTest(unittest.TestCase):
         seg = app_src.split("/api/revise/start")[1][:400] if "/api/revise/start" in app_src else ""
         self.assertIn("outdir", seg)
         self.assertIn("instruction", seg)
+
+    # ------------------------------------------------------------------ #
+    # 51) S7d UI：导航两项 + 配置页 + 精读/修订页 + 产物只读安全
+    # ------------------------------------------------------------------ #
+    def test_51_s7d_ui(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 导航两项 + 页面容器
+        for page in ("refine", "revise"):
+            self.assertIn('data-page="%s"' % page, html, "导航缺少 %s" % page)
+            self.assertIn('id="page-%s"' % page, html, "缺页面容器 %s" % page)
+            self.assertIn("%s: $(" % page, js, "pages 映射缺 %s" % page)
+            self.assertIn("%s: { title:" % page, js, "PAGE_META 缺 %s" % page)
+        # 既有三项仍在（不破坏 test_06 守护的导航结构）
+        for page in ("home", "settings", "about"):
+            self.assertIn('data-page="%s"' % page, html)
+
+        # ② 后端配置表单：类型/端点/key/model + 脱敏提示 + key 用 password
+        for fid in ("beKind", "beEndpoint", "beApiKey", "beModel"):
+            self.assertIn('id="%s"' % fid, html, "缺配置字段 %s" % fid)
+        self.assertIn('id="beApiKey" class="text-input set-wide" type="password"', html,
+                      "API key 输入框必须是 password 类型")
+        self.assertIn("留空 = 保留原密钥", html, "缺密钥脱敏/保留提示")
+        self.assertIn("配置即视为知情同意", html, "云端外传缺知情同意告知")
+
+        # ③ 精读/修订页控件 + aria-label（可访问性，沿用 A1/A2 修复）
+        for fid in ("refineSource", "btnStartRefine", "btnCancelRefine", "refinePreview",
+                    "reviseSource", "reviseInstruction", "btnStartRevise",
+                    "revisePreviewHtml", "revisePreviewMd"):
+            self.assertIn('id="%s"' % fid, html, "缺控件 %s" % fid)
+        for label in ("精读来源 md 路径", "修订来源 refine.md 路径",
+                      "修订额外要求", "精读后端类型", "后端接口地址", "后端 API 密钥"):
+            self.assertIn('aria-label="%s"' % label, html, "缺 aria-label：%s" % label)
+        self.assertIn("iframe", html)
+        self.assertIn('sandbox=""', html, "彩色预览 iframe 必须 sandbox 隔离")
+        self.assertIn("srcdoc", js, "彩色预览应走 srcdoc（经只读端点取文本）")
+
+        # ④ JS 调端点正确：GET 传 undefined（api() 靠 body===undefined 判 GET）
+        self.assertIn('api("/api/refine/backend", undefined', js,
+                      "GET backend 必须传 undefined")
+        self.assertIn('api("/api/refine/models", undefined', js,
+                      "GET models 必须传 undefined")
+        # status 带 since 查询串：api("/api/refine/status?since=" + N, undefined, …)
+        status_line = [ln for ln in js.splitlines() if 'api("/api/refine/status' in ln]
+        self.assertTrue(status_line, "未调用 status 端点")
+        self.assertIn("undefined", status_line[0], "GET status 必须传 undefined")
+        self.assertIn('api("/api/refine/start"', js)
+        self.assertIn('api("/api/revise/start"', js)
+        self.assertIn('api("/api/refine/cancel"', js)
+        self.assertIn('api("/api/refine/artifact?path="', js, "预览须走只读产物端点")
+        # 打开按钮走专用端点，不动 /api/open 白名单
+        self.assertIn('api("/api/refine/open"', js)
+        self.assertNotIn('api("/api/open", { path: p }', js)
+
+        # ⑤ CSS：新样式存在且不破坏焦点环/reduced-motion 契约
+        for cls in (".result-box", ".preview-frame", ".preview-md", ".bar-warn", ".bar-ok"):
+            self.assertIn(cls, css, "缺样式 %s" % cls)
+        self.assertIn("outline: 2px solid #185FA5", css, "焦点环被破坏")
+        self.assertIn("@media (prefers-reduced-motion: reduce)", css)
+
+        # ⑥ artifact 只读端点的安全边界（真实 HTTP）
+        srv = self.start()
+        # 任意路径必须拒绝
+        st, obj = srv.get_json("/api/refine/artifact?path=" +
+                               urllib.parse.quote(str(Path(self.tmp) / "outside.md")))
+        self.assertEqual(st, 200)
+        self.assertIs(obj["ok"], False, "非 derived 路径应拒绝")
+        self.assertIn("derived", obj["error"])
+        # 合法 derived 产物可读
+        derived = Path(self.tmp) / "derived"
+        derived.mkdir(exist_ok=True)
+        good = derived / "doc_abc123456789.refine.md"
+        good.write_text("# 精读产物\n核心内容", encoding="utf-8")
+        st, obj = srv.get_json("/api/refine/artifact?path=" + urllib.parse.quote(str(good)))
+        self.assertEqual(st, 200)
+        self.assertTrue(obj["ok"])
+        self.assertIn("核心内容", obj["text"])
+        # 非 md/html 后缀拒绝
+        bad = derived / "evil.exe"
+        bad.write_bytes(b"MZ")
+        st, obj = srv.get_json("/api/refine/artifact?path=" + urllib.parse.quote(str(bad)))
+        self.assertIs(obj["ok"], False, "非 md/html 应拒绝")
+        # /api/open 白名单未被放宽（derived 产物不能走它）
+        st, obj = srv.post_json("/api/open", {"path": str(good)})
+        self.assertIs(obj["ok"], False, "/api/open 白名单被放宽了")
+        # 端点存在
+        self.assertIn('path == "/api/refine/artifact"', app_src)
+        self.assertIn('path == "/api/refine/open"', app_src)
 
 
 def print_summary(result=None) -> None:

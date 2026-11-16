@@ -29,6 +29,19 @@
         </svg>
         <span class="nav-label">首页</span>
       </button>
+      <!-- S7d：精读 / 修订入口（提纯核心 / 补写修改，本机可插拔后端） -->
+      <button class="nav-item" type="button" data-page="refine" title="精读">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 5.5h11M4 10h11M4 14.5h7"/><path d="M16 20l4-4-4-4"/>
+        </svg>
+        <span class="nav-label">精读</span>
+      </button>
+      <button class="nav-item" type="button" data-page="revise" title="修订">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 20h4L20 8l-4-4L4 16v4z"/><path d="M14 6l4 4"/>
+        </svg>
+        <span class="nav-label">修订</span>
+      </button>
       <button class="nav-item" type="button" data-page="settings" title="设置">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="3.2"/>
@@ -209,6 +222,71 @@
       </section>
     </section>
 
+    <!-- ==================== 精读（提纯核心知识点） ==================== -->
+    <section class="page" id="page-refine" hidden>
+      <section class="card">
+        <div class="card-title">精读 · 提纯核心</div>
+        <div class="card-sub">对已转换为 md 的文件做语义级提纯，只提取核心，不补写、不修改。</div>
+        <div id="refineCap" class="bar bar-warn" role="status">正在检测精读后端…</div>
+        <div class="row">
+          <input id="refineSource" class="text-input" type="text" spellcheck="false" autocomplete="off"
+                 aria-label="精读来源 md 路径" placeholder="选择已转换的 md 文件（out/md 或已生成的 .refine.md）">
+          <button id="btnPickRefine" class="btn btn-ghost" type="button">选择 md</button>
+        </div>
+        <div class="row">
+          <label class="check" for="refineModelWrap">模型
+            <select id="refineModel" class="text-input" aria-label="提纯使用的模型"></select>
+          </label>
+        </div>
+        <div class="row">
+          <button id="btnStartRefine" class="btn btn-primary" type="button">开始精读</button>
+          <button id="btnCancelRefine" class="btn btn-ghost" type="button" disabled>取消</button>
+        </div>
+        <div id="refineProgress" class="run-status" role="status" aria-live="polite"></div>
+        <div id="refineResult" class="result-box" hidden>
+          <div class="result-head">
+            <span id="refineResultPath" class="mono"></span>
+            <button id="btnOpenRefine" class="btn btn-ghost" type="button">打开产物</button>
+          </div>
+          <pre id="refinePreview" class="preview-md"></pre>
+        </div>
+      </section>
+    </section>
+
+    <!-- ==================== 修订（补写 + 修改，双产物） ==================== -->
+    <section class="page" id="page-revise" hidden>
+      <section class="card">
+        <div class="card-title">修订 · 补写与修改</div>
+        <div class="card-sub">对精读核心补写缺失 + 修改表述；新增与修改内容均以颜色/标记区分，请对照原文核对。</div>
+        <div id="reviseCap" class="bar bar-warn" role="status">正在检测精读后端…</div>
+        <div class="row">
+          <input id="reviseSource" class="text-input" type="text" spellcheck="false" autocomplete="off"
+                 aria-label="修订来源 refine.md 路径" placeholder="选择精读产物 .refine.md">
+          <button id="btnPickRevise" class="btn btn-ghost" type="button">选择 refine.md</button>
+        </div>
+        <div class="row">
+          <input id="reviseInstruction" class="text-input" type="text" spellcheck="false" autocomplete="off"
+                 aria-label="修订额外要求" placeholder="额外要求（可选）：如补充背景、纠正术语">
+        </div>
+        <div class="row">
+          <button id="btnStartRevise" class="btn btn-primary" type="button">开始修订</button>
+          <button id="btnCancelRevise" class="btn btn-ghost" type="button" disabled>取消</button>
+        </div>
+        <div id="reviseProgress" class="run-status" role="status" aria-live="polite"></div>
+        <div id="reviseResult" class="result-box" hidden>
+          <div class="result-head">
+            <span class="mono">彩色预览（新增绿 / 修改前红删除线 / 修改后蓝）</span>
+            <button id="btnOpenReviseHtml" class="btn btn-ghost" type="button">打开彩色版</button>
+          </div>
+          <iframe id="revisePreviewHtml" class="preview-frame" title="修订彩色预览" sandbox=""></iframe>
+          <details class="md-details">
+            <summary>查看符号标记版（纯文本 md）</summary>
+            <pre id="revisePreviewMd" class="preview-md"></pre>
+          </details>
+        </div>
+      </section>
+    </section>
+
     <!-- ==================== 设置 ==================== -->
     <section class="page" id="page-settings" hidden>
       <section class="card">
@@ -255,6 +333,54 @@
           <button id="btnSaveSettings" class="btn btn-primary" type="button">保存设置</button>
           <button id="btnResetSettings" class="btn btn-ghost" type="button">恢复默认</button>
           <span id="settingsStatus" class="run-status"></span>
+        </div>
+      </section>
+
+      <!-- S7d：精读后端配置（本机 ollama / 云端兼容端点，客户自选） -->
+      <section class="card">
+        <div class="card-title">精读后端</div>
+        <div class="card-sub">精读/修订由大模型完成。本机 ollama 内容不外传；云端端点需你自行配置，配置即视为知情同意内容将发送。软件不下载、不打包任何组件。</div>
+        <div class="set-list">
+          <label class="set-row">
+            <span class="set-text">
+              <b>后端类型</b>
+              <em>未配置则不启用精读/修订；本地需自己安装 ollama</em>
+            </span>
+            <select id="beKind" class="text-input set-wide" aria-label="精读后端类型">
+              <option value="none">未配置（不启用）</option>
+              <option value="local">本机 ollama</option>
+              <option value="cloud">云端兼容端点</option>
+            </select>
+          </label>
+          <label class="set-row">
+            <span class="set-text">
+              <b>接口地址</b>
+              <em>本机留空即用 http://localhost:11434；云端填 OpenAI 兼容地址</em>
+            </span>
+            <input id="beEndpoint" class="text-input set-wide" type="text" spellcheck="false" autocomplete="off"
+                   aria-label="后端接口地址" placeholder="https://api.example.com/v1">
+          </label>
+          <label class="set-row">
+            <span class="set-text">
+              <b>API 密钥</b>
+              <em>本机 ollama 无需填写；云端必填。密文回显，留空表示不修改</em>
+            </span>
+            <input id="beApiKey" class="text-input set-wide" type="password" autocomplete="new-password"
+                   aria-label="后端 API 密钥" placeholder="留空 = 保留原密钥">
+          </label>
+          <label class="set-row">
+            <span class="set-text">
+              <b>默认模型</b>
+              <em>可留空，用后端返回的第一个模型</em>
+            </span>
+            <input id="beModel" class="text-input set-wide" type="text" spellcheck="false" autocomplete="off"
+                   aria-label="后端默认模型" placeholder="如 qwen2.5:7b">
+          </label>
+        </div>
+        <div class="row set-actions">
+          <button id="btnSaveBackend" class="btn btn-primary" type="button">保存后端配置</button>
+          <button id="btnProbeBackend" class="btn btn-ghost" type="button">测试连接</button>
+          <span id="backendStatus" class="run-status" role="status" aria-live="polite"></span>
         </div>
       </section>
 

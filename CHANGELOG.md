@@ -340,3 +340,13 @@
 - `refine.py` 接入 `_run_revise_inner` + start_revise 透传 outdir/instruction；doc_id 从精读产物名提取，与精读同一 id；provenance stage=revise 读旧追加；冻结盘快照比对。
 - 新增 `test_50`（核心解析/反编造变更/双产物同源/标记篡改抓出/WCAG AA 实算/端到端双产物/全无效零产物），测试基线 77 → **78**；全量 78 + 门禁 9 项全绿；冻结态端点与产物声明验证通过。
 - **严格不碰**：`SPEC.md` / `extract.py` / 既有端点原样。真模型质量需用户环境，mock 只验工程逻辑。
+
+### S7d · UI 接入（用户放行；本次不上传，停在 S7d 闸门）
+
+- 左侧导航新增「精读」「修订」两项（含 SVG 图标、与首页/设置/关于同级）；新增两个页面容器与 PAGE_META/pages 映射。
+- 设置页新增「精读后端」配置区：类型（未配置/本机 ollama/云端兼容）、接口地址、API key（**password 输入 + 脱敏回显 + 留空不改**）、默认模型、测试连接；云端配置附知情同意告知。
+- 精读页：源 md 选择 + 模型下拉 + 开始/取消 + 进度 + 结果预览；修订页：refine.md 选择 + 额外要求 + 双产物预览（iframe srcdoc sandbox 彩色版 + details 符号标记版）。
+- 新增两个只读端点：`GET /api/refine/artifact`（限定 derived/ 内 + .md/.html + realpath 防穿越，供预览）、`POST /api/refine/open`（独立打开产物，**不动 /api/open 白名单**）。
+- JS 交互：能力状态复用 toolState.refine、GET 端点严格传 undefined、增量轮询 status?since、产物经只读端点取文本。
+- 新增 `test_51`（导航/页面/配置表单/aria-label/端点调用/artifact 安全边界/焦点环与 reduced-motion 未被破坏），测试基线 78 → **79**；全量 79 + 门禁 9 项全绿；Edge headless DOM 实测两个新按钮/页面/控件真实出现。
+- **严格不碰**：`SPEC.md` / `extract.py` / `/api/open` 白名单 / 既有端点原样。
