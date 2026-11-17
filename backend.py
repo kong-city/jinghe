@@ -16,8 +16,12 @@
 * 读配置一律脱敏 api_key；写配置时 key 空值表示「不改」；
 * **绝不**把 key 写进日志、provenance、产物、异常堆栈。
 
-**阶段边界**：本文件 S7b 适配层只实现配置管理 + probe + list_models 的形状；
-``chat()`` 真推理显式抛 NotImplementedError（留 S7b 后半），绝不静默返回假结果。
+**阶段边界（2026-11-17 更新）**：S7b 最初只实现配置管理 + probe + list_models，
+``chat()`` 显式抛 NotImplementedError 绝不返回假结果。S8 收口后（用户明确
+「LLM 模式要真能用」）已接入真推理：``LocalBackend.chat`` 走本机 ollama 的
+OpenAI 兼容 ``/v1/chat/completions``，``CloudBackend.chat`` 走客户端点
+``/chat/completions``，共用上述 HTTP 层；超时/异常仍诚实拒绝、绝不返回假结果。
+基类 ``Backend.chat`` 保留 NotImplementedError（kind=none 未配置时诚实拒绝）。
 """
 from __future__ import annotations
 
@@ -202,7 +206,7 @@ class Backend:
         raise NotImplementedError
 
     def chat(self, messages: list[dict]) -> str:
-        raise NotImplementedError("真实推理将在 S7b 后半接入；当前绝不返回假结果")
+        raise NotImplementedError("未配置后端（kind=none）不提供真推理；请先在设置里选择本地或云端后端")
 
 
 def _http_get_json(url: str, headers: dict | None = None, timeout: float = _TIMEOUT_PROBE) -> dict:
@@ -217,6 +221,69 @@ def _http_get_json(url: str, headers: dict | None = None, timeout: float = _TIME
     except (urllib.error.URLError, OSError, ValueError) as exc:
         # 只回错误类型，不回可能含 key 的 URL/头
         return {"ok": False, "error": "连接失败：%s" % type(exc).__name__}
+
+
+# 真推理超时（秒）：精读/修订是长任务，但不能无限挂住；超时即诚实报错，
+# 绝不返回假结果。本地模型首次加载可能较慢，给得比探测宽一些。
+_TIMEOUT_CHAT = 180.0
+
+
+def _http_post_json(url: str, payload: dict, headers: dict | None = None,
+                    timeout: float = _TIMEOUT_CHAT) -> dict:
+    """轻量 POST JSON，返回 ``{ok, data|error}``；异常里绝不拼入 key / URL。"""
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    hdrs = dict(headers or {})
+    hdrs.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+        return {"ok": True, "data": json.loads(raw.decode("utf-8", "replace"))}
+    except urllib.error.HTTPError as exc:
+        # HTTPError 的 reason 可能回显请求头片段 → 只报状态码，不读 body/reason
+        return {"ok": False, "error": "端点返回 HTTP %d" % exc.code}
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
+        return {"ok": False, "error": "连接失败：%s" % type(exc).__name__}
+
+
+def _chat_content(res: dict) -> str:
+    """从 OpenAI 兼容响应里取第一条 message.content；形状不符即报错。
+
+    绝不返回空串冒充成功——没内容就是没内容，上层按失败处理、零产物。
+    """
+    if not res.get("ok"):
+        raise RuntimeError("模型调用失败：%s" % res.get("error", "未知错误"))
+    data = res.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("模型响应格式异常")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("模型响应无 choices")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise RuntimeError("模型响应 choices 格式异常")
+    msg = first.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else first.get("text")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("模型响应无有效正文")
+    return content.strip()
+
+
+def _resolve_chat_model(be) -> str:
+    """确定 chat 用的模型名：配置里填了就用它，否则取后端第一个模型。
+
+    本地 ollama 的 /v1/chat/completions 要求 model 字段；空着会报错，
+    故从 /api/tags 取第一个诚实可用模型。云端服务端多支持省略 model，
+    取不到就传空串（由服务端决定默认）。
+    """
+    configured = (be.config.get("model") or "").strip()
+    if configured:
+        return configured
+    listed = be.list_models()
+    models = listed.get("models") if isinstance(listed, dict) else None
+    if isinstance(models, list) and models:
+        return str(models[0])
+    return ""
 
 
 def _endpoint_of(cfg: dict) -> str:
@@ -260,6 +327,26 @@ class LocalBackend(Backend):
             if isinstance(m, dict) and m.get("name"):
                 names.append(str(m["name"]))
         return {"ok": True, "models": names}
+
+    def chat(self, messages: list[dict]) -> str:
+        """本机 ollama 真推理（OpenAI 兼容 ``/v1/chat/completions``）。
+
+        内容不出本机；model 空时从 ``/api/tags`` 诚实取第一个模型。
+        """
+        if not isinstance(messages, list) or not messages:
+            raise ValueError("messages 不能为空")
+        model = _resolve_chat_model(self)
+        if not model:
+            raise RuntimeError("本机 ollama 未安装任何模型，请先在 ollama 中拉取模型")
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.2,   # 提纯要稳定可复现，不要发散
+        }
+        res = _http_post_json(self.base + "/v1/chat/completions", payload,
+                              headers={}, timeout=_TIMEOUT_CHAT)
+        return _chat_content(res)
 
 
 # --------------------------------------------------------------------------- #
@@ -313,6 +400,30 @@ class CloudBackend(Backend):
             if isinstance(m, dict) and m.get("id"):
                 names.append(str(m["id"]))
         return {"ok": True, "models": names}
+
+    def chat(self, messages: list[dict]) -> str:
+        """云端 OpenAI 兼容端点真推理（``{endpoint}/chat/completions``）。
+
+        配置即知情同意（内容外传）；key 只在 Bearer 头里短暂进入内存，
+        异常不回显 key / URL 细节。
+        """
+        missing = self._ready()
+        if missing:
+            raise RuntimeError("云端后端未就绪：%s" % missing)
+        if not isinstance(messages, list) or not messages:
+            raise ValueError("messages 不能为空")
+        model = _resolve_chat_model(self)
+        payload = {
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.2,
+        }
+        if model:
+            payload["model"] = model
+        res = _http_post_json(self.base + "/chat/completions", payload,
+                              headers=_auth_headers(self.config),
+                              timeout=_TIMEOUT_CHAT)
+        return _chat_content(res)
 
 
 class ExtractBackend(Backend):

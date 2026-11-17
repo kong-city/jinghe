@@ -3641,9 +3641,8 @@ class AppContractTest(unittest.TestCase):
             # 真 key 不落日志文案：backend.py 里 _append_log 不应出现
             self.assertNotIn("_append_log", be_src, "backend.py 不应写日志（防 key 泄漏）")
 
-        # ④ 缺配置诚实降级 + chat 真推理显式拒绝
-        # S8 起默认 mode=extract（内置引擎恒可用）；此处显式切 llm 模式，
-        # 守「LLM 模式未配置后端 → 诚实不可用」。extract 模式恒可用由 test_52 守。
+        # ④ 缺配置诚实降级：extract 恒可用，llm + kind=none 诚实不可用
+        # test_52 守 extract 恒可用；这里守「LLM 模式未配置后端 → 不可用」
         with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "none.json"), \
              mock.patch.object(backend, "_CACHE", None):
             backend.save_config({"mode": backend.MODE_LLM, "kind": "none"})
@@ -3651,8 +3650,9 @@ class AppContractTest(unittest.TestCase):
             self.assertIs(probe["available"], False)
             self.assertEqual(probe["kind"], backend.KIND_NONE)
             self.assertIn("尚未配置", probe["reason"])
-        with self.assertRaises(NotImplementedError):
-            backend.CloudBackend({"endpoint": "https://x", "api_key": "k"}).chat([])
+            # 未配置后端（基类）chat 仍诚实拒绝，绝不返回假结果
+            with self.assertRaises(NotImplementedError):
+                backend.current_backend().chat([])
 
         # ⑤ 端到端：app.py 挂了两个配置端点且回显脱敏
         self.assertIn('path == "/api/refine/backend"', app_src)
@@ -4637,6 +4637,120 @@ class AppContractTest(unittest.TestCase):
                           html.index('data-page="revise"')]
         self.assertNotIn("M4 5.5h11", refine_btn, "精读图标仍是旧列表箭头")
         self.assertIn("M12 3.2l2.5 5.2", refine_btn, "精读图标未换成星形")
+
+    # ------------------------------------------------------------------ #
+    # 57) S8 收口：LLM 真推理接入（Local/Cloud chat，密钥脱敏，端到端精读）
+    # ------------------------------------------------------------------ #
+    def test_57_llm_chat_real_inference(self):
+        import backend
+        import refine
+        from unittest import mock
+
+        be_src = (ROOT / "backend.py").read_text(encoding="utf-8")
+        # ① 真推理已实现：基类诚实拒绝，两个子类均实现 chat
+        self.assertIn("def chat(self, messages: list[dict]) -> str:", be_src)
+        self.assertTrue(hasattr(backend.LocalBackend, "chat"))
+        self.assertTrue(hasattr(backend.CloudBackend, "chat"))
+
+        msgs = [{"role": "user", "content": "提炼核心"}]
+        fake_reply = {"choices": [{"message": {"content": '{"points":[]}'}}]}
+
+        # ② Cloud：POST {endpoint}/chat/completions + Bearer，返回正文
+        seen: dict = {}
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["headers"] = dict(req.headers)
+            seen["body"] = json.loads(req.data.decode("utf-8"))
+            seen["timeout"] = timeout
+            return mock.MagicMock(
+                __enter__=lambda s: s,
+                __exit__=lambda s, *a: False,
+                read=lambda: json.dumps(fake_reply).encode("utf-8"))
+
+        be = backend.CloudBackend({"endpoint": "https://api.example.com/v1/",
+                                   "api_key": "sk-SECRET-abcdef5678",
+                                   "model": "gpt-test"})
+        with mock.patch.object(backend.urllib.request, "urlopen", fake_urlopen):
+            got = be.chat(msgs)
+        self.assertEqual(got, '{"points":[]}')
+        self.assertEqual(seen["url"], "https://api.example.com/v1/chat/completions")
+        auth = seen["headers"].get("Authorization") or seen["headers"].get("authorization")
+        self.assertEqual(auth, "Bearer sk-SECRET-abcdef5678", "Bearer 头未正确构造")
+        self.assertEqual(seen["body"]["model"], "gpt-test")
+        self.assertEqual(seen["body"]["messages"], msgs)
+        self.assertFalse(seen["body"].get("stream", False), "stream 必须 False")
+
+        # ③ key 绝不进错误文案（HTTP 异常只报状态码，不读 body/reason）
+        def http_error(req, timeout=None):
+            raise backend.urllib.error.HTTPError(
+                req.full_url, 401, "Bearer sk-SECRET-abcdef5678 leaked", {}, None)
+
+        with mock.patch.object(backend.urllib.request, "urlopen", http_error):
+            with self.assertRaises(RuntimeError) as ctx:
+                be.chat(msgs)
+        self.assertNotIn("SECRET", str(ctx.exception), "异常泄漏了真实 key")
+
+        # ④ 空响应 / 形状不符 → 报错，绝不返回空串冒充成功
+        for bad in ({"choices": []}, {"choices": [{"message": {"content": ""}}]},
+                    {"unexpected": 1}):
+            with mock.patch.object(backend.urllib.request, "urlopen",
+                                   lambda req, timeout=None, b=bad: mock.MagicMock(
+                                       __enter__=lambda s: s,
+                                       __exit__=lambda s, *a: False,
+                                       read=lambda b=b: json.dumps(b).encode("utf-8"))):
+                with self.assertRaises(RuntimeError):
+                    be.chat(msgs)
+
+        # ⑤ Local：ollama OpenAI 兼容端点 + 模型空时从 /api/tags 诚实取第一个
+        local = backend.LocalBackend({})
+        calls: list[str] = []
+
+        def local_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            if req.full_url.endswith("/api/tags"):
+                data = {"models": [{"name": "qwen2:7b"}]}
+            else:
+                data = fake_reply
+            return mock.MagicMock(
+                __enter__=lambda s: s, __exit__=lambda s, *a: False,
+                read=lambda d=data: json.dumps(d).encode("utf-8"))
+
+        with mock.patch.object(backend.urllib.request, "urlopen", local_urlopen):
+            got = local.chat(msgs)
+        self.assertEqual(got, '{"points":[]}')
+        self.assertTrue(any(u.endswith("/v1/chat/completions") for u in calls),
+                        "本地未走 OpenAI 兼容 /v1/chat/completions")
+
+        # ⑥ 端到端：LLM 模式精读真调后端，产出核心（不再是 NotImplementedError）
+        refine_src = Path(self.tmp) / "llm_src.md"
+        refine_src.write_text("# 隐私\n\n本机处理不外传。\n\n## 架构\n\n五层架构冻结内核。\n",
+                              encoding="utf-8")
+        outdir = Path(self.tmp) / "llm_out"
+        llm_reply = json.dumps({"points": [
+            {"text": "本机处理不外传", "block": 2},
+            {"text": "五层架构冻结内核", "block": 5},
+        ]})
+        cap = {"tools": {"backend": {"kind": "cloud"}}, "capability": "available"}
+
+        class FakeLLM(backend.Backend):
+            kind = "cloud"
+            def chat(self, messages):
+                return llm_reply
+
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be_llm.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"mode": backend.MODE_LLM, "kind": "cloud",
+                                 "endpoint": "https://x/v1", "api_key": "k"})
+            refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                            "events": [], "output": "", "error": None}
+            refine._run_refine_inner(str(refine_src), "", str(outdir), FakeLLM({}), cap)
+            st = refine.status()
+            self.assertEqual(st["state"], "done",
+                             "LLM 精读失败：%s" % st.get("error"))
+            text = Path(st["output"]).read_text(encoding="utf-8")
+            self.assertIn("本机处理不外传", text)
+            self.assertIn("<!-- anchor:", text, "LLM 产物缺块级锚点")
 
 
 def print_summary(result=None) -> None:
