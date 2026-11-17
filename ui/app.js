@@ -133,11 +133,7 @@
     aboutPython: $("aboutPython"),
     aboutPlatform: $("aboutPlatform"),
     aboutLog: $("aboutLog"),
-    btnOpenAboutLog: $("btnOpenAboutLog"),
-    btnExportLog: $("btnExportLog"),
-    chkErrorsOnly: $("chkErrorsOnly"),
-    logExportStatus: $("logExportStatus"),
-    aboutExportResult: $("aboutExportResult")
+    btnOpenAboutLog: $("btnOpenAboutLog")
   };
 
   // 后端 app.log 路径（来自 /api/state.log_file）；启动即可用，按钮常亮
@@ -579,31 +575,6 @@
     });
   }
 
-  // 把运行日志生成到用户指定的文件：可只保留报错/警告行，便于系统排查。
-  function exportLog() {
-    var only = !!(el.chkErrorsOnly && el.chkErrorsOnly.checked);
-    if (el.logExportStatus) el.logExportStatus.textContent = "正在生成…";
-    if (el.btnExportLog) el.btnExportLog.disabled = true;
-    api("/api/export-log", { errors_only: only }, 120000).then(function (r) {
-      if (el.btnExportLog) el.btnExportLog.disabled = false;
-      if (r && r.cancelled) {
-        if (el.logExportStatus) el.logExportStatus.textContent = "已取消";
-        return;
-      }
-      if (!r || !r.ok) {
-        if (el.logExportStatus) {
-          el.logExportStatus.textContent = "生成失败：" + ((r && r.error) || "未知");
-        }
-        return;
-      }
-      if (el.logExportStatus) el.logExportStatus.textContent = "已生成 " + r.lines + " 行";
-      if (el.aboutExportResult) el.aboutExportResult.textContent = r.path;
-    }).catch(function (err) {
-      if (el.btnExportLog) el.btnExportLog.disabled = false;
-      if (el.logExportStatus) el.logExportStatus.textContent = "生成失败：" + (err.message || err);
-    });
-  }
-
   function showBar(kind, message) {
     el.errorBar.className = "bar " + (kind === "notice" ? "bar-notice" : "bar-error");
     el.errorBar.textContent = message;
@@ -634,19 +605,13 @@
   }
   function clearBar() { el.errorBar.hidden = true; el.errorBar.textContent = ""; }
 
-  // 可选 statusEl：关于页自己有状态栏（首页 errorBar 在切换页面后不可见）
-  function openLogFile(statusEl) {
-    function report(message) {
-      if (statusEl) statusEl.textContent = message;
-      else showError(message);
-    }
-    if (!logFile) { report("日志路径尚未就绪，请稍候重试。"); return; }
+  function openLogFile() {
+    if (!logFile) { showError("日志路径尚未就绪，请稍候重试。"); return; }
     api("/api/open", { path: logFile }, 10000)
       .then(function (r) {
-        if (!r || !r.ok) report("打开日志失败：" + ((r && r.error) || "未知"));
-        else if (statusEl) statusEl.textContent = "已打开日志文件";
+        if (!r || !r.ok) showError("打开日志失败：" + ((r && r.error) || "未知"));
       })
-      .catch(function (err) { report("打开日志失败：" + (err.message || err)); });
+      .catch(function (err) { showError("打开日志失败：" + (err.message || err)); });
   }
 
   function setState(name) {
@@ -2070,10 +2035,7 @@
       el.btnOpenLogSettings.addEventListener("click", function () { openLogFile(); });
     }
     if (el.btnOpenAboutLog) {
-      el.btnOpenAboutLog.addEventListener("click", function () {
-        if (el.logExportStatus) el.logExportStatus.textContent = "";
-        openLogFile(el.logExportStatus);
-      });
+      el.btnOpenAboutLog.addEventListener("click", function () { openLogFile(); });
     }
     if (el.btnCheckUpdate) {
       el.btnCheckUpdate.addEventListener("click", function () { checkUpdate(); });
@@ -2083,9 +2045,6 @@
     }
     if (el.btnUpdateCancel) {
       el.btnUpdateCancel.addEventListener("click", function () { cancelUpdate(); });
-    }
-    if (el.btnExportLog) {
-      el.btnExportLog.addEventListener("click", function () { exportLog(); });
     }
     if (el.btnOpenSettingsFile) {
       el.btnOpenSettingsFile.addEventListener("click", function () {

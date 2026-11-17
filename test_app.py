@@ -1294,13 +1294,21 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("/api/update", js, "前端未调用一键更新接口")
         self.assertIn("/api/update", src, "后端缺少一键更新路由")
 
-        # ③ 首页「输出与选项」移除打开日志按钮，功能迁到关于页运行日志区
+        # ③ 首页「输出与选项」移除打开日志按钮，功能迁到关于页系统日志区
         self.assertNotIn('id="btnOpenLog"', html,
                          "首页仍保留打开日志文件按钮（应移到关于页）")
         self.assertNotIn("btnOpenLog:", js, "app.js 仍注册已删除的首页日志按钮")
-        self.assertIn('id="btnOpenAboutLog"', html, "关于页运行日志缺少打开文件按钮")
-        self.assertIn('id="btnExportLog"', html, "关于页运行日志缺少生成指定文件按钮")
-        self.assertIn('id="chkErrorsOnly"', html, "缺少「仅导出报错行」选项")
+        self.assertIn('id="btnOpenAboutLog"', html, "关于页系统日志缺少打开按钮")
+        # v0.6.1 界面调整：整条「生成指定文件 / 仅报错 / 状态 / 导出路径」
+        # 导出栏已移除；「日志文件」更名为「系统日志」，打开按钮并入日志项同行
+        self.assertNotIn('id="btnExportLog"', html, "关于页仍保留生成指定文件按钮")
+        self.assertNotIn('id="chkErrorsOnly"', html, "关于页仍保留仅报错选项")
+        self.assertNotIn('id="logExportStatus"', html, "关于页仍保留日志状态栏")
+        self.assertNotIn('id="aboutExportResult"', html, "关于页仍保留导出路径回显")
+        self.assertNotIn("function exportLog", js, "app.js 仍保留已移除的导出日志函数")
+        self.assertNotIn('"已打开日志文件"', js, "app.js 仍保留已移除的打开成功提示")
+        self.assertIn("<span>系统日志</span>", html, "「日志文件」未更名为「系统日志」")
+        self.assertIn('class="about-log-row"', html, "系统日志项缺少同行布局")
 
         # ④ 检查更新接口：离线也要诚实降级，但下载链接始终可用
         status, upd = srv.get_json("/api/check-update")
@@ -3334,8 +3342,13 @@ class AppContractTest(unittest.TestCase):
 
         # ⑤ 冻结契约：test_06 / test_11 与原主流水线不得被本轮改动碰过
         extract_src = (ROOT / "extract.py").read_text(encoding="utf-8")
-        # v0.6.0：S8 可信提纯能力落地，版本号随发版升号（0.5.0 → 0.6.0）
-        self.assertIn('__version__ = "0.6.0"', extract_src, "版本号未升到 0.6.0")
+        # v0.6.0：S8 可信提纯能力落地，版本号随发版升号（0.5.0 → 0.6.0）。
+        # 2026-11-17：改为从真源动态读取 + 下限断言，避免每次补丁升号都要改测试。
+        # 版本号唯一真源 = extract.py::__version__，具体版本由 tools/check_release.py 守。
+        ver = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', extract_src, re.M)
+        self.assertTrue(ver, "extract.py 缺少版本号真源")
+        self.assertGreaterEqual(tuple(int(x) for x in ver.group(1).split(".")[:3]),
+                                (0, 6, 0), "版本号低于 S8 基线 0.6.0")
         self.assertIn("if args.dry_run:", extract_src, "extract.py 冻结主流水线被改动")
 
         # ⑥ 真实 HTTP：GET 检查更新 200、POST 同路径仍 404（锁死根因）、上传落盘

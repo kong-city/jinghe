@@ -998,16 +998,20 @@ button, input { font-family: inherit; }
   .about-grid-update { grid-template-columns: 1fr; }
 }
 
-.export-check {
-  display: inline-flex;
+/* 关于页系统日志：路径 + 「打开」按钮同行（v0.6.1 界面调整） */
+.about-log-row {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #6B6A65;
-  white-space: nowrap;
-  cursor: pointer;
+  gap: 8px;
+  min-width: 0;
 }
-.export-check input { width: 15px; height: 15px; }
+.about-log-row b { flex: 1 1 auto; min-width: 0; }
+.btn-mini {
+  flex: 0 0 auto;
+  padding: 3px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
 
 .about-item b.mono { font-size: 12px; }
 
