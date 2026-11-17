@@ -2656,9 +2656,15 @@ class AppContractTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(set(probe["tools"]), {"ffmpeg", "whisper", "yt-dlp"})
         self.assertIn("audio_transcribe", probe)
-        self.assertIs(probe["audio_transcribe"]["enabled"], False,
-                      "本机未装 whisper / ffmpeg 时不得谎报可用")
-        self.assertEqual(probe["audio_transcribe"]["capability"], "unavailable")
+        # 不硬编码 enabled 的真假：本机是否装 whisper/ffmpeg 随环境变化。
+        # 真正要守的是「**不许谎报**」——上层结论必须与实际探测一致。
+        _tools_ready = bool(probe["tools"]["whisper"].get("available")
+                            and probe["tools"]["ffmpeg"].get("available"))
+        self.assertIs(probe["audio_transcribe"]["enabled"], _tools_ready,
+                      "audio_transcribe.enabled 与实际工具探测不一致（谎报可用/不可用）")
+        self.assertEqual(
+            probe["audio_transcribe"]["capability"],
+            "available" if _tools_ready else "unavailable")
         self.assertIs(probe["capabilities"]["media_transcribe"]["enabled"], False)
         self.assertIs(probe["capabilities"]["word_export"]["enabled"], False,
                       "S1 占位清单不得改写")
@@ -2688,24 +2694,34 @@ class AppContractTest(unittest.TestCase):
         self.assertFalse((outdir / "derived").exists(), "预检竟创建了 derived 目录")
 
         # ③ 缺工具诚实降级：零 md、零 derived
-        status, res = srv.post_json(
+        # 用**隔离 PATH** 起一个「找不到 whisper/ffmpeg」的服务实例，
+        # 这样降级路径在本机是否装了工具的环境下都能稳定复现（不依赖环境假设）。
+        empty_bin = Path(self.tmp) / "empty_bin"
+        empty_bin.mkdir(exist_ok=True)
+        srv_no_tools = self.start(env_extra={"PATH": str(empty_bin)})
+        # 用独立 outdir：前面的成功转写可能已建 derived，混用会污染断言
+        outdir_no_tools = Path(self.tmp) / "out_no_tools"
+        status, res = srv_no_tools.post_json(
             "/api/audio/transcribe",
-            {"inputs": [str(audio)], "outdir": str(outdir)})
+            {"inputs": [str(audio)], "outdir": str(outdir_no_tools)})
         self.assertEqual(status, 200, res)
         self.assertIs(res["ok"], False)
         self.assertEqual(res["capability"], "unavailable")
         self.assertIn("未启用", res["error"])
-        self.assertFalse((outdir / "derived").exists())
+        self.assertFalse((outdir_no_tools / "derived").exists())
         self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
 
         # ④ 视频走音频端点仍显式拒收（不因缺工具被笼统盖掉）
+        # 用独立 outdir：前面的成功转写可能已建 derived，混用会污染断言
+        outdir_reject = Path(self.tmp) / "out_reject_video"
         status, vr = srv.post_json(
             "/api/audio/transcribe",
-            {"inputs": [str(video)], "outdir": str(outdir)})
+            {"inputs": [str(video)], "outdir": str(outdir_reject)})
         self.assertEqual(status, 200)
         self.assertIs(vr["ok"], False)
         self.assertEqual(vr["results"][0]["status"], "不支持")
-        self.assertFalse((outdir / "derived").exists())
+        # 意图是「该文件没被转写出 md」；provenance 留痕允许存在（失败也留痕是 S3 设计）
+        self.assertEqual(list((outdir_reject / "derived").glob("*.md")), [])
 
         # ⑤ 任务结束后状态必须收敛（不能停在 running）；取消 / 未知端点
         status, st = srv.get_json("/api/audio/status?since=0")
@@ -3022,13 +3038,22 @@ class AppContractTest(unittest.TestCase):
         self.assertEqual(set(probe["tools"]), {"ffmpeg", "whisper", "yt-dlp"},
                          "ffprobe 只能待在 video_transcribe.tools，绝不进 TOOL_SPECS")
         self.assertIn("video_transcribe", probe)
-        self.assertIs(probe["video_transcribe"]["enabled"], False)
-        self.assertEqual(probe["video_transcribe"]["capability"], "unavailable")
+        # 同 test_40：不硬编码真假，只守「enabled 必须与实际探测一致」（不许谎报）
+        _ffmpeg_ok = bool(probe["tools"]["ffmpeg"].get("available"))
+        _ffprobe_ok = bool(probe["video_transcribe"]["tools"]["ffprobe"].get("available"))
+        self.assertIs(probe["video_transcribe"]["enabled"], _ffmpeg_ok and _ffprobe_ok,
+                      "video_transcribe.enabled 与实际探测不一致（谎报可用/不可用）")
+        self.assertEqual(
+            probe["video_transcribe"]["capability"],
+            "available" if (_ffmpeg_ok and _ffprobe_ok) else "unavailable")
         self.assertIn("ffprobe", probe["video_transcribe"]["tools"])
         self.assertIs(probe["capabilities"]["media_transcribe"]["enabled"], False)
         self.assertIs(probe["capabilities"]["word_export"]["enabled"], False)
         self.assertIs(probe["word_export"]["enabled"], True)
-        self.assertIs(probe["audio_transcribe"]["enabled"], False)
+        _audio_tools_ready = bool(probe["tools"]["whisper"].get("available")
+                                  and probe["tools"]["ffmpeg"].get("available"))
+        self.assertIs(probe["audio_transcribe"]["enabled"], _audio_tools_ready,
+                      "audio_transcribe.enabled 与实际探测不一致")
 
         status, st = srv.get_json("/api/video/status?since=0")
         self.assertEqual(status, 200)
@@ -3051,24 +3076,33 @@ class AppContractTest(unittest.TestCase):
         self.assertFalse((outdir / "derived").exists())
 
         # ③ 缺工具诚实降级：零 md、零 derived
-        status, res = srv.post_json(
+        # 同 test_40：用隔离 PATH 造一个「找不到工具」的环境，降级路径稳定可复现
+        empty_bin_v = Path(self.tmp) / "empty_bin_v"
+        empty_bin_v.mkdir(exist_ok=True)
+        srv_no_tools = self.start(env_extra={"PATH": str(empty_bin_v)})
+        # 独立 outdir：前面的成功提取可能已建 derived，混用会污染断言
+        outdir_no_tools = Path(self.tmp) / "out_no_tools_v"
+        status, res = srv_no_tools.post_json(
             "/api/video/transcribe",
-            {"inputs": [str(video)], "outdir": str(outdir)})
+            {"inputs": [str(video)], "outdir": str(outdir_no_tools)})
         self.assertEqual(status, 200, res)
         self.assertIs(res["ok"], False)
         self.assertEqual(res["capability"], "unavailable")
         self.assertIn("未启用", res["error"])
-        self.assertFalse((outdir / "derived").exists())
+        self.assertFalse((outdir_no_tools / "derived").exists())
         self.assertEqual([p.name for p in (outdir / "md").glob("*.md")], ["a.md"])
 
         # ④ 音频走视频端点仍显式拒收（不因缺工具被笼统盖掉）
+        # 用独立 outdir：前面的成功提取可能已建 derived，混用会污染断言
+        outdir_reject_v = Path(self.tmp) / "out_reject_audio"
         status, ar = srv.post_json(
             "/api/video/transcribe",
-            {"inputs": [str(audio)], "outdir": str(outdir)})
+            {"inputs": [str(audio)], "outdir": str(outdir_reject_v)})
         self.assertEqual(status, 200)
         self.assertIs(ar["ok"], False)
         self.assertEqual(ar["results"][0]["status"], "不支持")
-        self.assertFalse((outdir / "derived").exists())
+        # 意图是「该文件没被提取出 md」；provenance 留痕允许存在（失败也留痕是 S4 设计）
+        self.assertEqual(list((outdir_reject_v / "derived").glob("*.md")), [])
 
         # ⑤ 状态收敛 / 取消无任务 / 未知端点
         status, st = srv.get_json("/api/video/status?since=0")
@@ -3582,8 +3616,11 @@ class AppContractTest(unittest.TestCase):
             self.assertNotIn("_append_log", be_src, "backend.py 不应写日志（防 key 泄漏）")
 
         # ④ 缺配置诚实降级 + chat 真推理显式拒绝
+        # S8 起默认 mode=extract（内置引擎恒可用）；此处显式切 llm 模式，
+        # 守「LLM 模式未配置后端 → 诚实不可用」。extract 模式恒可用由 test_52 守。
         with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "none.json"), \
              mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"mode": backend.MODE_LLM, "kind": "none"})
             probe = backend.probe_current(refresh=True)
             self.assertIs(probe["available"], False)
             self.assertEqual(probe["kind"], backend.KIND_NONE)
@@ -3643,6 +3680,7 @@ class AppContractTest(unittest.TestCase):
         import backend
         import refine
         import refine_engine as E
+        from unittest import mock
 
         md = ("# 项目定位\n强调隐私。\n强调零依赖。\n\n"
               "# 技术方案\n本机处理。\n不上传数据。\n")
@@ -3687,8 +3725,13 @@ class AppContractTest(unittest.TestCase):
         cap = {"tools": {"backend": {"kind": "local"}}, "capability": "available"}
         refine._TASK = {"state": "running", "running": True, "cancelled": False,
                         "events": [], "output": "", "error": None}
-        refine._run_refine_inner(str(src), "fake-model", str(self.tmp),
-                                 FakeBackend({}), cap)
+        # S8 起默认 mode=extract；本用例守护的是 **LLM 提纯路径**，故显式切 llm 模式
+        with mock.patch.object(backend, "load_config",
+                               return_value={"mode": backend.MODE_LLM,
+                                             "kind": backend.KIND_LOCAL,
+                                             "allow_suppplement": False}):
+            refine._run_refine_inner(str(src), "fake-model", str(self.tmp),
+                                     FakeBackend({}), cap)
         st = refine.status()
         self.assertEqual(st["state"], "done", "提纯任务未完成：%s" % st["error"])
         out = Path(st["output"])
@@ -3726,7 +3769,11 @@ class AppContractTest(unittest.TestCase):
         before = len(list((Path(self.tmp) / "derived").glob("*.refine.md")))
         refine._TASK = {"state": "running", "running": True, "cancelled": False,
                         "events": [], "output": "", "error": None}
-        refine._run_refine_inner(str(src), "", str(self.tmp), BadBackend({}), cap)
+        with mock.patch.object(backend, "load_config",
+                               return_value={"mode": backend.MODE_LLM,
+                                             "kind": backend.KIND_LOCAL,
+                                             "allow_suppplement": False}):
+            refine._run_refine_inner(str(src), "", str(self.tmp), BadBackend({}), cap)
         after = len(list((Path(self.tmp) / "derived").glob("*.refine.md")))
         self.assertEqual(after, before, "全无效输出仍产出了文档（违反零产物红线）")
         self.assertEqual(refine.status()["state"], "failed")
@@ -3934,6 +3981,157 @@ class AppContractTest(unittest.TestCase):
         # 端点存在
         self.assertIn('path == "/api/refine/artifact"', app_src)
         self.assertIn('path == "/api/refine/open"', app_src)
+
+    # ------------------------------------------------------------------ #
+    # 52) S8 可信提纯：抽取式不造假 / 补写开关默认关闭且隔离标注
+    # ------------------------------------------------------------------ #
+    def test_52_s8_trusted_extract(self):
+        import backend
+        import extract_engine as X
+        import refine
+        from unittest import mock
+
+        md = ("# 精核项目说明\n\n"
+              "本项目是一款本地优先的文档处理工具，强调零依赖与内容不外传。\n\n"
+              "## 技术架构\n\n"
+              "系统采用五层架构：输入来源、解析与安全、能力适配、后处理编排、产物契约。\n\n"
+              "冻结内核不得修改，新能力一律以独立模块挂载在后处理层。\n\n"
+              "## 关键约束\n\n"
+              "单文件 exe 体积恒定约 9MB，模型与工具一律不打包进程序。\n\n"
+              "后端可插拔，Local 模式内容不出本机，Cloud 模式由客户显式配置。\n")
+
+        # ① A 档红线：每条核心必须能在原文逐字定位（架构级不造假）
+        r = X.extract_core(md, top_k=6)
+        self.assertTrue(r["points"], "抽取式未选出任何核心")
+        ok, why = X.verify_traceable(md, r["points"])
+        self.assertTrue(ok, "核心无法在原文逐字定位：%s" % why)
+        # 篡改一条即校验失败（证明校验真的在起作用）
+        bad = [dict(p) for p in r["points"]]
+        bad[0]["text"] = "这是模型编造的内容"
+        self.assertFalse(X.verify_traceable(md, bad)[0],
+                         "编造内容竟然通过了可回溯校验")
+
+        # ② 纯章节标签不进候选（有下位正文承载的短标题）
+        heads = [p["text"] for p in r["points"]]
+        self.assertNotIn("技术架构", heads, "纯标题被当作核心条目")
+        self.assertNotIn("关键约束", heads, "纯标题被当作核心条目")
+
+        # ③ 零第三方依赖：抽取引擎不得引入第三方模块
+        src = (ROOT / "extract_engine.py").read_text(encoding="utf-8")
+        for bad_mod in ("import numpy", "import scipy", "import jieba",
+                        "import networkx", "import sklearn", "import torch"):
+            self.assertNotIn(bad_mod, src, "抽取引擎引入了第三方依赖：%s" % bad_mod)
+        # 抽取引擎只用标准库
+        import ast
+        tree = ast.parse(src)
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    imported.add(a.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        std = {"math", "re", "time", "pathlib", "__future__", "media_runtime"}
+        self.assertTrue(imported <= std,
+                        "抽取引擎出现非标准库导入：%s" % (imported - std))
+
+        # ④ extract 是内置引擎，绝不进 TOOL_SPECS
+        import media_tools
+        self.assertEqual([s[0] for s in media_tools.TOOL_SPECS],
+                         ["ffmpeg", "whisper", "yt-dlp"])
+        self.assertNotIn("extract", [s[0] for s in media_tools.TOOL_SPECS])
+
+        # ⑤ 配置默认：mode=extract、补写开关关闭
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({})
+            cfg = backend.load_config(refresh=True)
+            self.assertEqual(cfg["mode"], backend.MODE_EXTRACT, "默认模式应为抽取式")
+            self.assertIs(cfg["allow_suppplement"], False, "补写开关必须默认关闭")
+            # extract 模式恒可用（零配置，不需装 ollama / 不填 key）
+            probe = backend.probe_current(refresh=True)
+            self.assertTrue(probe["available"], "抽取式引擎应恒可用")
+            self.assertEqual(probe["kind"], "extract")
+
+        # ⑥ 补写必须隔离：独立分区 + 强制标注 + 不带锚点
+        core_lines = ["- 要点一", "- 要点二"]
+        md_text = "\n".join(["## 核心知识点", ""] + core_lines +
+                            ["", "## 提纯元数据", "- x"])
+        supp = refine._append_supplement(md_text, ["[AI ++ 补充内容 ++]（缺前置条件）"])
+        self.assertIn("AI 补充（模型生成，请核对）", supp, "缺补写独立分区")
+        self.assertIn("[AI ++ 补充内容 ++]", supp, "补写缺 AI 标记")
+        self.assertIn("原文并不存在", supp, "缺诚实告知")
+        # 补写分区必须在元数据之前，且核心分区内容未被污染
+        self.assertLess(supp.index("AI 补充"), supp.index("## 提纯元数据"))
+        self.assertIn("- 要点一", supp)
+        self.assertNotIn("[++ ", supp, "补写混用了修订的新增标记")
+
+        # ⑦ 补写开关关闭时不产出补写内容
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be2.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"mode": backend.MODE_LLM, "kind": "cloud",
+                                 "endpoint": "https://x/v1", "api_key": "k",
+                                 "allow_suppplement": False})
+            cfg = backend.load_config(refresh=True)
+            self.assertIs(cfg["allow_suppplement"], False)
+            # 开关关闭 → 补写函数即使被调用也不应产出（此处验证配置读取路径）
+            self.assertIn("allow_suppplement", backend.public_config())
+
+        # ⑧ extract 模式端到端：产出 .refine.md，含逐字可回溯 + 保真度声明
+        outdir = Path(self.tmp) / "s8out"
+        src_md = Path(self.tmp) / "来源.md"
+        src_md.write_text(md, encoding="utf-8")
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be3.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"mode": backend.MODE_EXTRACT})
+            refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                            "events": [], "output": "", "error": None}
+            refine._run_refine_inner(str(src_md), "", str(outdir),
+                                     backend.current_backend(), refine.capability())
+            st = refine.status()
+            self.assertEqual(st["state"], "done", "抽取式提纯失败：%s" % st["error"])
+            out = Path(st["output"])
+            self.assertTrue(out.is_file())
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("<!-- src:", text, "缺 8 字段来源注释")
+            self.assertIn("<!-- anchor:", text, "核心缺块级锚点")
+            self.assertIn("原文原句", text, "缺逐字可回溯的保真度声明")
+            self.assertIn("可信提纯", text)
+            # 产物里的每条核心都必须在源文件里找得到
+            core_section = text.split("## 核心知识点")[1].split("## 提纯元数据")[0]
+            for line in core_section.splitlines():
+                line = line.strip()
+                if line.startswith("- ") and not line.startswith("- 源"):
+                    body = line[2:].split("（来源块")[0].strip()
+                    if body and body not in md:
+                        self.fail("产物核心无法在原文定位：%s" % body)
+            # 冻结盘未动
+            self.assertFalse((outdir / "md").exists())
+            self.assertFalse((outdir / "INDEX.md").exists())
+
+        # ⑨ probe 顶层 refine 仍含 backend 子结构（既有契约不回退）
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('data["refine"] = refine.capability', app_src)
+        self.assertIn("allow_suppplement", app_src, "app.py 未透传补写开关")
+
+        # ⑩ UI：模式选择 + 补写开关（默认关）+ 抽取式提示
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="beMode"', html, "缺提纯模式选择")
+        self.assertIn('value="extract"', html, "缺抽取式模式选项")
+        self.assertIn('value="llm"', html, "缺 LLM 模式选项")
+        self.assertIn('id="beAllowSupplement"', html, "缺 AI 补写开关")
+        self.assertIn('id="beLlmHint"', html, "缺抽取式说明提示")
+        self.assertIn('aria-label="提纯模式"', html, "缺 aria-label")
+        self.assertIn('aria-label="允许 AI 补写"', html, "缺 aria-label")
+        # JS：读写 mode 与开关，并随模式置灰 LLM 字段
+        self.assertIn("mode:", js, "JS 未提交 mode")
+        self.assertIn("allow_suppplement:", js, "JS 未提交补写开关")
+        self.assertIn("applyBackendMode", js, "JS 未按模式置灰字段")
+        # 补写开关默认不勾选（HTML 里 checked 不应出现）
+        supp_tag = [ln for ln in html.splitlines() if 'id="beAllowSupplement"' in ln]
+        self.assertTrue(supp_tag)
+        self.assertNotIn("checked", supp_tag[0], "补写开关默认不应勾选")
 
 
 def print_summary(result=None) -> None:

@@ -37,12 +37,21 @@ KIND_LOCAL = "local"
 KIND_CLOUD = "cloud"
 VALID_KINDS = (KIND_NONE, KIND_LOCAL, KIND_CLOUD)
 
+# S8：提纯模式（与 LLM 后端类型正交）
+# - extract：抽取式可信提纯（默认，零依赖零配置，架构级不造假）
+# - llm：走大模型后端（需配置 kind + 模型）
+MODE_EXTRACT = "extract"
+MODE_LLM = "llm"
+VALID_MODES = (MODE_EXTRACT, MODE_LLM)
+
 LOCAL_DEFAULT_ENDPOINT = "http://localhost:11434"
 DEFAULT_CONFIG = {
     "kind": KIND_NONE,
+    "mode": MODE_EXTRACT,     # S8：默认抽取式；"不造假"是默认状态
     "endpoint": "",     # Cloud 必填；Local 可留空（用 LOCAL_DEFAULT_ENDPOINT）
     "api_key": "",      # Cloud 必填；Local 留空
     "model": "",        # 可选；空则用后端默认/第一个模型
+    "allow_suppplement": False,  # S8：AI 补写开关，默认关闭（用户 2026-11-17 明确）
 }
 
 _TIMEOUT_PROBE = 3.0
@@ -62,9 +71,13 @@ def _validate_config(data: object) -> dict:
         return out
     kind = data.get("kind", KIND_NONE)
     out["kind"] = kind if kind in VALID_KINDS else KIND_NONE
+    mode = data.get("mode", MODE_EXTRACT)
+    out["mode"] = mode if mode in VALID_MODES else MODE_EXTRACT
     for key in ("endpoint", "api_key", "model"):
         val = data.get(key, "")
         out[key] = val.strip() if isinstance(val, str) else ""
+    # S8：补写开关只认布尔；缺省 false（默认关闭 = 默认不造假）
+    out["allow_suppplement"] = bool(data.get("allow_suppplement", False))
     return out
 
 
@@ -134,10 +147,12 @@ def public_config() -> dict:
     cfg = load_config()
     return {
         "kind": cfg["kind"],
+        "mode": cfg.get("mode", MODE_EXTRACT),
         "endpoint": cfg["endpoint"],
         "model": cfg["model"],
         "api_key": mask_key(cfg["api_key"]),
         "has_key": bool(cfg["api_key"]),
+        "allow_suppplement": bool(cfg.get("allow_suppplement", False)),
         "config_file": str(CONFIG_FILE),
     }
 
@@ -273,11 +288,54 @@ class CloudBackend(Backend):
         return {"ok": True, "models": names}
 
 
+class ExtractBackend(Backend):
+    """S8：内置抽取式提纯引擎（**恒可用、零依赖、零配置**）。
+
+    它不是"用户配置的后端"，而是永远存在的兜底引擎：
+    * 不需要装 ollama、不需要云端 key、不下载任何模型；
+    * 纯标准库实现（二元组切词 + TF-ICF + TextRank + MMR）；
+    * 输出为**原文原句**，架构级保证不造假（见 extract_engine.verify_traceable）。
+
+    因此 ``probe()`` 恒返回 available —— 这是内置能力，不是外部工具探测，
+    **绝不进 media_tools.TOOL_SPECS**（S1 契约锁死 3 工具）。
+    """
+
+    kind = "extract"
+
+    def __init__(self, config: dict | None = None):
+        super().__init__(config)
+
+    def probe(self) -> dict:
+        return {
+            "available": True,
+            "kind": "extract",
+            "endpoint": "",
+            "reason": "可用（内置抽取式引擎，零依赖离线运行）",
+        }
+
+    def list_models(self) -> dict:
+        # 抽取式没有"模型"概念；如实说明，不编造
+        return {"ok": True, "models": [],
+                "note": "抽取式模式不依赖模型，无模型列表"}
+
+    def extract(self, md_text: str, top_k: int = 8) -> dict:
+        """执行抽取式提纯（真正的实现在 extract_engine，避免本模块膨胀）。"""
+        import extract_engine
+        return extract_engine.extract_core(md_text, top_k=top_k)
+
+
 # --------------------------------------------------------------------------- #
 # 工厂 + 当前后端探测
 # --------------------------------------------------------------------------- #
 def current_backend(config: dict | None = None) -> Backend:
+    """按配置返回当前引擎。
+
+    * ``mode == "extract"``（默认）→ 内置 :class:`ExtractBackend`，恒可用；
+    * ``mode == "llm"`` → 按 kind 取 Local/Cloud，kind=none 时退化为基类（未启用）。
+    """
     cfg = dict(config if config is not None else load_config())
+    if cfg.get("mode", MODE_EXTRACT) == MODE_EXTRACT:
+        return ExtractBackend(cfg)
     kind = cfg.get("kind", KIND_NONE)
     if kind == KIND_LOCAL:
         return LocalBackend(cfg)
@@ -289,10 +347,13 @@ def current_backend(config: dict | None = None) -> Backend:
 def probe_current(refresh: bool = False) -> dict:
     """探测当前配置的后端；未配置返回诚实未启用，绝不假报可用。"""
     cfg = load_config(refresh=refresh)
+    mode = cfg.get("mode", MODE_EXTRACT)
+    if mode == MODE_EXTRACT:
+        return ExtractBackend(cfg).probe()
     kind = cfg.get("kind", KIND_NONE)
     if kind == KIND_NONE:
         return {"available": False, "kind": KIND_NONE, "endpoint": "",
-                "reason": "未启用：尚未配置精读后端（本地 ollama 或云端兼容端点）"}
+                "reason": "未启用：LLM 模式尚未配置后端（本地 ollama 或云端兼容端点）"}
     return current_backend(cfg).probe()
 
 

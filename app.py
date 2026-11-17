@@ -2412,12 +2412,15 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/refine/cancel":
                 self._send_json(refine.cancel())
             elif path == "/api/refine/backend":
-                # S7b：保存后端配置。写入真 key，但回显一律走 public_config() 脱敏。
+                # S7b/S8：保存后端配置。写入真 key，但回显一律走 public_config() 脱敏。
+                # S8 新增 mode（extract|llm）与 allow_suppplement（AI 补写开关，默认关）。
                 backend.save_config({
                     "kind": str(data.get("kind") or ""),
+                    "mode": str(data.get("mode") or ""),
                     "endpoint": str(data.get("endpoint") or ""),
                     "api_key": str(data.get("api_key") or ""),
                     "model": str(data.get("model") or ""),
+                    "allow_suppplement": bool(data.get("allow_suppplement", False)),
                 })
                 self._send_json({"ok": True, "config": backend.public_config()})
             elif path == "/api/refine/open":

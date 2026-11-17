@@ -111,6 +111,8 @@
     revisePreviewMd: $("revisePreviewMd"),
     btnOpenReviseHtml: $("btnOpenReviseHtml"),
     beKind: $("beKind"),
+    beMode: $("beMode"),
+    beAllowSupplement: $("beAllowSupplement"),
     beEndpoint: $("beEndpoint"),
     beApiKey: $("beApiKey"),
     beModel: $("beModel"),
@@ -1445,21 +1447,38 @@
   function loadBackendForm() {
     api("/api/refine/backend", undefined, 10000).then(function (r) {
       var cfg = (r && r.config) || {};
+      if (el.beMode) el.beMode.value = cfg.mode || "extract";
       if (el.beKind) el.beKind.value = cfg.kind || "none";
       if (el.beEndpoint) el.beEndpoint.value = cfg.endpoint || "";
       if (el.beApiKey) el.beApiKey.value = cfg.api_key || "";  // 掩码，真 key 不回显
       if (el.beModel) el.beModel.value = cfg.model || "";
+      if (el.beAllowSupplement) el.beAllowSupplement.checked = !!cfg.allow_suppplement;
+      applyBackendMode();
     }).catch(function () {
       if (el.backendStatus) el.backendStatus.textContent = "读取后端配置失败";
     });
   }
 
+  // S8：抽取式模式无需端点/密钥/模型；把这些字段置灰并给出说明，避免误填
+  function applyBackendMode() {
+    var mode = (el.beMode && el.beMode.value) || "extract";
+    var llm = (mode === "llm");
+    var fields = [el.beKind, el.beEndpoint, el.beApiKey, el.beModel];
+    for (var i = 0; i < fields.length; i += 1) {
+      if (fields[i]) fields[i].disabled = !llm;
+    }
+    var tip = document.getElementById("beLlmHint");
+    if (tip) tip.hidden = llm;
+  }
+
   function saveBackendCfg(thenProbe) {
     var payload = {
       kind: (el.beKind && el.beKind.value) || "none",
+      mode: (el.beMode && el.beMode.value) || "extract",
       endpoint: (el.beEndpoint && el.beEndpoint.value || "").trim(),
       api_key: (el.beApiKey && el.beApiKey.value || "").trim(),
-      model: (el.beModel && el.beModel.value || "").trim()
+      model: (el.beModel && el.beModel.value || "").trim(),
+      allow_suppplement: !!(el.beAllowSupplement && el.beAllowSupplement.checked)
     };
     if (el.backendStatus) el.backendStatus.textContent = "保存中…";
     api("/api/refine/backend", payload, 10000).then(function (r) {
@@ -1469,6 +1488,9 @@
       }
       // 回显是掩码；把输入框也刷成掩码，避免用户以为真 key 被清空
       if (el.beApiKey && r.config) el.beApiKey.value = r.config.api_key || "";
+      if (el.beAllowSupplement && r.config) {
+        el.beAllowSupplement.checked = !!r.config.allow_suppplement;
+      }
       if (el.backendStatus) el.backendStatus.textContent = "已保存";
       if (thenProbe) {
         api("/api/tools/probe", { refresh: true }, 15000).then(function (p) {
@@ -1967,6 +1989,7 @@
     // S7d：精读 / 修订 / 后端配置
     if (el.btnSaveBackend) el.btnSaveBackend.addEventListener("click", function () { saveBackendCfg(false); });
     if (el.btnProbeBackend) el.btnProbeBackend.addEventListener("click", function () { saveBackendCfg(true); });
+    if (el.beMode) el.beMode.addEventListener("change", function () { applyBackendMode(); });
     if (el.btnPickRefine) el.btnPickRefine.addEventListener("click", function () { pickRefineSource(false); });
     if (el.btnPickRevise) el.btnPickRevise.addEventListener("click", function () { pickRefineSource(true); });
     if (el.btnStartRefine) el.btnStartRefine.addEventListener("click", function () {

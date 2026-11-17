@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import re
+import json
 import time
 from pathlib import Path
 
@@ -171,6 +172,10 @@ def inspect(path: str, refresh: bool = False) -> dict:
 # --------------------------------------------------------------------------- #
 import threading as _threading
 import refine_engine as _engine
+import extract_engine as _extract  # S8：抽取式可信提纯（纯标准库，零依赖）
+
+# S8：抽取式默认入选核心条数
+_EXTRACT_TOP_K = 8
 
 _TASK_LOCK = _threading.Lock()
 _TASK: dict | None = None
@@ -199,7 +204,80 @@ def _run_refine(path: str, model: str, outdir: str, backend_obj, cap: dict) -> N
 
 
 def _run_refine_inner(path: str, model: str, outdir: str, backend_obj, cap: dict) -> None:
-    """提纯任务线程体：全程只读源 md，产物只落 derived/。"""
+    """提纯任务线程体：全程只读源 md，产物只落 derived/。
+
+    S8：按 mode 分流——
+    * ``extract``（默认）：内置抽取式，输出**原文原句**，架构级不造假；
+    * ``llm``：走大模型后端，沿用 S7 的锚点校验路径。
+    """
+    global _TASK
+    try:
+        mode = backend.load_config().get("mode", backend.MODE_EXTRACT)
+        if mode == backend.MODE_EXTRACT:
+            _run_refine_extract(path, outdir, cap)
+            return
+        _run_refine_llm(path, model, outdir, backend_obj, cap)
+    except Exception as exc:
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "提纯失败：%s" % type(exc).__name__
+        _task_add("error", "提纯失败：%s" % type(exc).__name__, 1.0)
+
+
+def _run_refine_extract(path: str, outdir: str, cap: dict) -> None:
+    """S8 抽取式提纯：纯标准库、零依赖、输出原文原句。
+
+    **红线**：产出前用 ``verify_traceable`` 逐条验证「可在原文逐字定位」，
+    对不上即判失败、零产物 —— 这是抽取式「不可能造假」的机器可验证证明。
+    """
+    src = Path(path)
+    _task_add("log", "读取源 md…", 0.08)
+    text = src.read_text(encoding="utf-8", errors="replace")
+    _task_add("log", "抽取式提纯中（TF-ICF + TextRank + MMR）…", 0.35)
+    result = _extract.extract_core(text, top_k=_EXTRACT_TOP_K)
+    points = result.get("points") or []
+    _task_add("log", "入选核心 %d 条" % len(points), 0.7)
+    if not points:
+        _task_add("error", "未选出有效核心，未产出文档", 1.0)
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "未选出有效核心，未产出文档"
+        return
+
+    ok, why = _extract.verify_traceable(text, points)
+    if not ok:
+        _task_add("error", "可回溯校验失败：%s" % why, 1.0)
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "可回溯校验失败：%s" % why
+        return
+
+    before = media_runtime.frozen_snapshot(outdir)
+    meta = {
+        "converter": "抽取式提纯（纯标准库，零依赖离线）",
+        "mode": "可信提纯（抽取式）",
+        "model": "—",
+    }
+    md_text, doc_id = _extract.render_md(src, result, meta)
+    target = media_runtime.ensure_derived(outdir) / (doc_id + REFINE_SUFFIX)
+    target.write_text(md_text, encoding="utf-8")
+    _engine.append_provenance(outdir, {
+        "capability": "refine", "stage": "refine", "doc_id": doc_id,
+        "source": src.name, "backend": "extract", "model": "—",
+        "points": len(points), "skipped": 0, "mode": "extract",
+        "output": target.name, "status": "成功",
+    })
+    frozen_ok = media_runtime.frozen_unchanged(before, outdir)
+    _task_add("log", "产物：%s" % target.name, 0.95)
+    with _TASK_LOCK:
+        _TASK["state"] = "done" if frozen_ok else "failed"
+        _TASK["output"] = str(target)
+        _TASK["error"] = None if frozen_ok else "冻结对账盘被改动（异常）"
+    _task_add("log", "完成" if frozen_ok else "冻结盘校验失败", 1.0)
+
+
+def _run_refine_llm(path: str, model: str, outdir: str, backend_obj, cap: dict) -> None:
+    """S7 LLM 提纯路径（保留）：锚点校验 + 可选 AI 补写。"""
     global _TASK
     try:
         _task_add("log", "开始读取源 md", 0.05)
@@ -253,6 +331,16 @@ def _run_refine_inner(path: str, model: str, outdir: str, backend_obj, cap: dict
                 _TASK["state"] = "cancelled"
                 return
 
+        # S8：AI 补写（**仅在开关开启时**）—— 独立分区、强制标注，不与原文核心混同
+        supplement_lines: list[str] = []
+        cfg = backend.load_config()
+        if cfg.get("allow_suppplement") and cfg.get("mode") == backend.MODE_LLM:
+            _task_add("log", "AI 补写已开启，生成补充内容…", 0.78)
+            supp = _run_supplement(backend_obj, blocks, points)
+            if supp:
+                supplement_lines = supp
+                _task_add("log", "补写 %d 条（已隔离标注）" % len(supp), 0.85)
+
         # 冻结对账盘只读快照
         before = media_runtime.frozen_snapshot(outdir)
         meta = {
@@ -263,12 +351,16 @@ def _run_refine_inner(path: str, model: str, outdir: str, backend_obj, cap: dict
             "converter": "可插拔后端（%s）" % cap["tools"]["backend"].get("kind", "?"),
         }
         md_text, doc_id = _engine.render_md(src, points, meta)
+        if supplement_lines:
+            # 独立分区插在「提纯元数据」之前，物理隔离 + 显式告知
+            md_text = _append_supplement(md_text, supplement_lines)
         target = media_runtime.ensure_derived(outdir) / (doc_id + REFINE_SUFFIX)
         target.write_text(md_text, encoding="utf-8")
         _engine.append_provenance(outdir, {
             "capability": "refine", "stage": "refine", "doc_id": doc_id,
             "source": src.name, "backend": meta["backend_kind"], "model": meta["model"],
             "points": len(points), "skipped": skipped,
+            "supplement": len(supplement_lines),
             "output": target.name, "status": "成功",
         })
         frozen_ok = media_runtime.frozen_unchanged(before, outdir)
@@ -283,6 +375,78 @@ def _run_refine_inner(path: str, model: str, outdir: str, backend_obj, cap: dict
             _TASK["state"] = "failed"
             _TASK["error"] = "提纯失败：%s" % type(exc).__name__
         _task_add("error", "提纯失败：%s" % type(exc).__name__, 1.0)
+
+
+def _run_supplement(backend_obj, blocks: list[dict],
+                    points: list[dict]) -> list[str]:
+    """S8：AI 补写 —— 由模型补上原文没有的内容。
+
+    **诚实边界**：补写内容按定义不在原文里，因此：
+    * **不声明块锚点**（它不对应任何原文块）—— 这是与原文核心最直观的区分；
+    * 强制带 ``[AI ++ … ++]`` 标记（区别于 S7 修订的 ``[++ … ++]``）；
+    * 失败不阻塞主流程（补写是可选增强，失败即无补写内容）。
+    """
+    if not blocks:
+        return []
+    body_lines = []
+    for b in blocks[:120]:
+        body_lines.append("[块 %d] %s" % (b["n"], b["text"]))
+    core_lines = ["- %s" % p["text"] for p in points[:20]]
+    prompt = "\n".join([
+        "你是文档补写助手。下面是一份文档的分块与已提炼的核心。",
+        "请补充文档中**明显缺失**的关键信息（定义、步骤、前置条件、边界说明）。",
+        "严格输出 JSON：",
+        '{"supplements":[{"text":"补充内容","reason":"为什么需要补充"}]}',
+        "要求：只输出 JSON；没有明显缺失就输出 {\"supplements\":[]}；",
+        "不要重复已有核心，不要编造具体数字、人名、日期。",
+        "",
+        "已提炼核心：",
+    ] + core_lines + ["", "文档分块："] + body_lines)
+    try:
+        raw = backend_obj.chat([
+            {"role": "system", "content": "你是文档补写助手，只输出 JSON。"},
+            {"role": "user", "content": prompt},
+        ])
+    except Exception:
+        return []   # 补写失败不影响主流程
+    try:
+        data = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", (raw or "").strip()))
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("supplements"), list):
+        return []
+    out: list[str] = []
+    for item in data["supplements"]:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        reason = item.get("reason")
+        reason = reason.strip() if isinstance(reason, str) and reason.strip() else "补充要点"
+        out.append("[AI ++ %s ++]（%s）" % (text.strip(), reason))
+        if len(out) >= 10:
+            break
+    return out
+
+
+def _append_supplement(md_text: str, supplement_lines: list[str]) -> str:
+    """把 AI 补写作为**独立分区**插到「提纯元数据」之前。
+
+    物理隔离 + 头部显式告知，确保用户一眼能分清哪些是原文、哪些是模型写的。
+    """
+    if not supplement_lines:
+        return md_text
+    block = [
+        "## AI 补充（模型生成，请核对）", "",
+        "> 以下内容由模型补写，**原文并不存在**，仅供补充参考；请自行核对。",
+        "",
+    ] + supplement_lines + ["", ""]
+    marker = "## 提纯元数据"
+    if marker in md_text:
+        head, _, tail = md_text.partition(marker)
+        return head + "\n".join(block) + marker + tail
+    return md_text + "\n" + "\n".join(block)
 
 
 def start_refine(path: str, model: str = DEFAULT_MODEL, outdir: str = "",

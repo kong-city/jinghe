@@ -339,8 +339,36 @@
       <!-- S7d：精读后端配置（本机 ollama / 云端兼容端点，客户自选） -->
       <section class="card">
         <div class="card-title">精读后端</div>
-        <div class="card-sub">精读/修订由大模型完成。本机 ollama 内容不外传；云端端点需你自行配置，配置即视为知情同意内容将发送。软件不下载、不打包任何组件。</div>
+        <div class="card-sub">默认「可信提纯」用内置抽取式引擎，零依赖离线运行，核心为原文原句、可逐字回溯。选「大模型提纯」需自行配置本机 ollama 或云端兼容端点——本机 ollama 内容不外传，云端端点需你自行配置，配置即视为知情同意内容将发送。软件不下载、不打包任何组件。</div>
         <div class="set-list">
+          <div id="beLlmHint" class="bar bar-warn" role="status">
+            当前为「可信提纯」：内置抽取式引擎，零依赖离线运行，核心为原文原句、可逐字回溯。
+            如需大模型综合，请在下方切换为「大模型提纯」并配置后端。
+          </div>
+          <!-- S8：提纯模式。可信提纯（抽取式）零依赖、架构级不造假，是默认档。 -->
+          <label class="set-row">
+            <span class="set-text">
+              <b>提纯模式</b>
+              <em><b>可信提纯</b>（抽取式）：零依赖离线，核心为原文原句，可逐字回溯，不可能造假；
+              <b>大模型提纯</b>：语义综合更强，但需自行配置后端，输出可能偏离原文</em>
+            </span>
+            <select id="beMode" class="text-input set-wide" aria-label="提纯模式">
+              <option value="extract">可信提纯（抽取式 · 默认）</option>
+              <option value="llm">大模型提纯（LLM）</option>
+            </select>
+          </label>
+          <!-- S8：AI 补写开关，默认关闭。开启即视为知情同意内容为模型生成。 -->
+          <label class="set-row">
+            <span class="set-text">
+              <b>AI 补写</b>
+              <em>在核心之外补充原文没有的内容（如定义、步骤）。<b>补写按定义即生成物，无法保证不造假</b>，
+              故默认关闭；开启后补写内容会单独分区并标注「模型生成，请核对」</em>
+            </span>
+            <span class="check">
+              <input type="checkbox" id="beAllowSupplement" aria-label="允许 AI 补写">
+              <span>允许补写</span>
+            </span>
+          </label>
           <label class="set-row">
             <span class="set-text">
               <b>后端类型</b>
