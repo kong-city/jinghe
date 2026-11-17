@@ -51,24 +51,49 @@ _CORE_RE = re.compile(r"^-\s+(.*?)（来源块\s*(\d+)）\s*$")
 # 1. 从 .refine.md 解析核心观点（修订输入基线）
 # --------------------------------------------------------------------------- #
 def parse_core(md_text: str) -> list[dict]:
-    """从精读产物解析 ``[{"block": N, "text": "..."}, ...]``。
+    """从精读产物解析核心：``[{"block": N, "text": "..."}, ...]``。
 
-    只认同时有 anchor 注释与「（来源块 N）」行且两者块号一致的核心，
-    防止解析错位导致修订挂靠到错误块。
+    **兼容两种产物格式**（S8 起精读有两种模式）：
+    1. S7 LLM 产物：``- 文本（来源块 N）`` —— 块号来自行尾后缀；
+    2. S8 抽取式产物：``- 文本`` —— 块号来自其上方的 ``anchor`` 注释。
+
+    只认块号一致的核心，防止解析错位导致修订挂靠到错误块。
     """
     lines = md_text.splitlines()
     cores: list[dict] = []
     pending_anchor: int | None = None
+    in_core_section = False
     for line in lines:
+        stripped = line.strip()
+        # 只解析「## 核心知识点」区块内的条目，避免把文档信息区的
+        # `- 源文件：…` 之类列表项误当成核心
+        if stripped.startswith("## "):
+            in_core_section = (stripped == "## 核心知识点")
+            pending_anchor = None
+            continue
+        if not in_core_section:
+            continue
         m = _ANCHOR_RE.search(line)
         if m:
             pending_anchor = int(m.group(1))
             continue
-        c = _CORE_RE.match(line.strip())
+        s = stripped
+        if not s.startswith("- "):
+            continue
+        body = s[2:].strip()
+        if not body:
+            continue
+        c = _CORE_RE.match(s)
         if c and pending_anchor is not None:
+            # 格式 1：行尾带「（来源块 N）」，且必须与上方 anchor 一致
             text, block = c.group(1).strip(), int(c.group(2))
             if block == pending_anchor:
                 cores.append({"block": block, "text": text})
+            pending_anchor = None
+            continue
+        if pending_anchor is not None:
+            # 格式 2：S8 抽取式产物，块号取自上方 anchor
+            cores.append({"block": pending_anchor, "text": body})
             pending_anchor = None
     return cores
 

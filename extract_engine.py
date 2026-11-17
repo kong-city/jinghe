@@ -638,9 +638,15 @@ def render_md(src: Path, result: dict, meta: dict) -> tuple[str, str]:
     doc_id = info["doc_id"]
     points = result.get("points") or []
     stats = result.get("stats") or {}
+    mode = meta.get("mode") or "可信提纯（抽取式）"
+    is_rewrite = "改写" in mode
     comment = media_runtime.source_comment(
         src, ".md", meta.get("converter") or "抽取式提纯（纯标准库，零依赖）",
         anchors=["block"])
+    promise = ("本文件为**原文内改写**结果：只动结构与措辞、未改事实，"
+               "每个片段可在原文定位。"
+               if is_rewrite else
+               "本文件核心**全部为原文原句**，逐条可在原文定位，未做任何改写或生成。")
     lines = [
         comment, "",
         "# %s · 可信提纯（核心提取）" % src.stem, "",
@@ -648,16 +654,28 @@ def render_md(src: Path, result: dict, meta: dict) -> tuple[str, str]:
         "- 源文件：%s" % src.name,
         "- 大小：%d 字节" % info["size"],
         "- 生成时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+    ] + ([
         "- 源块数：%d ｜ 候选句：%d ｜ 入选核心：%d"
         % (int(stats.get("blocks") or 0), int(stats.get("sentences") or 0),
            len(points)),
-        "- 关键词：%s" % ("、".join(result.get("keywords") or []) or "无"),
+    ] if not is_rewrite else [
+        "- 改写前核心：%d 条 ｜ 改写后：%d 条 ｜ 合并去重：%d 条"
+        % (int(stats.get("before") or 0), int(stats.get("after") or 0),
+           int(stats.get("merged") or 0)),
+    ]) + [
+        "- 关键词：%s" % ("、".join(result.get("keywords") or []) or "见各条"),
         "",
-        "> 本文件核心**全部为原文原句**，逐条可在原文定位，未做任何改写或生成。",
+        "> %s" % promise,
         "", "## 核心知识点", "",
     ]
     for p in points:
-        lines.append(media_runtime.block_anchor(doc_id, p["block"]))
+        # 多块锚点（B 档合并后并列多个来源块），单块时与 S7 格式一致
+        blocks = p.get("blocks") or [p.get("block")]
+        if len(blocks) > 1:
+            lines.append("<!-- anchor: %s | block: %s | blocks: %s -->"
+                         % (doc_id, blocks[0], ",".join(str(b) for b in blocks)))
+        else:
+            lines.append(media_runtime.block_anchor(doc_id, p["block"]))
         lines.append("- %s" % p["text"])
         bits = []
         if p.get("keywords"):
@@ -671,7 +689,9 @@ def render_md(src: Path, result: dict, meta: dict) -> tuple[str, str]:
         "## 提纯元数据", "",
         "- 转换器：%s" % (meta.get("converter") or "抽取式提纯"),
         "- 模式：%s" % (meta.get("mode") or "可信提纯（抽取式）"),
-        "- 保真度：架构级保证 —— 每条核心均为原文原句，可逐字定位",
+        "- 保真度：%s" % ("架构级保证 —— 只用原文素材，未改事实；每个片段可在原文定位"
+                       if is_rewrite else
+                       "架构级保证 —— 每条核心均为原文原句，可逐字定位"),
         "- 耗时：%.3f 秒" % float(stats.get("elapsed") or 0),
         "- 源文件 sha256：%s" % info["sha256"],
         "- doc_id：%s" % doc_id,
@@ -679,3 +699,182 @@ def render_md(src: Path, result: dict, meta: dict) -> tuple[str, str]:
         "",
     ]
     return "\n".join(lines), doc_id
+
+
+# --------------------------------------------------------------------------- #
+# 9. B 档：原文内改写（只用原文素材，白名单外一律不做）
+# --------------------------------------------------------------------------- #
+# 白名单（契约 S8 §四）：
+#   ① 术语归一：同一概念的不同写法 → 统一到高频写法（须有共现证据）
+#   ② 要点合并去重：高度重叠的两条核心 → 合并，块锚点并列
+#   ③ 结构重排：按块号/章节分组，不增删内容
+#   ④ 排版归一：全半角标点统一
+# **禁止**：改写事实、添加解释、生成结论、调整数字/单位/人名/日期。
+# 因此本模块的每一条输出仍是**原文原句或原文句的组合**，绝不产生新句。
+
+# 全角 → 半角标点（仅标点，不动文字与数字）
+_PUNCT_FULL2HALF = {
+    "，": ",", "。": ".", "；": ";", "：": ":", "！": "!", "？": "?",
+    "（": "(", "）": ")", "【": "[", "】": "]", "《": "<", "》": ">",
+    "“": '"', "”": '"', "‘": "'", "’": "'", "、": ",",
+}
+_PUNCT_RE = re.compile("|".join(re.escape(k) for k in _PUNCT_FULL2HALF))
+
+
+def normalize_punct(text: str) -> str:
+    """排版归一：全角标点 → 半角。**只动标点，不动任何文字与数字**。"""
+    return _PUNCT_RE.sub(lambda m: _PUNCT_FULL2HALF[m.group(0)], text)
+
+
+def normalize_terms(points: list[dict], threshold: float = 0.55) -> list[dict]:
+    """术语归一：把同一概念的多种写法统一到**频次最高**的写法。
+
+    判据（须有证据，不猜）：两个词若其 bigram 集合 Jaccard 相似度 ≥ threshold，
+    则视为同一概念的变体 —— 只有这样才归一，且统一到全文出现次数最多的写法。
+
+    归一只改**写法**（选一个已有写法），不产生任何新词，因此不引入新事实。
+    """
+    if not points:
+        return []
+    # 统计每个候选词的全局出现次数（用于选代表写法）
+    freq: dict[str, int] = {}
+    for p in points:
+        for t in p.get("keywords") or []:
+            freq[t] = freq.get(t, 0) + 1
+    grams = {t: set(bigrams(t)) for t in freq}
+    # 归组：相似词归到同一簇，代表 = 频次最高（并列则取更长更具体者）
+    groups: list[list[str]] = []
+    for term in sorted(freq, key=lambda t: (-freq[t], -len(t), t)):
+        placed = False
+        for g in groups:
+            if any(jaccard(grams[term], grams[rep]) >= threshold for rep in g):
+                g.append(term)
+                placed = True
+                break
+        if not placed:
+            groups.append([term])
+    mapping: dict[str, str] = {}
+    for g in groups:
+        if len(g) < 2:
+            continue
+        rep = sorted(g, key=lambda t: (-freq[t], -len(t), t))[0]
+        for t in g:
+            if t != rep:
+                mapping[t] = rep
+    if not mapping:
+        return points
+    out = []
+    for p in points:
+        q = dict(p)
+        q["keywords"] = [mapping.get(t, t) for t in (p.get("keywords") or [])]
+        # 去重（归一后可能出现重复词）
+        seen, dedup = set(), []
+        for t in q["keywords"]:
+            if t not in seen:
+                seen.add(t)
+                dedup.append(t)
+        q["keywords"] = dedup
+        out.append(q)
+    return out
+
+
+def merge_duplicates(points: list[dict],
+                     threshold: float = NEAR_DUP_THRESHOLD) -> list[dict]:
+    """要点合并去重：语义高度重叠的两条核心 → 合并为一条，块锚点并列。
+
+    合并时**保留两条的原文句子**（用 ` ｜ ` 连接），不重写、不概括，
+    因此合并结果仍完全由原文构成，绝不产生新表述。
+    """
+    if len(points) <= 1:
+        return points
+    out: list[dict] = []
+    for p in points:
+        merged = False
+        for q in out:
+            g1 = _bigram_set(p.get("text") or "")
+            g2 = _bigram_set(q.get("text") or "")
+            if jaccard(g1, g2) >= threshold:
+                # 保留两条原文，块号并列
+                texts = [q.get("text") or "", p.get("text") or ""]
+                blocks = sorted(set((q.get("blocks") or [q.get("block")])
+                                    + (p.get("blocks") or [p.get("block")])))
+                q["text"] = " ｜ ".join(t for t in texts if t)
+                q["blocks"] = blocks
+                q["block"] = blocks[0] if blocks else q.get("block")
+                q["merged"] = int(q.get("merged", 1)) + 1
+                kws = list(q.get("keywords") or [])
+                for t in (p.get("keywords") or []):
+                    if t not in kws:
+                        kws.append(t)
+                q["keywords"] = kws[:6]
+                merged = True
+                break
+        if not merged:
+            q = dict(p)
+            q["blocks"] = [p.get("block")]
+            q.setdefault("merged", 1)
+            out.append(q)
+    return out
+
+
+def group_by_section(points: list[dict]) -> list[dict]:
+    """结构重排：按块号升序排列（保持原文出现顺序），不增删内容。"""
+    return sorted(points, key=lambda p: (p.get("block") or 0))
+
+
+def rewrite_in_source(points: list[dict], blocks: list[dict] | None = None,
+                      punct_normalize: bool = False) -> dict:
+    """B 档主流程：原文内改写（术语归一 + 合并去重 + 结构重排 [+ 排版归一]）。
+
+    ``punct_normalize`` **默认 False**：排版归一会改标点（全角→半角），
+    虽然事实零变化，但会破坏「逐字可在原文定位」这条 A 档红线，
+    因此它不是默认操作，只是**可选**的排版偏好。
+
+    返回 ``{"points": [...], "stats": {...}}``；每条仍带 block 锚点与原文句。
+    """
+    pts = [dict(p) for p in (points or [])]
+    before = len(pts)
+    pts = normalize_terms(pts)
+    pts = merge_duplicates(pts)
+    pts = group_by_section(pts)
+    ops = ["术语归一", "合并去重", "结构重排"]
+    if punct_normalize:
+        for p in pts:
+            p["text"] = normalize_punct(p.get("text") or "")
+        ops.append("排版归一")
+    merged = sum(int(p.get("merged", 1)) - 1 for p in pts)
+    return {
+        "points": pts,
+        "stats": {
+            "before": before,
+            "after": len(pts),
+            "merged": merged,
+            "ops": ops,
+            # 与 A 档 stats 同形，便于统一渲染
+            "blocks": 0,
+            "sentences": len(pts),
+            "candidates": before,
+            "selected": len(pts),
+            "elapsed": 0.0,
+        },
+    }
+
+
+def verify_no_new_content(md_text: str, points: list[dict]) -> tuple[bool, str]:
+    """B 档红线：每条核心的**每个片段**都必须能在原文中找到。
+
+    与 A 档的 :func:`verify_traceable` 的区别：合并后的条目含多个片段
+    （用 `` ｜ `` 分隔），本函数逐片段校验，并**忽略标点全半角差异**
+    （排版归一只改标点、不改事实，故不算「新增内容」）。
+    """
+    def canon(t: str) -> str:
+        return re.sub(r"\s+", "", normalize_punct(t))
+    norm = canon(md_text)
+    for p in points:
+        for frag in (p.get("text") or "").split(" ｜ "):
+            frag = frag.strip()
+            if not frag:
+                continue
+            if canon(frag) not in norm:
+                return False, "改写引入了原文没有的内容：%s" % frag[:20]
+    return True, ""

@@ -68,14 +68,23 @@ def capability(refresh: bool = False) -> dict:
     available = bool(be.get("available"))
     kind = be.get("kind", backend.KIND_NONE)
     missing = [] if available else [kind if kind != backend.KIND_NONE else "backend"]
+    mode = backend.load_config().get("mode", backend.MODE_EXTRACT)
+    if mode == backend.MODE_EXTRACT:
+        engine_name = "内置抽取式提纯引擎（零依赖离线，核心为原文原句）"
+        engine_reason = ("可信提纯：抽取式核心提取 + 原文内改写，只用原文素材，"
+                         "架构级保证不造假；无需安装、无需下载、无需配置")
+    else:
+        engine_name = "可插拔大模型后端（Local ollama / Cloud 兼容端点，均未随软件分发）"
+        engine_reason = ("大模型提纯：精读提纯与修订由客户自选后端完成；本地后端不出本机、"
+                         "云端后端需客户配置即知情同意；软件不下载/不打包/不自动安装")
     return {
         "name": CAPABILITY_NAME,
         "enabled": available,
         "capability": "available" if available else STATUS_UNAVAILABLE,
         "engine": {
-            "name": "可插拔大模型后端（Local ollama / Cloud 兼容端点，均未随软件分发）",
-            "reason": ("精读提纯与修订增修由客户自选后端完成；本地后端不出本机、"
-                       "云端后端需客户配置即知情同意；软件不下载/不打包/不自动安装"),
+            "name": engine_name,
+            "reason": engine_reason,
+            "mode": mode,
         },
         "tools": {"backend": be},
         "missing": missing,
@@ -477,7 +486,118 @@ def start_refine(path: str, model: str = DEFAULT_MODEL, outdir: str = "",
 
 def _run_revise_inner(path: str, model: str, outdir: str, backend_obj,
                       cap: dict, instruction: str = "") -> None:
-    """修订任务线程体：读 .refine.md 核心 → 调后端补写/修改 → 双产物同源渲染。"""
+    """修订任务线程体。
+
+    S8：按 mode 分流——
+    * ``extract``（默认）：**B 档原文内改写**（术语归一 / 合并去重 / 结构重排），
+      只用原文素材，零依赖，架构级不造假；
+    * ``llm``：沿用 S7 的补写 + 修改双产物路径（补写仍需开关开启）。
+    """
+    global _TASK
+    try:
+        mode = backend.load_config().get("mode", backend.MODE_EXTRACT)
+        if mode == backend.MODE_EXTRACT:
+            _run_revise_extract(path, outdir, cap)
+            return
+        _run_revise_llm(path, model, outdir, backend_obj, cap, instruction)
+    except Exception as exc:
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "修订失败：%s" % type(exc).__name__
+        _task_add("error", "修订失败：%s" % type(exc).__name__, 1.0)
+
+
+def _run_revise_extract(path: str, outdir: str, cap: dict) -> None:
+    """S8 B 档：原文内改写（**只动结构与措辞，不动事实**）。
+
+    输入是精读产物 ``.refine.md`` 的核心清单；输出是改写后的核心清单
+    （同源渲染 md + html 双产物），每条仍带块锚点与原文句。
+    """
+    src = Path(path)
+    _task_add("log", "读取精读核心…", 0.1)
+    text = src.read_text(encoding="utf-8", errors="replace")
+    cores = _revise.parse_core(text)
+    _task_add("log", "解析到 %d 条核心" % len(cores), 0.25)
+    if not cores:
+        _task_add("error", "精读文档无可改写的核心", 1.0)
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "精读文档无可改写的核心"
+        return
+
+    _task_add("log", "原文内改写（术语归一 / 合并去重 / 结构重排）…", 0.5)
+    rewritten = _extract.rewrite_in_source(cores)
+
+    # B 档红线：每个片段都必须在原文（精读产物）里找得到，不得引入新内容
+    ok, why = _extract.verify_no_new_content(text, rewritten["points"])
+    if not ok:
+        _task_add("error", "改写校验失败：%s" % why, 1.0)
+        with _TASK_LOCK:
+            _TASK["state"] = "failed"
+            _TASK["error"] = "改写校验失败：%s" % why
+        return
+
+    before = media_runtime.frozen_snapshot(outdir)
+    meta = {
+        "converter": "原文内改写（纯标准库，零依赖离线）",
+        "mode": "原文内改写（抽取式）",
+        "model": "—",
+    }
+    md_text, doc_id = _extract.render_md(src, rewritten, meta)
+    # 在元数据里追加 B 档操作说明
+    stats = rewritten.get("stats") or {}
+    md_text = md_text.replace(
+        "- 保真度：架构级保证 —— 每条核心均为原文原句，可逐字定位",
+        "- 保真度：架构级保证 —— 只用原文素材，未改事实；每个片段可在原文定位\n"
+        "- 本次改写操作：%s（合并 %d 条）"
+        % ("、".join(stats.get("ops") or []), int(stats.get("merged") or 0)))
+    derived = media_runtime.ensure_derived(outdir)
+    md_path = derived / (doc_id + _revise.REVISE_MD_SUFFIX)
+    html_path = derived / (doc_id + _revise.REVISE_HTML_SUFFIX)
+    md_path.write_text(md_text, encoding="utf-8")
+    html_path.write_text(_revise_simple_html(md_text, stats), encoding="utf-8")
+    _engine.append_provenance(outdir, {
+        "capability": "refine", "stage": "revise", "doc_id": doc_id,
+        "source": src.name, "backend": "extract", "model": "—",
+        "mode": "extract", "changes": len(rewritten["points"]),
+        "merged": int(stats.get("merged") or 0),
+        "outputs": [md_path.name, html_path.name], "status": "成功",
+    })
+    frozen_ok = media_runtime.frozen_unchanged(before, outdir)
+    _task_add("log", "产物：%s + %s" % (md_path.name, html_path.name), 0.95)
+    with _TASK_LOCK:
+        _TASK["state"] = "done" if frozen_ok else "failed"
+        _TASK["output"] = str(md_path)
+        _TASK["error"] = None if frozen_ok else "冻结对账盘被改动（异常）"
+    _task_add("log", "完成" if frozen_ok else "冻结盘校验失败", 1.0)
+
+
+def _revise_simple_html(md_text: str, stats: dict) -> str:
+    """B 档改写的 html 版：把 md 文本原样包进 html（无内联样式依赖外部文件）。"""
+    import html as _h
+    body = _h.escape(md_text)
+    return "\n".join([
+        "<!DOCTYPE html>", '<html lang="zh-CN"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        "<title>精核 · 原文内改写</title><style>",
+        "body{font-family:system-ui,'Microsoft YaHei',sans-serif;max-width:860px;"
+        "margin:40px auto;padding:0 20px;color:#1F1F1D;line-height:1.7;font-size:14px}",
+        "pre{white-space:pre-wrap;word-break:break-word;background:#FBFCFE;"
+        "border:1px solid #E5E3DC;border-radius:8px;padding:14px;font-size:12.5px}",
+        "</style></head><body>",
+        "<h1>精核 · 原文内改写</h1>",
+        '<div style="background:#EAF3DE;border:1px solid #97C459;color:#27500A;'
+        'padding:10px 12px;border-radius:8px;font-size:13px">'
+        "本次改写只动结构与措辞，未改事实；每个片段可在原文逐字定位。"
+        "（操作：%s，合并 %d 条）</div>"
+        % ("、".join(stats.get("ops") or []), int(stats.get("merged") or 0)),
+        "<pre>", body, "</pre></body></html>",
+    ])
+
+
+def _run_revise_llm(path: str, model: str, outdir: str, backend_obj,
+                    cap: dict, instruction: str = "") -> None:
+    """S7 LLM 修订路径（保留）：补写 + 修改双产物。"""
     global _TASK
     try:
         _task_add("log", "读取精读核心…", 0.05)

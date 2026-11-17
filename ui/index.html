@@ -226,7 +226,7 @@
     <section class="page" id="page-refine" hidden>
       <section class="card">
         <div class="card-title">精读 · 提纯核心</div>
-        <div class="card-sub">对已转换为 md 的文件做语义级提纯，只提取核心，不补写、不修改。</div>
+        <div class="card-sub" id="refineSub">对已转换为 md 的文件提纯核心知识点。默认「可信提纯」用内置抽取式引擎，核心为<strong>原文原句、可逐字回溯</strong>，零依赖离线运行。</div>
         <div id="refineCap" class="bar bar-warn" role="status">正在检测精读后端…</div>
         <div class="row">
           <input id="refineSource" class="text-input" type="text" spellcheck="false" autocomplete="off"
@@ -256,8 +256,8 @@
     <!-- ==================== 修订（补写 + 修改，双产物） ==================== -->
     <section class="page" id="page-revise" hidden>
       <section class="card">
-        <div class="card-title">修订 · 补写与修改</div>
-        <div class="card-sub">对精读核心补写缺失 + 修改表述；新增与修改内容均以颜色/标记区分，请对照原文核对。</div>
+        <div class="card-title">修订 · 改写与补充</div>
+        <div class="card-sub" id="reviseSub">对已提炼的核心做加工。默认「可信提纯」模式下只做<strong>原文内改写</strong>（术语归一 / 合并去重 / 结构重排），不动事实；切到「大模型提纯」可开启补写与改写，新增与修改内容均以颜色/标记区分，请对照原文核对。</div>
         <div id="reviseCap" class="bar bar-warn" role="status">正在检测精读后端…</div>
         <div class="row">
           <input id="reviseSource" class="text-input" type="text" spellcheck="false" autocomplete="off"

@@ -1469,6 +1469,25 @@
     }
     var tip = document.getElementById("beLlmHint");
     if (tip) tip.hidden = llm;
+    // 精读 / 修订页按模式联动：
+    // extract 模式无模型概念、无补写（补写只在 llm 模式且开关开启时才有）
+    if (el.refineModel) el.refineModel.disabled = !llm;
+    if (el.reviseInstruction) el.reviseInstruction.disabled = !llm;
+    var rsub = document.getElementById("refineSub");
+    if (rsub) {
+      rsub.innerHTML = llm
+        ? "对已转换为 md 的文件做语义级提纯（由大模型完成，输出可能偏离原文，请核对）。"
+        : "对已转换为 md 的文件提纯核心知识点。默认「可信提纯」用内置抽取式引擎，"
+          + "核心为<strong>原文原句、可逐字回溯</strong>，零依赖离线运行。";
+    }
+    var vsub = document.getElementById("reviseSub");
+    if (vsub) {
+      vsub.innerHTML = llm
+        ? "对已提炼的核心做加工。补写（原文没有的内容）需在设置里开启「允许补写」；"
+          + "新增与修改内容均以颜色/标记区分，请对照原文核对。"
+        : "对已提炼的核心做加工。默认「可信提纯」模式下只做<strong>原文内改写</strong>"
+          + "（术语归一 / 合并去重 / 结构重排），不动事实。";
+    }
   }
 
   function saveBackendCfg(thenProbe) {
@@ -2176,6 +2195,15 @@
 
     // S1：工具健康探测只在启动时跑一次，绝不挂到 400ms 轮询上。
     loadTools();
+    // S8：按当前配置初始化模式联动（抽取式/大模型），避免首屏控件状态不对
+    api("/api/refine/backend", undefined, 10000).then(function (r) {
+      var cfg = (r && r.config) || {};
+      if (el.beMode) el.beMode.value = cfg.mode || "extract";
+      if (el.beAllowSupplement) {
+        el.beAllowSupplement.checked = !!cfg.allow_suppplement;
+      }
+      applyBackendMode();
+    }).catch(function () { applyBackendMode(); });
   }
 
   if (document.readyState === "loading") {

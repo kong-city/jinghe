@@ -3791,6 +3791,7 @@ class AppContractTest(unittest.TestCase):
         import refine
         import revise_engine as R
         import refine_engine
+        from unittest import mock
 
         core_md = ("<!-- src: x -->\n## 核心知识点\n\n"
                    "<!-- anchor: doc_abc123456789 | block: 2 -->\n- 注重隐私（来源块 2）\n\n"
@@ -3855,7 +3856,12 @@ class AppContractTest(unittest.TestCase):
         cap = {"tools": {"backend": {"kind": "cloud"}}, "capability": "available"}
         refine._TASK = {"state": "running", "running": True, "cancelled": False,
                         "events": [], "output": "", "error": None}
-        refine._run_revise_inner(str(core_file), "m", str(self.tmp), FakeRevise({}), cap)
+        # S8 起修订按 mode 分流；本用例守的是 **LLM 双产物路径**，显式切 llm 模式
+        with mock.patch.object(backend, "load_config",
+                               return_value={"mode": backend.MODE_LLM,
+                                             "kind": backend.KIND_CLOUD,
+                                             "allow_suppplement": False}):
+            refine._run_revise_inner(str(core_file), "m", str(self.tmp), FakeRevise({}), cap)
         st = refine.status()
         self.assertEqual(st["state"], "done", "修订失败：%s" % st["error"])
         md_path = Path(st["output"])
@@ -3880,7 +3886,11 @@ class AppContractTest(unittest.TestCase):
         n_before = len(list(derived.glob("*.revise.md")))
         refine._TASK = {"state": "running", "running": True, "cancelled": False,
                         "events": [], "output": "", "error": None}
-        refine._run_revise_inner(str(core_file), "", str(self.tmp), BadRevise({}), cap)
+        with mock.patch.object(backend, "load_config",
+                               return_value={"mode": backend.MODE_LLM,
+                                             "kind": backend.KIND_CLOUD,
+                                             "allow_suppplement": False}):
+            refine._run_revise_inner(str(core_file), "", str(self.tmp), BadRevise({}), cap)
         self.assertEqual(len(list(derived.glob("*.revise.md"))), n_before,
                          "全无效修订仍产出文档")
         self.assertEqual(refine.status()["state"], "failed")
@@ -4132,6 +4142,122 @@ class AppContractTest(unittest.TestCase):
         supp_tag = [ln for ln in html.splitlines() if 'id="beAllowSupplement"' in ln]
         self.assertTrue(supp_tag)
         self.assertNotIn("checked", supp_tag[0], "补写开关默认不应勾选")
+
+    # ------------------------------------------------------------------ #
+    # 53) S8b：B 档原文内改写（白名单） + 修订按模式分流 + UI 联动
+    # ------------------------------------------------------------------ #
+    def test_53_s8b_rewrite_in_source(self):
+        import backend
+        import extract_engine as X
+        import refine
+        import revise_engine as R
+        from unittest import mock
+
+        md = ("# 数据一致性\n\n"
+              "本系统保证数据一致性，所有数据一致性约束均已实现。\n\n"
+              "零依赖是核心约束，零依赖设计贯穿全系统。\n\n"
+              "数据一致性机制依赖架构分层。\n")
+
+        # ① B 档白名单：只动结构与措辞，**不改事实**
+        # 注意：pts 的文本必须逐字取自 md（与真实流程一致），否则校验会正确地报红
+        pts = [
+            {"text": "本系统保证数据一致性，所有数据一致性约束均已实现。",
+             "block": 2, "keywords": ["一致性", "约束"], "score": 0.9, "reasons": []},
+            {"text": "本系统保证数据一致性，所有数据一致性约束均已实现。",
+             "block": 7, "keywords": ["一致性", "约束"], "score": 0.8, "reasons": []},
+            {"text": "数据一致性机制依赖架构分层。",
+             "block": 9, "keywords": ["依赖", "分层"], "score": 0.2, "reasons": []},
+        ]
+        rw = X.rewrite_in_source(pts)
+        # 合并去重：两条重复的合成一条，块号并列
+        self.assertEqual(len(rw["points"]), 2, "重复核心未被合并")
+        self.assertEqual(rw["points"][0]["blocks"], [2, 7], "合并后块号未并列")
+        self.assertEqual(rw["points"][0]["merged"], 2)
+        self.assertEqual(rw["stats"]["merged"], 1)
+        # 合并结果仍由原文构成（用 ｜ 连接，不重写）
+        self.assertIn(" ｜ ", rw["points"][0]["text"])
+        # B 档红线：每个片段都能在原文定位
+        ok, why = X.verify_no_new_content(md, rw["points"])
+        self.assertTrue(ok, "B 档引入了原文没有的内容：%s" % why)
+        # 篡改一条即失败（证明校验有效）
+        bad = [dict(rw["points"][0]), dict(rw["points"][1])]
+        bad[0]["text"] = "这句原文里根本没有"
+        self.assertFalse(X.verify_no_new_content(md, bad)[0])
+
+        # ② 术语归一：相似写法统一到高频写法，且**不产生新词**
+        norm_pts = [{"text": "数据一致性", "block": 1, "keywords": ["数据一致性"], "score": 1},
+                    {"text": "数据一致性", "block": 2, "keywords": ["一致性"], "score": 1}]
+        nt = X.normalize_terms(norm_pts)
+        self.assertTrue(all(t in ("数据一致性", "一致性")
+                            for p in nt for t in p["keywords"]))
+
+        # ③ 排版归一默认**不做**（会破坏逐字定位）；显式开启仍通过红线
+        # 文本取自 md 原文（含全角逗号），排版归一只把它变成半角
+        base = [{"text": "本系统保证数据一致性，所有数据一致性约束均已实现。",
+                 "block": 2, "keywords": [], "score": 1}]
+        self.assertNotIn("排版归一", X.rewrite_in_source(base)["stats"]["ops"],
+                         "排版归一不应默认执行")
+        self.assertIn("排版归一",
+                      X.rewrite_in_source(base, punct_normalize=True)["stats"]["ops"])
+        self.assertTrue(X.verify_no_new_content(md, X.rewrite_in_source(
+            base, punct_normalize=True)["points"])[0],
+            "排版归一（仅标点）不应被判为新增内容")
+
+        # ④ 修订按模式分流：extract 模式走 B 档，绝不调 LLM
+        cores_md = ("<!-- src: x -->\n## 核心知识点\n\n"
+                    "<!-- anchor: doc_abc123456789 | block: 2 -->\n- 注重隐私（来源块 2）\n\n"
+                    "<!-- anchor: doc_abc123456789 | block: 4 -->\n- 本地处理（来源块 4）\n")
+        outdir = Path(self.tmp) / "s8b"
+        (outdir / "derived").mkdir(parents=True, exist_ok=True)
+        core_file = outdir / "derived" / "doc_abc123456789.refine.md"
+        core_file.write_text(cores_md, encoding="utf-8")
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"mode": backend.MODE_EXTRACT})
+            refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                            "events": [], "output": "", "error": None}
+            refine._run_revise_inner(str(core_file), "", str(outdir),
+                                     backend.current_backend(), refine.capability(), "")
+            st = refine.status()
+            self.assertEqual(st["state"], "done", "extract 模式修订失败：%s" % st["error"])
+            md_path = Path(st["output"])
+            text = md_path.read_text(encoding="utf-8")
+            # 双产物
+            html_path = md_path.with_name(md_path.name.replace(".revise.md", ".revise.html"))
+            self.assertTrue(md_path.is_file() and html_path.is_file(), "双产物未落盘")
+            # 锚点必须保留（红线）
+            self.assertIn("<!-- anchor:", text, "B 档产物丢了块级锚点")
+            # 文案必须说清是「原文内改写」而非「原文原句」
+            self.assertIn("原文内改写", text)
+            self.assertIn("未改事实", text)
+            # 产物内容必须源自精读产物的核心
+            self.assertIn("注重隐私", text)
+            self.assertIn("本地处理", text)
+            # 冻结盘只读
+            self.assertFalse((outdir / "md").exists())
+            self.assertFalse((outdir / "INDEX.md").exists())
+
+        # ⑤ capability 的 engine 说明按模式区分
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be2.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"mode": backend.MODE_EXTRACT})
+            cap = refine.capability(refresh=True)
+            self.assertTrue(cap["enabled"], "抽取式模式应恒可用")
+            self.assertEqual(cap["engine"]["mode"], backend.MODE_EXTRACT)
+            self.assertIn("抽取式", cap["engine"]["name"])
+            self.assertIn("不造假", cap["engine"]["reason"])
+
+        # ⑥ UI 模式联动
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="refineSub"', html, "缺精读页模式说明元素")
+        self.assertIn('id="reviseSub"', html, "缺修订页模式说明元素")
+        self.assertIn("applyBackendMode", js)
+        # extract 模式置灰模型下拉与额外要求
+        self.assertIn("el.refineModel.disabled = !llm", js, "模型下拉未按模式置灰")
+        self.assertIn("el.reviseInstruction.disabled = !llm", js, "额外要求未按模式置灰")
+        # 初始化即联动（首屏控件状态正确）
+        self.assertIn('api("/api/refine/backend", undefined, 10000)', js)
 
 
 def print_summary(result=None) -> None:
