@@ -4376,6 +4376,134 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('"allow_suppplement": False', bsrc)
 
 
+    # ------------------------------------------------------------------ #
+    # 55) S8 缺陷修复回归：掩码保护 / 关键词算法 / B 档操作行 / doc_id 链 /
+    #     多块 anchor / 开关类型判定（v0.6.1）
+    # ------------------------------------------------------------------ #
+    def test_55_s8_defect_fixes(self):
+        import backend
+        import extract_engine as X
+        import refine
+        import revise_engine as R
+        from unittest import mock
+
+        # 契约键名（拼写特殊：suppplement 三个 p，全项目统一）。
+        # 从 backend.DEFAULT_CONFIG 派生而非手拼 —— 手拼笔误正是本次修复
+        # 过程中真实踩过的坑（键名一改，开关静默失效）。
+        SUPP_KEY = next(k for k in backend.DEFAULT_CONFIG
+                        if k.startswith("allow_supp"))
+        self.assertIn(SUPP_KEY, backend.public_config(),
+                      "补写开关未贯通 public_config")
+
+        # ---------- ① 密钥掩码回填不得覆盖真 key ----------
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be_key.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"kind": "cloud", "mode": "llm",
+                                 "endpoint": "https://x/v1",
+                                 "api_key": "sk-REAL-KEY-abcdef123456",
+                                 "model": "m1"})
+            masked = backend.public_config()["api_key"]
+            self.assertTrue(masked.startswith("****"), "回显必须是掩码")
+            self.assertNotIn("sk-REAL", masked, "回显泄露真 key")
+            # 模拟 UI：掩码回填进输入框后再次保存（只改补写开关）
+            backend.save_config({"kind": "cloud", "mode": "llm",
+                                 "endpoint": "https://x/v1",
+                                 "api_key": masked, "model": "m1",
+                                 SUPP_KEY: True})
+            cfg = backend.load_config(refresh=True)
+            self.assertEqual(cfg["api_key"], "sk-REAL-KEY-abcdef123456",
+                             "掩码回填后二次保存把真 key 覆盖了")
+            self.assertTrue(cfg[SUPP_KEY], "补写开关未生效")
+            # 主动换 key 仍然生效（掩码识别不能误伤真实修改）
+            backend.save_config({"kind": "cloud", "mode": "llm",
+                                 "endpoint": "https://x/v1",
+                                 "api_key": "sk-NEW-KEY-9999", "model": "m1"})
+            self.assertEqual(backend.load_config(refresh=True)["api_key"],
+                             "sk-NEW-KEY-9999", "主动换 key 失效")
+        # 前端：提交前必须把掩码转成空串（第一道防线）
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn(r"/^\*{4}/", js, "前端未识别掩码格式")
+
+        # ---------- ② 补写开关：只认「明确为真」 ----------
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be_bool.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            for raw, want in ((True, True), (False, False), ("false", False),
+                              ("true", True), ("0", False), ("", False),
+                              (None, False), (1, True), (0, False)):
+                backend.save_config({"mode": backend.MODE_LLM, SUPP_KEY: raw})
+                got = backend.load_config(refresh=True)[SUPP_KEY]
+                self.assertIs(got, want,
+                              "补写开关判定错误：%r → %r（期望 %r）" % (raw, got, want))
+
+        # ---------- ③ 关键词算法：标题词源生效 + 碎词被抑制 ----------
+        md = ("# 琥珀日志索引\n\n琥珀日志记录每次提纯的出处与耗时。\n\n"
+              "## 琥珀日志归档\n\n琥珀日志只追加不覆盖，归档策略恒定。\n")
+        blocks = X.split_blocks(md)
+        sents = X.collect_sentences(blocks)
+        heads = X.heading_terms(blocks)
+        self.assertIn("琥珀日志", heads, "标题挖词未取到完整概念名")
+        kws = X.top_keywords(sents, limit=8, heads=heads)
+        self.assertTrue(any(h in kws for h in heads),
+                        "标题词源整体失效（假跨度冲突回归）：%s" % kws)
+        for frag in ("只追", "录每", "志记"):
+            self.assertNotIn(frag, kws, "跨词碎片进入了关键词：%s" % frag)
+        # 完整概念名应压过其内部短词
+        md2 = ("# 数据一致性保障机制\n\n"
+               "本系统保证数据一致性，所有约束均已实现。\n")
+        b2 = X.split_blocks(md2)
+        kws2 = X.top_keywords(X.collect_sentences(b2), limit=8,
+                              heads=X.heading_terms(b2))
+        self.assertIn("数据一致性保障机制", kws2,
+                      "完整概念名未入选：%s" % kws2)
+
+        # ---------- ④ B 档操作行 + doc_id 链 ----------
+        cores_md = ("<!-- src: x -->\n## 核心知识点\n\n"
+                    "<!-- anchor: doc_abc123456789 | block: 2 -->\n"
+                    "- 注重隐私（来源块 2）\n\n"
+                    "<!-- anchor: doc_abc123456789 | block: 4 -->\n"
+                    "- 本地处理（来源块 4）\n")
+        outdir = Path(self.tmp) / "s8fix"
+        (outdir / "derived").mkdir(parents=True, exist_ok=True)
+        core_file = outdir / "derived" / "doc_abc123456789.refine.md"
+        core_file.write_text(cores_md, encoding="utf-8")
+        with mock.patch.object(backend, "CONFIG_FILE", Path(self.tmp) / "be_run.json"), \
+             mock.patch.object(backend, "_CACHE", None):
+            backend.save_config({"mode": backend.MODE_EXTRACT})
+            refine._TASK = {"state": "running", "running": True, "cancelled": False,
+                            "events": [], "output": "", "error": None}
+            refine._run_revise_inner(str(core_file), "", str(outdir),
+                                     backend.current_backend(),
+                                     refine.capability(), "")
+            st = refine.status()
+            self.assertEqual(st["state"], "done", "修订失败：%s" % st["error"])
+            md_path = Path(st["output"])
+            # doc_id 必须沿用精读产物的 id（产物链不断）
+            self.assertEqual(md_path.name, "doc_abc123456789.revise.md",
+                             "修订产物 doc_id 与精读产物断链：%s" % md_path.name)
+            text = md_path.read_text(encoding="utf-8")
+            self.assertIn("本次改写操作", text, "B 档操作说明行缺失")
+            for op in ("术语归一", "合并去重", "结构重排"):
+                self.assertIn(op, text, "B 档操作说明缺：%s" % op)
+
+        # ---------- ⑤ 多块 anchor 必须能解析（不得静默丢核心） ----------
+        multi = ("<!-- src: x -->\n## 核心知识点\n\n"
+                 "<!-- anchor: doc_abc123456789 | block: 2 | blocks: 2,7 -->\n"
+                 "- 甲句 ｜ 乙句\n\n"
+                 "<!-- anchor: doc_abc123456789 | block: 4 -->\n"
+                 "- 丙句（来源块 4）\n")
+        cores = R.parse_core(multi)
+        self.assertEqual(len(cores), 2, "多块 anchor 条目被静默丢弃")
+        self.assertEqual(cores[0]["blocks"], [2, 7], "多块块列表未解析")
+        self.assertEqual(cores[0]["text"], "甲句 ｜ 乙句")
+
+        # ---------- ⑥ 发版门禁须纳入 S7/S8 新模块的语法校验 ----------
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        for mod in ("extract_engine.py", "backend.py", "refine.py",
+                    "revise_engine.py", "refine_engine.py"):
+            self.assertIn(mod, gate,
+                          "发版门禁未纳入 %s 的语法校验" % mod)
+
+
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
     print("\n=== 界面 / API 契约数字摘要 ===")

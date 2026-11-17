@@ -76,8 +76,8 @@ def _validate_config(data: object) -> dict:
     for key in ("endpoint", "api_key", "model"):
         val = data.get(key, "")
         out[key] = val.strip() if isinstance(val, str) else ""
-    # S8：补写开关只认布尔；缺省 false（默认关闭 = 默认不造假）
-    out["allow_suppplement"] = bool(data.get("allow_suppplement", False))
+    # S8：补写开关只认「明确为真」；缺省 false（默认关闭 = 默认不造假）
+    out["allow_suppplement"] = _as_bool(data.get("allow_suppplement", False))
     return out
 
 
@@ -118,7 +118,14 @@ def save_config(data: object) -> dict:
             except (OSError, ValueError):
                 pass
         clean = dict(incoming)
-        if not incoming["api_key"]:
+        # 「未修改」的两种写法都要保留原 key：
+        #   ① 空串 —— 契约约定的「空值表示不改」；
+        #   ② 与当前掩码完全相同 —— UI 会把掩码回填进输入框，用户没改却
+        #      再保存时提交上来的就是掩码串。若不识别它，真 key 会被掩码
+        #      永久覆盖（云端后端从此全部 401）。此处做后端兜底，
+        #      前端也会主动把掩码转成空串，两道防线互不依赖。
+        if not incoming["api_key"] or (
+                current_key and incoming["api_key"] == mask_key(current_key)):
             clean["api_key"] = current_key
         _CACHE = clean
         try:
@@ -142,6 +149,26 @@ def mask_key(key: str) -> str:
     return "****" + key[-4:]
 
 
+def _as_bool(value) -> bool:
+    """**保守**布尔解析：只有明确为真才判真，其余一律判假。
+
+    背景：``allow_suppplement``（AI 补写开关）会生成**原文之外**的内容，
+    是敏感开关。若用 ``bool(value)`` 强转，字符串 ``"false"`` 会被当成
+    True（Python 里非空字符串为真），从而在用户明确关闭时反而开启补写 ——
+    方向错误且违反「默认不造假」的默认状态。
+
+    规则：真布尔 True / 数字 1 / 字符串 "1|true|yes|on"（忽略大小写与空白）
+    判开；其余（含 "false"、"0"、None、字典、列表）一律判关。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
 def public_config() -> dict:
     """给 UI 的**脱敏**配置：api_key 只回显掩码，绝不回显真值。"""
     cfg = load_config()
@@ -152,7 +179,7 @@ def public_config() -> dict:
         "model": cfg["model"],
         "api_key": mask_key(cfg["api_key"]),
         "has_key": bool(cfg["api_key"]),
-        "allow_suppplement": bool(cfg.get("allow_suppplement", False)),
+        "allow_suppplement": _as_bool(cfg.get("allow_suppplement", False)),
         "config_file": str(CONFIG_FILE),
     }
 

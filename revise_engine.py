@@ -48,7 +48,12 @@ C_TEXT = "#1F1F1D"                          # 原文黑
 # 修改是对原文的调整，补写是原文之外的新增内容，性质不同、必须一眼可辨。
 C_AI_FG, C_AI_BG = "#501313", "#FCEBEB"
 
-_ANCHOR_RE = re.compile(r"<!--\s*anchor:\s*doc_[0-9a-f]{12}\s*\|\s*block:\s*(\d+)\s*-->")
+# 锚点格式：单块 `<!-- anchor: doc_x | block: 2 -->`，
+# 多块（B 档合并去重后）`<!-- anchor: doc_x | block: 2 | blocks: 2,7 -->`。
+# 两种都必须能解析，否则链式处理会**静默丢掉**合并条目。
+_ANCHOR_RE = re.compile(
+    r"<!--\s*anchor:\s*doc_[0-9a-f]{12}\s*\|\s*block:\s*(\d+)"
+    r"(?:\s*\|\s*blocks:\s*([0-9][0-9,\s]*))?\s*-->")
 _CORE_RE = re.compile(r"^-\s+(.*?)（来源块\s*(\d+)）\s*$")
 
 
@@ -62,11 +67,15 @@ def parse_core(md_text: str) -> list[dict]:
     1. S7 LLM 产物：``- 文本（来源块 N）`` —— 块号来自行尾后缀；
     2. S8 抽取式产物：``- 文本`` —— 块号来自其上方的 ``anchor`` 注释。
 
+    锚点还分**单块**（``| block: 2``）与**多块**（``| block: 2 | blocks: 2,7``，
+    B 档合并去重后产生）两种，多块时解析出完整块列表，不丢条目。
+
     只认块号一致的核心，防止解析错位导致修订挂靠到错误块。
     """
     lines = md_text.splitlines()
     cores: list[dict] = []
     pending_anchor: int | None = None
+    pending_blocks: list[int] | None = None
     in_core_section = False
     for line in lines:
         stripped = line.strip()
@@ -75,12 +84,16 @@ def parse_core(md_text: str) -> list[dict]:
         if stripped.startswith("## "):
             in_core_section = (stripped == "## 核心知识点")
             pending_anchor = None
+            pending_blocks = None
             continue
         if not in_core_section:
             continue
         m = _ANCHOR_RE.search(line)
         if m:
             pending_anchor = int(m.group(1))
+            raw = m.group(2)
+            pending_blocks = ([int(x) for x in re.findall(r"\d+", raw)]
+                              if raw else None)
             continue
         s = stripped
         if not s.startswith("- "):
@@ -93,13 +106,17 @@ def parse_core(md_text: str) -> list[dict]:
             # 格式 1：行尾带「（来源块 N）」，且必须与上方 anchor 一致
             text, block = c.group(1).strip(), int(c.group(2))
             if block == pending_anchor:
-                cores.append({"block": block, "text": text})
+                cores.append({"block": block, "text": text,
+                              "blocks": pending_blocks or [block]})
             pending_anchor = None
+            pending_blocks = None
             continue
         if pending_anchor is not None:
             # 格式 2：S8 抽取式产物，块号取自上方 anchor
-            cores.append({"block": pending_anchor, "text": body})
+            cores.append({"block": pending_anchor, "text": body,
+                          "blocks": pending_blocks or [pending_anchor]})
             pending_anchor = None
+            pending_blocks = None
     return cores
 
 

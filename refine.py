@@ -107,7 +107,14 @@ def capability(refresh: bool = False) -> dict:
 
 
 def listed_models(refresh: bool = False) -> dict:
-    """列出当前后端可用模型（经 Backend.list_models()，绝不编造模型名）。"""
+    """列出当前后端可用模型（经 Backend.list_models()，绝不编造模型名）。
+
+    抽取式模式没有「模型」概念，但也不该回一句「尚未配置后端」误导用户 ——
+    直接透传 ExtractBackend 的诚实说明。
+    """
+    cfg = backend.load_config(refresh=refresh)
+    if cfg.get("mode", backend.MODE_EXTRACT) == backend.MODE_EXTRACT:
+        return backend.ExtractBackend(cfg).list_models()
     cap = capability(refresh=refresh)
     if not cap["enabled"]:
         return {"ok": False, "capability": STATUS_UNAVAILABLE,
@@ -177,6 +184,23 @@ def inspect(path: str, refresh: bool = False) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# 产物 doc_id 统一口径
+# --------------------------------------------------------------------------- #
+def _doc_id_of(src: Path) -> str:
+    """产物 doc_id：优先沿用**源文件名**里的 doc_id，保持同一条产物链。
+
+    修订输入是 ``<doc_id>.refine.md``，产物理应是 ``<doc_id>.revise.md``。
+    若改用 refine.md 的**内容哈希**另算一个 id，用户按 doc_id 追产物链就会断
+    （且与 LLM 路径「从文件名提取」的行为不一致）。取不到文件名 id 时
+    才回退到内容哈希。
+    """
+    m = re.search(r"(doc_[0-9a-f]{12})", src.name)
+    if m:
+        return m.group(1)
+    return media_runtime.source_info(src)["doc_id"]
+
+
+# --------------------------------------------------------------------------- #
 # 轻量任务状态（自洽，不依赖 app.py 的 Job，避免循环 import）
 # --------------------------------------------------------------------------- #
 import threading as _threading
@@ -241,6 +265,10 @@ def _run_refine_extract(path: str, outdir: str, cap: dict) -> None:
     """
     src = Path(path)
     _task_add("log", "读取源 md…", 0.08)
+    with _TASK_LOCK:
+        if _TASK is not None and _TASK.get("cancelled"):
+            _TASK["state"] = "cancelled"
+            return
     text = src.read_text(encoding="utf-8", errors="replace")
     _task_add("log", "抽取式提纯中（TF-ICF + TextRank + MMR）…", 0.35)
     result = _extract.extract_core(text, top_k=_EXTRACT_TOP_K)
@@ -515,6 +543,10 @@ def _run_revise_extract(path: str, outdir: str, cap: dict) -> None:
     """
     src = Path(path)
     _task_add("log", "读取精读核心…", 0.1)
+    with _TASK_LOCK:
+        if _TASK is not None and _TASK.get("cancelled"):
+            _TASK["state"] = "cancelled"
+            return
     text = src.read_text(encoding="utf-8", errors="replace")
     cores = _revise.parse_core(text)
     _task_add("log", "解析到 %d 条核心" % len(cores), 0.25)
@@ -542,15 +574,11 @@ def _run_revise_extract(path: str, outdir: str, cap: dict) -> None:
         "converter": "原文内改写（纯标准库，零依赖离线）",
         "mode": "原文内改写（抽取式）",
         "model": "—",
+        # 沿用精读产物的同一个 doc_id：doc_A.refine.md → doc_A.revise.md
+        "doc_id": _doc_id_of(src),
     }
     md_text, doc_id = _extract.render_md(src, rewritten, meta)
-    # 在元数据里追加 B 档操作说明
     stats = rewritten.get("stats") or {}
-    md_text = md_text.replace(
-        "- 保真度：架构级保证 —— 每条核心均为原文原句，可逐字定位",
-        "- 保真度：架构级保证 —— 只用原文素材，未改事实；每个片段可在原文定位\n"
-        "- 本次改写操作：%s（合并 %d 条）"
-        % ("、".join(stats.get("ops") or []), int(stats.get("merged") or 0)))
     derived = media_runtime.ensure_derived(outdir)
     md_path = derived / (doc_id + _revise.REVISE_MD_SUFFIX)
     html_path = derived / (doc_id + _revise.REVISE_HTML_SUFFIX)
@@ -643,9 +671,9 @@ def _run_revise_llm(path: str, model: str, outdir: str, backend_obj,
                 _TASK["error"] = "无有效修订，未产出文档"
             return
 
-        # doc_id 从精读产物名提取（doc_xxx.refine.md），保证与精读同一 id
-        m = re.search(r"(doc_[0-9a-f]{12})", src.name)
-        doc_id = m.group(1) if m else "doc_" + media_runtime.source_info(src)["doc_id"][4:16]
+        # doc_id 沿用精读产物名里的 id（doc_xxx.refine.md → doc_xxx.revise.md），
+        # 保证与精读同一 id、产物链不断
+        doc_id = _doc_id_of(src)
         meta = {
             "stem": src.name.split(".")[0],
             "doc_id": doc_id,

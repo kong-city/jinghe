@@ -137,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
     for rel in ("app.py", "extract.py", "test_app.py", "test_extract.py",
                 "format_registry.py", "media_tools.py", "media_runtime.py",
                 "word_input.py", "word_export.py", "audio_transcribe.py",
-                "video_transcribe.py", "self_update.py"):
+                "video_transcribe.py", "self_update.py",
+                # S7/S8 新增模块同样纳入编译校验（此前漏检，新模块语法错误
+                # 只会在运行时才暴露）
+                "backend.py", "refine.py", "refine_engine.py",
+                "revise_engine.py", "extract_engine.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:

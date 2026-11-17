@@ -1425,7 +1425,8 @@
       var models = (r && Array.isArray(r.models)) ? r.models : [];
       if (!models.length) {
         var o = document.createElement("option");
-        o.value = ""; o.textContent = "（用后端默认模型）";
+        o.value = "";
+        o.textContent = (r && r.note) ? r.note : "（用后端默认模型）";
         el.refineModel.appendChild(o);
         return;
       }
@@ -1491,11 +1492,17 @@
   }
 
   function saveBackendCfg(thenProbe) {
+    // 密钥回填的是掩码（如 ****3456），不是真 key。若原样提交，
+    // 后端会把掩码当成新 key 写入、真 key 被永久覆盖（云端后端从此全 401）。
+    // 这里主动把「看起来是掩码」的值转成空串，交由后端「空值=不改」语义处理；
+    // 后端另有「掩码值=未修改」的兜底，两道防线互不依赖。
+    var keyVal = (el.beApiKey && el.beApiKey.value || "").trim();
+    if (/^\*{4}/.test(keyVal)) keyVal = "";
     var payload = {
       kind: (el.beKind && el.beKind.value) || "none",
       mode: (el.beMode && el.beMode.value) || "extract",
       endpoint: (el.beEndpoint && el.beEndpoint.value || "").trim(),
-      api_key: (el.beApiKey && el.beApiKey.value || "").trim(),
+      api_key: keyVal,
       model: (el.beModel && el.beModel.value || "").trim(),
       allow_suppplement: !!(el.beAllowSupplement && el.beAllowSupplement.checked)
     };

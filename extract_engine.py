@@ -7,8 +7,8 @@
 本模块实现 A 档「可信提纯」：**只从原文里"捡"，绝不自己"造"**。
 
 铁律：
-1. 输出的每一条核心都是**原文的原样子串**（仅裁剪首尾空白与归一换行），
-   因此能在原文里逐字定位 —— 结构上不可能编造；
+1. 输出的每一条核心都是**原文的原样子串**（仅裁剪首尾空白），
+   因此能在原文里定位 —— 结构上不可能编造；
 2. 每条核心带块级锚点（``block_anchor``），回溯路径与 S7 体系一致；
 3. 纯标准库：中文用**字符二元组**切分规避第三方分词器，
    图算法用 PageRank 幂迭代实现，无需 numpy/scipy/networkx。
@@ -212,7 +212,11 @@ def lexicon_hits(text: str) -> list[tuple[str, int, int]]:
 
 
 def heading_terms(blocks: list[dict]) -> set[str]:
-    """从标题与列表项里挖术语 —— 技术文档的概念名高度一致，是可靠词源。"""
+    """从标题与列表项里挖术语 —— 技术文档的概念名高度一致，是可靠词源。
+
+    中文串**贪婪整取**（不切碎）：「数据一致性保障机制」应整体入池，
+    切成「数据一致性保障机」反而制造跨词碎片。
+    """
     terms: set[str] = set()
     for b in blocks:
         t = b["text"]
@@ -221,7 +225,7 @@ def heading_terms(blocks: list[dict]) -> set[str]:
         if not head:
             continue
         head = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", head).strip()
-        for seg in re.findall(r"[\u4e00-\u9fff]{2,8}", head):
+        for seg in re.findall(r"[\u4e00-\u9fff]{2,}", head):
             terms.add(seg)
             if len(seg) >= 4:
                 terms.add(seg[:4])
@@ -235,22 +239,42 @@ def _spans_conflict(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[0] < b[1] and b[0] < a[1]
 
 
-def pick_terms(items: list[tuple[str, float, int, int]], limit: int) -> list[str]:
-    """按分数挑词，并做**槽位冲突消解**（重叠跨度只留高分者）。
+def pick_terms(items: list[tuple[str, float, int, int, int]], limit: int) -> list[str]:
+    """按分数挑词，并做**槽位冲突消解**（同句内重叠跨度只留高分者）。
 
     这样「精核」(0-2) 与「项目」(2-4) 可共存，而「核项」(1-3) 与两者都冲突被淘汰。
+
+    **跨度是句内坐标**：句 1 的第 3 字与句 5 的第 3 字不是同一处文字，
+    跨句比较毫无意义。故每个候选词都带所属句号 ``sid``，
+    冲突判定**只在同一句内**进行。
+
+    **更具体者优先**：两个词在同句内重叠且一个是另一个的子串时，
+    保留**更长**的那个（「数据一致性保障机制」优于「一致性」），
+    避免完整概念名被拆成信息量更低的碎片。
+
+    items 元素：``(term, score, sid, start, end)``。
     """
     picked: list[str] = []
-    used: list[tuple[int, int]] = []
-    for term, score, s, e in sorted(items, key=lambda x: (-x[1], x[0])):
+    used: list[tuple[int, int, int]] = []
+    for term, score, sid, s, e in sorted(items, key=lambda x: (-x[1], x[0])):
         if len(picked) >= limit:
             break
-        if any(_spans_conflict((s, e), u) for u in used):
+        conflict = None
+        for i, u in enumerate(used):
+            if u[0] == sid and _spans_conflict((s, e), (u[1], u[2])):
+                conflict = i
+                break
+        if conflict is not None:
+            old = picked[conflict]
+            # 长词覆盖短词：用更具体的概念名替换（保留位置与次序）
+            if len(term) > len(old) and old in term:
+                picked[conflict] = term
+                used[conflict] = (sid, s, e)
             continue
         if any(term in p for p in picked):
             continue
         picked.append(term)
-        used.append((s, e))
+        used.append((sid, s, e))
     return picked
 
 
@@ -289,47 +313,80 @@ def keyword_scores(sents: list[dict]) -> dict[str, float]:
     return scores
 
 
+def _first_positions(sents: list[dict]) -> dict[str, list]:
+    """每个候选词的**首次出现位置**（句号 + 句内偏移）与出现次数，一次遍历建索引。
+
+    槽位消解需要真实坐标；早期实现把位置统一凑到首句开头，
+    导致同句之外的词互相「撞车」被误杀。这里改为记录真实命中位置。
+
+    返回值：``{term: [freq, sid, start]}``（freq 为该词出现的句子次数）。
+    """
+    pos: dict[str, list] = {}
+    for idx, s in enumerate(sents):
+        for term, st, _en in term_items(s["text"]):
+            cur = pos.get(term)
+            if cur is None:
+                pos[term] = [1, idx, st]
+            else:
+                cur[0] += 1
+    return pos
+
+
 def top_keywords(sents: list[dict], limit: int = MAX_KEYWORDS,
                  heads: set[str] | None = None) -> list[str]:
     """取全局 top 关键词。
 
     三路词源合并打分：**领域词表**（高置信）> **标题挖词**（概念名一致）> **二元组**（兜底），
-    最后统一做槽位冲突消解，避免「核项」这类边界碎片入选。
+    最后统一做槽位冲突消解（**同句内**重叠才判冲突），避免「核项」这类边界碎片入选。
+
+    每路词源都必须携带**真实命中位置**（句号 + 句内偏移）：
+    位置造假会让不同句的词互相冲突，把整片标题词误杀。
     """
     scores = keyword_scores(sents)
-    items: list[tuple[str, float, int, int]] = []
+    positions = _first_positions(sents)
+    items: list[tuple[str, float, int, int, int]] = []
     head_set = heads or set()
 
     # ① 领域词表：命中即给高权重（按其自身二元组分数的上限加成）
-    term_hits: dict[str, list[tuple[int, int]]] = {}
-    for s in sents:
+    term_hits: dict[str, list[tuple[int, int, int]]] = {}
+    for idx, s in enumerate(sents):
         for term, st, en in lexicon_hits(s["text"]):
-            term_hits.setdefault(term, []).append((st, en))
+            term_hits.setdefault(term, []).append((idx, st, en))
     for term, spans in term_hits.items():
         base = max([scores.get(t, 0.0) for t in bigrams(term)] or [0.0])
         freq = len(spans)
         w = (base or 1.0) * (1 + math.log(freq)) * 2.6
-        items.append((term, w, spans[0][0], spans[0][1]))
+        sid, st, en = spans[0]
+        items.append((term, w, sid, st, en))
 
-    # ② 标题挖词：概念名在正文反复出现 → 加权
+    # ② 标题挖词：概念名在正文反复出现 → 加权；位置取**真实命中句**
     for term in head_set:
-        n = sum(1 for s in sents if term in s["text"])
-        if not n:
+        n = 0
+        hit: tuple[int, int, int] | None = None
+        for idx, s in enumerate(sents):
+            p = s["text"].find(term)
+            if p >= 0:
+                n += 1
+                if hit is None:
+                    hit = (idx, p, p + len(term))
+        if not n or hit is None:
             continue
         base = max([scores.get(t, 0.0) for t in bigrams(term)] or [0.0])
         w = (base or 0.6) * (1 + math.log(n)) * 1.8
-        pos = sents[0]["text"].find(term)
-        items.append((term, w, max(pos, 0), max(pos, 0) + len(term)))
+        items.append((term, w, hit[0], hit[1], hit[2]))
 
-    # ③ 二元组兜底
+    # ③ 二元组兜底（位置取首次真实命中）
     for term, sc in scores.items():
-        pos = 0
-        for s in sents:
-            p = s["text"].find(term)
-            if p >= 0:
-                pos = p
-                break
-        items.append((term, sc, pos, pos + len(term)))
+        hit = positions.get(term)
+        if hit is None:
+            continue
+        freq, sid, st = hit
+        # 全文只出现一次的二元组，几乎必然是跨词碎片（「只追」「录每」）；
+        # 真正的概念要么在领域词表、要么在标题里（由 ①② 提供）。
+        # 关键词要的是「能代表主题的词」，宁可少收也不放碎片。
+        if freq <= 1 and term not in DOMAIN_LEXICON and term not in head_set:
+            continue
+        items.append((term, sc, sid, st, st + len(term)))
 
     return pick_terms(items, limit)
 
@@ -337,14 +394,14 @@ def top_keywords(sents: list[dict], limit: int = MAX_KEYWORDS,
 def keywords_of_sentence(sent: dict, global_scores: dict[str, float],
                          limit: int = 4) -> list[str]:
     """取某句自身的关键词（领域词优先 + 槽位冲突消解）。"""
-    items: list[tuple[str, float, int, int]] = []
+    items: list[tuple[str, float, int, int, int]] = []
     for term, st, en in lexicon_hits(sent["text"]):
         base = max([global_scores.get(t, 0.0) for t in bigrams(term)] or [0.0])
-        items.append((term, (base or 1.0) * 2.6, st, en))
+        items.append((term, (base or 1.0) * 2.6, 0, st, en))
     for term, st, en in term_items(sent["text"]):
         if term in DOMAIN_LEXICON:
             continue
-        items.append((term, global_scores.get(term, 0.0), st, en))
+        items.append((term, global_scores.get(term, 0.0), 0, st, en))
     return pick_terms(items, limit)
 
 
@@ -611,9 +668,12 @@ def extract_core(md_text: str, top_k: int = DEFAULT_TOP_K) -> dict:
 
 
 def verify_traceable(md_text: str, points: list[dict]) -> tuple[bool, str]:
-    """**A 档红线校验**：每条核心必须能在原文中逐字找到。
+    """**A 档红线校验**：每条核心必须能在原文中定位。
 
     这是抽取式"不可能造假"的机器可验证证明；任一条对不上即判失败。
+
+    匹配口径：两侧都去掉**全部空白**再比对（原文可能有连续空格、软换行，
+    核心句保留原样空白），文字与标点必须逐字一致。
     """
     norm = re.sub(r"\s+", "", md_text)
     for p in points:
@@ -635,7 +695,8 @@ def render_md(src: Path, result: dict, meta: dict) -> tuple[str, str]:
     这里每条都是**原文原句**，不是模型重写，故措辞更强调可回溯。
     """
     info = media_runtime.source_info(src)
-    doc_id = info["doc_id"]
+    # doc_id 可由调用方覆盖（修订产物须沿用精读产物的同一个 id，避免产物链断裂）
+    doc_id = (meta.get("doc_id") or info["doc_id"])
     points = result.get("points") or []
     stats = result.get("stats") or {}
     mode = meta.get("mode") or "可信提纯（抽取式）"
@@ -692,6 +753,15 @@ def render_md(src: Path, result: dict, meta: dict) -> tuple[str, str]:
         "- 保真度：%s" % ("架构级保证 —— 只用原文素材，未改事实；每个片段可在原文定位"
                        if is_rewrite else
                        "架构级保证 —— 每条核心均为原文原句，可逐字定位"),
+    ]
+    # B 档操作说明由渲染层**原生输出**（不再由调用方事后 replace 拼接 ——
+    # 那条旧路径的匹配串与实际输出不一致，replace 静默失效、操作行从未出现）。
+    ops = stats.get("ops") or []
+    if ops:
+        lines.append("- 本次改写操作：%s（合并 %d 条）"
+                     % ("、".join(str(o) for o in ops),
+                        int(stats.get("merged") or 0)))
+    lines += [
         "- 耗时：%.3f 秒" % float(stats.get("elapsed") or 0),
         "- 源文件 sha256：%s" % info["sha256"],
         "- doc_id：%s" % doc_id,

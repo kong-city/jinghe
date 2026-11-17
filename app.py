@@ -2420,7 +2420,9 @@ class Handler(BaseHTTPRequestHandler):
                     "endpoint": str(data.get("endpoint") or ""),
                     "api_key": str(data.get("api_key") or ""),
                     "model": str(data.get("model") or ""),
-                    "allow_suppplement": bool(data.get("allow_suppplement", False)),
+                    # 原样透传，由 backend._as_bool 保守判定：
+                    # 字符串 "false" 必须判「关」，不能被 bool() 强转成 True。
+                    "allow_suppplement": data.get("allow_suppplement", False),
                 })
                 self._send_json({"ok": True, "config": backend.public_config()})
             elif path == "/api/refine/open":
