@@ -47,6 +47,9 @@ import word_input  # S2a：Word → .md 输入增强（独立后处理层，冻�
 import word_export  # S2b：.md → .docx 导出（独立后处理层，纯标准库 OOXML）
 import audio_transcribe  # S3：音频 → .md（本机 whisper 适配器，冻结内核零改动）
 import video_transcribe  # S4：视频 → .md（独立 video handler，绝不复用音频路径）
+import link_guard  # S5a：链接安全闸门（域名不设限，SSRF 硬红线）
+import link_downloader  # S5b：本机 yt-dlp 下载 + cookie 只读 + .part 清理
+import link_media  # S5b：链接批量编排（复用 S4 handler，独立队列）
 import refine  # S7：精读提纯 / 修订增修（可插拔后端，独立后处理层，冻结内核零改动）
 import backend  # S7b：可插拔大模型后端适配层（Local ollama / Cloud 兼容端点）
 import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行中的程序并重启）
@@ -2131,6 +2134,17 @@ class Handler(BaseHTTPRequestHandler):
                     since = 0
                 self._send_json(self._api_video_status(since))
                 return
+            if path == "/api/media/status":
+                # S5：链接提取批量进度独立轮询，与阶段 1 / 音频 / 视频 / 精读
+                # 四条队列互不相交。
+                _touch_heartbeat()
+                qs = parse_qs(parsed.query)
+                try:
+                    since = int((qs.get("since") or ["0"])[0])
+                except (TypeError, ValueError):
+                    since = 0
+                self._send_json(link_media.status(since))
+                return
             if path == "/api/refine/status":
                 # S7：精读 / 修订进度独立轮询（增量事件）。
                 _touch_heartbeat()
@@ -2243,6 +2257,9 @@ class Handler(BaseHTTPRequestHandler):
         # S4：视频能力同样只走顶层增量字段；ffprobe 是 video_transcribe
         # 自有 tools 子结构，绝不并入 media_tools.TOOL_SPECS / probe["tools"]。
         data["video_transcribe"] = video_transcribe.capability(refresh=refresh)
+        # S5：链接解析真实状态走顶层增量字段（yt-dlp 健康度），绝不并入
+        # TOOL_SPECS / probe["tools"]（S1 契约锁死 3 工具）。
+        data["link_resolve"] = link_media.capability(refresh=refresh)
         # S7：精读 / 修订能力同样走顶层增量字段；ollama 是 refine 自有 tools
         # 子结构，绝不并入 media_tools.TOOL_SPECS / probe["tools"]（S1 契约锁死 3 工具）。
         data["refine"] = refine.capability(refresh=refresh)
@@ -2408,6 +2425,32 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/video/cancel":
                 self._send_json(self._api_video_cancel())
+            # ---- S5：视频链接 → .md（下载 + 编排，复用 S4 handler）----
+            elif path == "/api/link/inspect":
+                # 只读预检：域名不设限，但 SSRF 硬红线；不下载、不写文件
+                raw = str(data.get("url") or "").strip()
+                chk = link_guard.check_link(raw)
+                cap = link_media.capability()
+                self._send_json({
+                    "ok": chk.ok,
+                    "capability": cap["capability"],
+                    "enabled": cap["enabled"],
+                    "check": {"ok": chk.ok, "host": chk.host, "scheme": chk.scheme,
+                              "ips": chk.ips, "error": chk.error,
+                              "note": "域名不设限；内网/保留地址拒绝（SSRF 防护）"},
+                    "reason": cap["reason"] if not cap["enabled"] else chk.error,
+                })
+            elif path == "/api/media/run":
+                urls = data.get("urls")
+                urls = [str(u) for u in urls] if isinstance(urls, list) else \
+                    [str(data.get("url") or "")]
+                self._send_json(link_media.start(
+                    urls,
+                    str(data.get("outdir") or "").strip(),
+                    cookie_file=str(data.get("cookie_file") or "").strip(),
+                ))
+            elif path == "/api/media/cancel":
+                self._send_json(link_media.cancel())
             # ---- S7：精读提纯 / 修订增修（独立后处理层，均为增量端点）----
             elif path == "/api/refine/inspect":
                 self._send_json(refine.inspect(str(data.get("path") or "").strip()))

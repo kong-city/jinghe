@@ -141,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
                 # S7/S8 新增模块同样纳入编译校验（此前漏检，新模块语法错误
                 # 只会在运行时才暴露）
                 "backend.py", "refine.py", "refine_engine.py",
-                "revise_engine.py", "extract_engine.py", "log_rotate.py"):
+                "revise_engine.py", "extract_engine.py", "log_rotate.py",
+                "link_guard.py", "link_downloader.py", "link_media.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:

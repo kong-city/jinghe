@@ -162,6 +162,30 @@
         <p id="toolStatus" class="card-sub tool-status" hidden></p>
       </section>
 
+      <!-- S5：视频链接 → .md（域名不设限；SSRF 内网防护；cookie 只读不落盘） -->
+      <section class="card" id="linkCard">
+        <div class="card-title">视频链接 → .md</div>
+        <p class="card-sub">粘贴视频链接（每行一条，最多 20 条），本机 yt-dlp 下载后复用视频提取生成三区块 .md，落 out/derived/。域名不设限，但内网 / 保留地址一律拒绝（SSRF 防护）。软件不内置任何账号凭据。</p>
+        <div class="row">
+          <textarea id="linkUrls" class="text-input" rows="3" spellcheck="false"
+                    aria-label="视频链接，每行一条"
+                    placeholder="https://example.com/video/1&#10;https://example.com/video/2"></textarea>
+        </div>
+        <div class="row">
+          <input id="linkCookie" class="text-input" type="text" spellcheck="false"
+                 aria-label="可选的本地 cookie 文件路径"
+                 placeholder="可选：本机 cookie 文件路径（只读引用，不复制不上传）">
+        </div>
+        <div class="row set-actions">
+          <button id="btnLinkRun" class="btn btn-primary" type="button" disabled>链接提取 → .md</button>
+          <button id="btnLinkInspect" class="btn btn-ghost" type="button" disabled>预检链接</button>
+          <button id="btnLinkCancel" class="btn btn-ghost" type="button" hidden>取消提取</button>
+          <span id="linkStatus" class="run-status"></span>
+        </div>
+        <p id="linkCap" class="card-sub tool-status" hidden></p>
+        <p class="card-sub">cookie 文件仅只读传给本机 yt-dlp，不复制进产物、不写入日志、不外传；请仅处理你有权访问的内容。</p>
+      </section>
+
       <div id="errorBar" class="bar bar-error" hidden></div>
 
       <div class="actions">

@@ -57,6 +57,14 @@
     btnAudioCancel: $("btnAudioCancel"),
     btnVideoTranscribe: $("btnVideoTranscribe"),
     btnVideoCancel: $("btnVideoCancel"),
+    // S5：视频链接 → .md
+    linkUrls: $("linkUrls"),
+    linkCookie: $("linkCookie"),
+    btnLinkRun: $("btnLinkRun"),
+    btnLinkInspect: $("btnLinkInspect"),
+    btnLinkCancel: $("btnLinkCancel"),
+    linkStatus: $("linkStatus"),
+    linkCap: $("linkCap"),
     btnKnowledgeBase: $("btnKnowledgeBase"),
     toolStatus: $("toolStatus"),
     // 左侧导航与页面
@@ -1315,6 +1323,13 @@
     var at = (toolState && toolState.audio_transcribe) || {};
     var vt = (toolState && toolState.video_transcribe) || {};
     var wi = (toolState && toolState.word_input) || {};
+    var lr = (toolState && toolState.link_resolve) || {};
+    if (el.linkCap) {
+      el.linkCap.textContent = "链接提取：" +
+        (lr.enabled ? "已启用（本机 yt-dlp + 复用视频 handler，域名不设限、SSRF 防护）"
+                    : "未启用（" + (lr.reason || "缺少本机工具") + "）");
+      el.linkCap.hidden = false;
+    }
     var legacy = wi.legacy_doc || {};
     el.toolStatus.textContent = "本机工具：" + parts.join(" · ") +
       "；音视频转写：" +
@@ -1637,6 +1652,15 @@
     el.btnVideoTranscribe.disabled = !(!running && !previewing && videoOn &&
                                        hasVideoInput() && audioOut);
     el.btnVideoTranscribe.textContent = videoOn ? "视频提取 → .md" : "视频提取（未启用）";
+    // S5：链接提取——能力走顶层 link_resolve；需有链接与输出目录。
+    var lr = ((toolState || {}).link_resolve) || {};
+    var linkOn = !!lr.enabled;
+    var hasLinks = !!(el.linkUrls && el.linkUrls.value.trim());
+    if (el.btnLinkRun) {
+      el.btnLinkRun.disabled = !(!running && !previewing && linkOn && hasLinks && audioOut);
+      el.btnLinkRun.textContent = linkOn ? "链接提取 → .md" : "链接提取（未启用）";
+    }
+    if (el.btnLinkInspect) el.btnLinkInspect.disabled = !(linkOn && hasLinks);
   }
 
   // 统一的后端动作：调用 /api/*，成功给带时间戳的常驻文案，失败显式报错。
@@ -1871,6 +1895,99 @@
     });
   }
 
+  /* ------------------------------ S5：视频链接 → .md ------------------------------ */
+  var linkPolling = null;
+  var linkSince = 0;
+
+  function linkList() {
+    return (el.linkUrls && el.linkUrls.value || "").split(/\r?\n/)
+      .map(function (s) { return s.trim(); }).filter(Boolean);
+  }
+
+  function doLinkInspect() {
+    var urls = linkList();
+    if (!urls.length) { showError("请先填写链接"); return; }
+    if (el.linkStatus) el.linkStatus.textContent = "预检中…";
+    // 只预检第一条（逐条预检在任务启动时统一做）
+    api("/api/link/inspect", { url: urls[0] }, 15000).then(function (r) {
+      if (!r || !r.ok) {
+        if (el.linkStatus) el.linkStatus.textContent = "预检未通过：" +
+          (((r || {}).check || {}).error || (r && r.error) || "未知");
+        return;
+      }
+      var c = r.check || {};
+      if (el.linkStatus) el.linkStatus.textContent =
+        "预检通过：" + (c.host || "") +
+        "（IP " + ((c.ips || []).join(", ") || "—") + "）";
+    }).catch(function (err) {
+      if (el.linkStatus) el.linkStatus.textContent = "预检失败：" + (err.message || err);
+    });
+  }
+
+  function doLinkRun() {
+    var urls = linkList();
+    if (!urls.length) { showError("请先填写链接"); return; }
+    var out = (el.outPath && el.outPath.value || "").trim();
+    if (!out) { showError("请先填写输出目录"); return; }
+    if (el.btnLinkRun) { el.btnLinkRun.disabled = true; el.btnLinkRun.textContent = "启动中…"; }
+    if (el.btnLinkCancel) el.btnLinkCancel.hidden = false;
+    clearBar();
+    api("/api/media/run", {
+      urls: urls, outdir: out,
+      cookie_file: (el.linkCookie && el.linkCookie.value || "").trim()
+    }, 15000).then(function (r) {
+      if (!r || !r.ok) {
+        showError((r && r.error) || "链接提取启动失败");
+        updateFeatureButtons();
+        return;
+      }
+      linkSince = 0;
+      showNotice("链接提取已启动（共 " + (r.total || urls.length) + " 条） · " + nowHMS());
+      startLinkPolling();
+    }).catch(function (err) {
+      showError(err.message || String(err));
+      updateFeatureButtons();
+    });
+  }
+
+  function doLinkCancel() {
+    api("/api/media/cancel", {}, 5000).then(function (r) {
+      if (!r.ok) showError(r.error || "取消失败");
+      else showNotice("已请求取消链接提取（会清理临时下载） · " + nowHMS());
+    }).catch(function (err) { showError(err.message || String(err)); });
+  }
+
+  function startLinkPolling() {
+    if (linkPolling) clearTimeout(linkPolling);
+    var poll = function () {
+      api("/api/media/status?since=" + linkSince, undefined, 10000).then(function (s) {
+        if (!s) return;
+        if (typeof s.next === "number") linkSince = s.next;
+        (s.events || []).forEach(function (ev) {
+          if (el.linkStatus) el.linkStatus.textContent = ev.text || "";
+        });
+        if (s.running) {
+          linkPolling = setTimeout(poll, 1000);
+        } else {
+          linkPolling = null;
+          if (el.btnLinkCancel) el.btnLinkCancel.hidden = true;
+          updateFeatureButtons();
+          if (s.state === "done") {
+            showNotice("链接提取完成：成功 " + (s.success || 0) +
+              " / 失败 " + (s.failed || 0) + " · " + nowHMS());
+          } else if (s.state === "failed") {
+            showError(s.error || "链接提取失败");
+          } else if (s.state === "cancelled") {
+            showNotice("链接提取已取消 · " + nowHMS());
+          }
+        }
+      }).catch(function () {
+        linkPolling = setTimeout(poll, 2000);
+      });
+    };
+    poll();
+  }
+
   /* ------------------------------ Tabs ------------------------------ */
   function activateTab(name) {
     var tabs = document.querySelectorAll(".tab");
@@ -1924,6 +2041,11 @@
     el.btnAudioCancel.addEventListener("click", doAudioCancel);
     el.btnVideoTranscribe.addEventListener("click", doVideoTranscribe);
     el.btnVideoCancel.addEventListener("click", doVideoCancel);
+    // S5：链接提取
+    if (el.linkUrls) el.linkUrls.addEventListener("input", updateFeatureButtons);
+    if (el.btnLinkRun) el.btnLinkRun.addEventListener("click", doLinkRun);
+    if (el.btnLinkInspect) el.btnLinkInspect.addEventListener("click", doLinkInspect);
+    if (el.btnLinkCancel) el.btnLinkCancel.addEventListener("click", doLinkCancel);
     el.btnKnowledgeBase.addEventListener("click", function () {
       showNotice("阶段 4 知识库 / 自动化规划中，敬请期待。");
     });

@@ -4752,6 +4752,191 @@ class AppContractTest(unittest.TestCase):
             self.assertIn("本机处理不外传", text)
             self.assertIn("<!-- anchor:", text, "LLM 产物缺块级锚点")
 
+    # ------------------------------------------------------------------ #
+    # 58) S5a：链接安全闸门（域名不设限 + SSRF 硬红线 + DNS 固定 + 重定向）
+    # ------------------------------------------------------------------ #
+    def test_58_link_guard_ssrf(self):
+        import ipaddress
+        import link_guard as G
+        from unittest import mock
+
+        # ① 域名不设限：任何公网域名形状都通过（不按域名黑白名单）
+        for u in ("https://anything.example.com/v/123",
+                  "http://unknown-domain.test/watch?v=1",
+                  "https://sub.deep.domain.xyz:8443/a/b"):
+            r = G.check_link(u, resolve=False)
+            self.assertTrue(r.ok, "域名不设限却被拒：%s → %s" % (u, r.error))
+
+        # ② 协议 / 凭据 / 形状红线
+        for bad, hint in (("file:///etc/passwd", "http"),
+                          ("ftp://host/a", "http"),
+                          ("javascript:alert(1)", "http"),
+                          ("http://user:pass@host/v", "账号密码"),
+                          ("", "不能为空")):
+            r = G.check_link(bad, resolve=False)
+            self.assertFalse(r.ok, "危险链接未被拒：%s" % bad)
+            self.assertIn(hint, r.error)
+
+        # ③ IP 分类：只放行全球单播，环回/私网/链路本地/保留/多播/未指定全拒
+        forbidden = ("127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1",
+                     "169.254.169.254", "::1", "fd00::1", "0.0.0.0",
+                     "224.0.0.1", "240.0.0.1")
+        for s in forbidden:
+            self.assertTrue(G.is_forbidden_ip(ipaddress.ip_address(s)),
+                            "禁止 IP 被误放行：%s" % s)
+        for s in ("8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"):
+            self.assertFalse(G.is_forbidden_ip(ipaddress.ip_address(s)),
+                             "公网 IP 被误拒：%s" % s)
+
+        # ④ 字面量 IP 链接：解析阶段必须拒绝内网地址
+        r = G.check_link("http://169.254.169.254/latest/meta-data")
+        self.assertFalse(r.ok)
+        self.assertIn("内网", r.error)
+
+        # ⑤ DNS 解析结果固定：只接受返回的公网 IP，私网 IP 混入即整批拒绝
+        with mock.patch.object(G.socket, "getaddrinfo", return_value=[
+            (2, 1, 6, "", ("8.8.8.8", 443)),
+        ]):
+            r = G.check_link("https://example.com/v")
+        self.assertTrue(r.ok)
+        self.assertEqual(r.ips, ["8.8.8.8"], "固定 IP 列表应只含解析结果")
+
+        with mock.patch.object(G.socket, "getaddrinfo", return_value=[
+            (2, 1, 6, "", ("8.8.8.8", 443)),
+            (2, 1, 6, "", ("127.0.0.1", 443)),
+        ]):
+            r = G.check_link("https://example.com/v")
+        self.assertFalse(r.ok, "DNS 混入内网 IP 必须整批拒绝（重绑定防护）")
+
+        # ⑥ 重定向：逐跳重校验 + 最大跳数
+        self.assertFalse(G.check_redirect_chain(
+            "https://example.com/final", hops=G.MAX_REDIRECTS + 1,
+            resolve=False).ok, "超跳数未拒")
+        hop = G.check_redirect_chain("https://example.com/final", hops=2,
+                                     resolve=False)
+        self.assertTrue(hop.ok)
+        self.assertEqual(hop.redirects, 2)
+        # 重定向到内网：最终 URL 必须被拒
+        self.assertFalse(G.check_redirect_chain(
+            "http://127.0.0.1/admin", hops=1).ok, "重定向到内网未被拒")
+
+        # ⑦ 契约声明：域名不设限但 SSRF 保留（源码注释/user 裁决留痕）
+        src = (ROOT / "link_guard.py").read_text(encoding="utf-8")
+        self.assertIn("域名不设限", src)
+        self.assertIn("DNS 重绑定", src)
+        doc = (ROOT / "docs" / "S5-视频链接立项与契约对账.md").read_text(
+            encoding="utf-8")
+        self.assertIn("SSRF 内网防护保留为硬红线", doc)
+
+    # ------------------------------------------------------------------ #
+    # 59) S5b：链接下载编排 / 端点 / cookie 只读 / 复用 S4 / 冻结契约不变量
+    # ------------------------------------------------------------------ #
+    def test_59_link_media_orchestration(self):
+        import link_downloader as D
+        import link_media as M
+        import media_tools
+        from unittest import mock
+
+        # ① 规模上限（用户裁决「默认」）
+        self.assertEqual(D.MAX_ENTRIES, 20)
+        self.assertEqual(D.MAX_DURATION_SECONDS, 2 * 3600)
+        self.assertEqual(D.MAX_TOTAL_BYTES, 2 * 1024 * 1024 * 1024)
+
+        # ② yt-dlp 参数：no-playlist / 重定向上限 / 时长过滤 / cookie 只读引用
+        tmp = Path(self.tmp)
+        outdir = tmp / "dl"
+        argv = D.build_argv("https://example.com/v", outdir, cookie_file="")
+        self.assertIn("--no-playlist", argv)
+        self.assertIn("--max-redirects", argv)
+        self.assertTrue(any("duration <=" in a for a in argv))
+        argv_c = D.build_argv("https://example.com/v", outdir,
+                              cookie_file=str(tmp / "cookies.txt"))
+        self.assertIn("--cookies", argv_c)
+
+        # ③ cookie 只读预检：不存在即拒绝；存在则返回路径，不读内容
+        with self.assertRaises(D.DownloadRejected):
+            D.validate_cookie_file(str(tmp / "missing.txt"))
+        ck = tmp / "cookies.txt"
+        ck.write_text("# Netscape HTTP Cookie File\nSECRET\t1", encoding="utf-8")
+        self.assertEqual(D.validate_cookie_file(str(ck)), str(ck.resolve()))
+
+        # ④ 下载器：预检拦截内网（连 runner 都不该被调用）
+        called = {"n": 0}
+        def runner(argv, timeout=None, job=None):
+            called["n"] += 1
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+        res = D.run_download("http://127.0.0.1/admin", outdir, runner=runner)
+        self.assertFalse(res["ok"])
+        self.assertEqual(called["n"], 0, "内网链接不应进入下载器")
+
+        # ⑤ 下载器：正常路径取 --print 的文件路径，并二次校验实际 URL
+        fake_file = outdir / "v.mp4"
+        outdir.mkdir(exist_ok=True)
+        fake_file.write_bytes(b"x" * 1024)
+        res = D.run_download("https://example.com/v", outdir, runner=runner,
+                             cookie_file=str(ck))
+        # runner 返回空 stdout → 未报告文件，诚实失败
+        self.assertFalse(res["ok"])
+        self.assertIn("未报告下载文件", res["error"])
+        self.assertGreaterEqual(called["n"], 1)
+
+        # ⑥ capability 走 probe 顶层字段，不碰 TOOL_SPECS / capabilities()
+        cap = M.capability(refresh=True)
+        self.assertIn("enabled", cap)
+        self.assertEqual(cap["limits"]["max_entries"], 20)
+        self.assertEqual([s[0] for s in media_tools.TOOL_SPECS],
+                         ["ffmpeg", "whisper", "yt-dlp"], "TOOL_SPECS 被改动")
+        caps = media_tools.capabilities()
+        self.assertTrue(all(not v["enabled"] for v in caps.values()),
+                        "S1 占位清单被改动")
+        self.assertFalse(media_tools.media_ready(), "media_ready 恒 False 被破坏")
+
+        # ⑦ start 边界：空/超限/非法 URL 一律拒绝且零任务
+        M._JOB = None
+        self.assertFalse(M.start([], str(outdir))["ok"])
+        self.assertFalse(M.start(["https://a.test/v"] * 21, str(outdir))["ok"])
+        self.assertFalse(M.start(["file:///etc/passwd"], str(outdir))["ok"])
+
+        # ⑧ 冻结契约不变量：S5 不碰冻结文件与既有 handler 红线
+        for rel in ("SPEC.md", "extract.py", "test_extract.py",
+                    "audio_transcribe.py", "video_transcribe.py"):
+            self.assertEqual(
+                subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel],
+                               cwd=str(ROOT), capture_output=True).returncode, 0,
+                "%s 被 S5 改动" % rel)
+        asrc = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('path == "/api/link/inspect"', asrc)
+        self.assertIn('path == "/api/media/run"', asrc)
+        self.assertIn('path == "/api/media/status"', asrc)
+        self.assertIn('data["link_resolve"]', asrc, "probe 顶层字段未挂")
+        self.assertNotIn("/api/media/run", (ROOT / "media_tools.py").read_text(
+            encoding="utf-8"), "编排端点不应塞进 S1 工具模块")
+        # 新模块纳入门禁语法校验
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        for mod in ("link_guard.py", "link_downloader.py", "link_media.py"):
+            self.assertIn(mod, gate)
+
+        # ⑨ 端到端 HTTP：/api/link/inspect 形状 + 内网拒绝 + probe 顶层字段
+        srv = self.start()
+        st, insp = srv.post_json("/api/link/inspect",
+                                 {"url": "https://example.com/watch?v=1"})
+        self.assertEqual(st, 200)
+        self.assertIn("check", insp)
+        self.assertIn("域名不设限", insp["check"].get("note", ""))
+        st, bad = srv.post_json("/api/link/inspect",
+                                {"url": "http://192.168.1.1/admin"})
+        self.assertFalse(bad["check"]["ok"], "内网链接未被拒")
+        st, probe = srv.get_json("/api/tools/probe")
+        self.assertIn("link_resolve", probe, "probe 缺顶层 link_resolve")
+        self.assertIn("limits", probe["link_resolve"])
+
+        # ⑩ 边界裁决留痕（用户 2026-11-17 四项）
+        doc = (ROOT / "docs" / "S5-视频链接立项与契约对账.md").read_text(
+            encoding="utf-8")
+        for token in ("域名不设限", "cookie 文件", "不判断内容归属",
+                      "SSRF 内网防护保留为硬红线"):
+            self.assertIn(token, doc, "对账文档缺裁决：%s" % token)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
