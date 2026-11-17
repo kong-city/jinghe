@@ -1573,9 +1573,10 @@ class AppContractTest(unittest.TestCase):
                      "发现新版本时自动打开最新版本下载页",
                      "离线时也会打开仓库最新发布页供手动确认"):
             self.assertNotIn(gone, html, "版本更新卡片仍残留说明文案：%s" % gone)
-        # 版本更新卡片内不允许再有 card-sub
-        seg = html[html.index('id="page-about"'):]
-        card = seg[:seg.index("</section>")]
+        # 版本更新卡片内不允许再有 card-sub（按标题定位，卡片顺序已调整：
+        # 系统信息在前、版本更新在后）
+        vstart = html.index('<div class="card-title">版本更新</div>')
+        card = html[vstart:html.index("</section>", vstart)]
         self.assertNotIn("card-sub", card, "版本更新卡片说明段未清除")
         self.assertNotIn("github.com", card, "版本更新卡片仍显示 GitHub 链接")
 
@@ -3392,7 +3393,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("var isSubsetPreview = explicit.length > 0;", js,
                       "前端未区分勾选预览与全量预览")
         # doPreview 的 then 块内：renderFileList 只在非子集预览时调用
-        dp = js[js.index("function doPreview"):js.index("/* ------------------------------ 输出目录选择")]
+        dp = js[js.index("function doPreview"):js.index("/* ------------------------------ 输出目录打开")]
         self.assertIn("if (!isSubsetPreview) renderFileList(r);", dp,
                       "勾选预览仍会重建清单（未勾选文件会消失）")
         self.assertIn("已按勾选的", dp, "勾选预览缺少明确的反馈文案")
@@ -4524,9 +4525,118 @@ class AppContractTest(unittest.TestCase):
         # ---------- ⑥ 发版门禁须纳入 S7/S8 新模块的语法校验 ----------
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
         for mod in ("extract_engine.py", "backend.py", "refine.py",
-                    "revise_engine.py", "refine_engine.py"):
+                    "revise_engine.py", "refine_engine.py", "log_rotate.py"):
             self.assertIn(mod, gate,
                           "发版门禁未纳入 %s 的语法校验" % mod)
+
+
+    # ------------------------------------------------------------------ #
+    # 56) 日志按天切割 + 7 天保留 / 关于页卡片顺序 / 输出「打开」/ 导航图标
+    # ------------------------------------------------------------------ #
+    def test_56_log_retention_and_ui_layout(self):
+        import datetime as _dt
+        import log_rotate
+        from unittest import mock
+
+        # ---------- ① 归档命名严格形状 ----------
+        self.assertEqual(log_rotate.archive_name(_dt.date(2026, 11, 17)),
+                         "app-2026-11-17.log")
+        day = _dt.date(2026, 11, 17)
+        logdir = Path(self.tmp) / "logs"
+        logdir.mkdir()
+        # 造 9 天归档 + 当前日志 + 干扰文件
+        for back in range(9):
+            d = day - _dt.timedelta(days=back)
+            (logdir / log_rotate.archive_name(d)).write_text(
+                "[log] %s" % d.isoformat(), encoding="utf-8")
+        (logdir / "app.log").write_text("current", encoding="utf-8")
+        (logdir / "app.log.1").write_text("prev", encoding="utf-8")
+        (logdir / "app-not-a-date.log").write_text("keep", encoding="utf-8")
+
+        # ② 非法形状不进列表
+        arch = log_rotate.list_archives(logdir)
+        self.assertEqual(len(arch), 9, "归档列表应只含 9 个合法日期文件")
+        self.assertTrue(all(log_rotate.ARCHIVE_RE.match(p.name) for _, p in arch))
+
+        # ③ 保留 7 天（今天 + 前 6 天），删除更早的 2 个
+        removed = log_rotate.prune_old(logdir, today=day, retain_days=7)
+        self.assertEqual(len(removed), 2, "应删除 2 个 7 天前的归档：%s" % removed)
+        self.assertFalse((logdir / log_rotate.archive_name(
+            day - _dt.timedelta(days=7))).exists())
+        self.assertFalse((logdir / log_rotate.archive_name(
+            day - _dt.timedelta(days=8))).exists())
+        self.assertTrue((logdir / log_rotate.archive_name(day)).exists(),
+                        "今天的归档不能被删")
+        self.assertTrue((logdir / log_rotate.archive_name(
+            day - _dt.timedelta(days=6))).exists(), "第 7 天的归档应保留")
+        # 干扰文件与当前日志都不动
+        self.assertTrue((logdir / "app.log").exists())
+        self.assertTrue((logdir / "app.log.1").exists())
+        self.assertTrue((logdir / "app-not-a-date.log").exists(),
+                        "非日期形状的归档不能被误删")
+
+        # ④ 按天切割：前天的 app.log 按 mtime 归档
+        src = logdir / "app.log"
+        src.write_text("yesterday log", encoding="utf-8")
+        import os as _os
+        old = time.time() - 2 * 86400
+        _os.utime(src, (old, old))
+        arc = log_rotate.rotate_if_needed(src, today=day)
+        self.assertTrue(arc and arc.startswith("app-2026-11-15"),
+                        "归档名应按 mtime 日期（11-15）：%s" % arc)
+        self.assertRegex(arc, r"^app-2026-11-15(-\d{6})?\.log$")
+        self.assertFalse(src.exists(), "归档后原 app.log 应被改名，由 sink 重开")
+
+        # ⑤ app.py 接入钩子 + 后台轮询
+        src_py = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("log_rotate.should_rotate", src_py, "写入钩子未接按天预检")
+        self.assertIn("start_retention_watchdog", src_py, "未启动保留期轮询")
+
+        # ---------- ⑥ 关于页卡片顺序：系统信息在版本更新之上 ----------
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertLess(html.index('<div class="card-title">系统信息</div>'),
+                        html.index('<div class="card-title">版本更新</div>'),
+                        "系统信息应排在版本更新上面")
+        self.assertIn("自动保留最近 7 天", html, "系统日志卡片缺保留策略说明")
+
+        # ---------- ⑦ 首页输出区「更改」→「打开」，只接目录 ----------
+        m = re.search(r'<button[^>]*id="btnBrowseOut"[^>]*>(.*?)</button>', html)
+        self.assertIsNotNone(m, "缺少 btnBrowseOut 按钮")
+        self.assertEqual(m.group(1), "打开", "输出区按钮未从「更改」改为「打开」")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('"/api/open-folder"', js, "前端未调用打开文件夹端点")
+        src_py = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('path == "/api/open-folder"', src_py)
+        self.assertIn("只能打开文件夹，不接受文件路径", src_py,
+                      "后端未拒绝文件路径")
+
+        # 真实 HTTP：目录可开、文件被拒
+        srv = self.start()
+        outdir = Path(self.tmp) / "out-open"
+        outdir.mkdir()
+        afile = outdir / "x.md"
+        afile.write_text("x", encoding="utf-8")
+        _, ok = srv.post_json("/api/open-folder", {"path": str(outdir)})
+        self.assertTrue(ok.get("ok"), "目录应可打开：%s" % ok)
+        self.assertIn(ok.get("via"), ("explorer", "browser"),
+                      "目录应走资源管理器而非记事本：%s" % ok)
+        _, bad = srv.post_json("/api/open-folder", {"path": str(afile)})
+        self.assertFalse(bad.get("ok"), "文件必须被拒绝")
+        self.assertIn("只能打开文件夹", bad.get("error", ""))
+
+        # ---------- ⑧ 左侧导航：精图标在底部、汉堡键、精读换图标 ----------
+        side_foot = html[html.index('<div class="side-foot">'):
+                         html.index('</aside>', html.index('<div class="side-foot">'))]
+        self.assertIn('class="brand-mark"', side_foot, "精图标未移到底部版本号旁")
+        self.assertIn('id="sideVersion"', side_foot)
+        top = html[html.index('<div class="side-top">'):
+                   html.index('<nav class="nav"')]
+        self.assertNotIn("brand-mark", top, "顶部导航栏仍残留精图标")
+        self.assertIn("M4 7h16M4 12h16M4 17h16", html, "折叠按钮未换成三条横杠")
+        refine_btn = html[html.index('data-page="refine"'):
+                          html.index('data-page="revise"')]
+        self.assertNotIn("M4 5.5h11", refine_btn, "精读图标仍是旧列表箭头")
+        self.assertIn("M12 3.2l2.5 5.2", refine_btn, "精读图标未换成星形")
 
 
 def print_summary(result=None) -> None:

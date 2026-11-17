@@ -242,22 +242,32 @@ class _LogSink:
 
     def _rotate_if_needed(self) -> None:
         try:
+            import log_rotate
+            # 2026-11-17：先按**天**归档（保留 7 天），再按大小轮转兜底。
+            # Windows 上被打开的文件不能改名——必须先关句柄再归档。
+            # 预检是纯函数（不改文件），仅在确实需要归档时才关句柄。
+            if log_rotate.should_rotate(self._path):
+                self._close_handle()
+                log_rotate.check_and_rotate(self._path)
             if not self._path.exists():
                 return
             if self._path.stat().st_size <= LOG_MAX_BYTES:
                 return
-            if self._fh is not None:
-                try:
-                    self._fh.close()
-                except Exception:
-                    pass
-                self._fh = None
+            self._close_handle()
             bak = self._path.with_name(self._path.name + ".1")
             if bak.exists():
                 bak.unlink()
             self._path.replace(bak)
         except Exception:
             pass
+
+    def _close_handle(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
 
     def write(self, text: str) -> None:
         if not text:
@@ -2315,6 +2325,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/pick-folder":
                 initial = str(data.get("initial") or "")
                 self._send_json({"path": pick_folder(initial)})
+            elif path == "/api/open-folder":
+                # 首页输出区「打开」：只在系统文件管理器中浏览**文件夹**，
+                # 不接受文件（看不进文件），路径须存在且为目录；与 /api/open
+                # 的日志文件白名单是两套不同用途，互不干扰。
+                self._send_json(self._api_open_folder(str(data.get("path") or "").strip()))
             elif path == "/api/dry-run":
                 self._send_json(self._api_dry_run(_norm_inputs(data)))
             elif path == "/api/run":
@@ -2521,6 +2536,38 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % exc}
         return {"ok": True, "path": str(target)}
+
+    def _api_open_folder(self, raw: str) -> dict:
+        """首页输出区「打开」：在系统文件管理器中浏览文件夹（**只接目录，不接文件**）。
+
+        与 :meth:`_api_open` 的区别：那个是白名单内的日志文件 / 设置文件，
+        本端点专门服务「打开输出目录」——用户想看目录里有什么，不是要选文件。
+        安全收敛：路径须存在且 ``is_dir()``；文件、不存在路径一律拒绝，
+        不把任意路径交给 startfile 当程序启动。
+        """
+        if not raw:
+            return {"ok": False, "error": "请先填写输出目录路径"}
+        try:
+            target = Path(raw).expanduser().resolve()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": "路径无效：%s" % exc}
+        if not target.is_dir():
+            return {"ok": False, "error": "只能打开文件夹，不接受文件路径"}
+        # 目录必须走系统资源管理器，不能复用 _open_document（那个固定走
+        # 记事本，打开目录会让用户看到空白记事本而不是文件夹）。
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(str(target))  # type: ignore[attr-defined]
+                via = "explorer"
+            elif os.name == "nt":
+                subprocess.Popen(["explorer", str(target)])
+                via = "explorer"
+            else:
+                webbrowser.open(target.as_uri())
+                via = "browser"
+        except Exception as exc:
+            return {"ok": False, "error": "打开失败：%s" % type(exc).__name__}
+        return {"ok": True, "path": str(target), "via": via}
 
     def _api_refine_artifact(self, raw: str) -> dict:
         """S7d：只读返回精读/修订产物文本，供 UI 预览。
@@ -3420,6 +3467,13 @@ def _show_error_box(title: str, text: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     # 必须在任何 print 之前：管道默认 cp936 会把中文写成 GBK 乱码
     _reconfigure_streams()
+    # 2026-11-17：日志保留期轮询（每小时清理 7 天前的 app-YYYY-MM-DD.log 归档）。
+    # 跨天即时切割由 _LogSink 写入钩子负责，这里只做后台定期清理，互不抢锁。
+    try:
+        import log_rotate
+        log_rotate.start_retention_watchdog(LOG_DIR, LOG_FILE)
+    except Exception:
+        pass
     args_list = list(sys.argv[1:] if argv is None else argv)
 
     # v0.4.8 替换执行器：`<新版 exe> --self-update --staged … --target … --pid …`

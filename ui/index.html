@@ -13,11 +13,10 @@
   <!-- 左侧可折叠导航：折叠时只显图标，展开显示图标 + 文字 -->
   <aside class="sidebar" id="sidebar">
     <div class="side-top">
-      <div class="brand-mark" title="精核">精</div>
       <button id="btnToggleNav" class="nav-toggle" type="button"
               title="展开 / 收起导航栏" aria-label="展开或收起导航栏">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M15 6l-6 6 6 6"/>
+          <path d="M4 7h16M4 12h16M4 17h16"/>
         </svg>
       </button>
     </div>
@@ -32,7 +31,7 @@
       <!-- S7d：精读 / 修订入口（提纯核心 / 补写修改，本机可插拔后端） -->
       <button class="nav-item" type="button" data-page="refine" title="精读">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 5.5h11M4 10h11M4 14.5h7"/><path d="M16 20l4-4-4-4"/>
+          <path d="M12 3.2l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8z"/>
         </svg>
         <span class="nav-label">精读</span>
       </button>
@@ -60,6 +59,7 @@
     </nav>
 
     <div class="side-foot">
+      <div class="brand-mark" title="精核">精</div>
       <span class="side-version mono" id="sideVersion">—</span>
     </div>
 
@@ -109,7 +109,7 @@
             <input id="outPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
                    aria-label="输出目录路径"
                    placeholder="输出目录">
-            <button id="btnBrowseOut" class="btn btn-ghost" type="button">更改</button>
+            <button id="btnBrowseOut" class="btn btn-ghost" type="button" title="在系统文件管理器中打开输出文件夹">打开</button>
           </div>
           <label class="check">
             <input id="optOpenMerged" type="checkbox" checked>
@@ -433,6 +433,18 @@
            点击检查更新：有新版本直接进入更新流程，无新版本弹 3 秒自动消失的轻提示；
            下载与替换过程有进度条，说明文字与仓库链接仍一律不显示。 -->
       <section class="card">
+        <div class="card-title">系统信息</div>
+        <div class="card-sub">软件版本与运行环境的当前状态。</div>
+        <div class="about-grid">
+          <div class="about-item"><span>软件版本</span><b id="aboutVersion2">—</b></div>
+          <div class="about-item"><span>Python</span><b id="aboutPython">—</b></div>
+          <div class="about-item"><span>运行平台</span><b id="aboutPlatform">—</b></div>
+          <div class="about-item"><span>规格版本</span><b>v2.x（SPEC.md，独立编号）</b></div>
+          <div class="about-item"><span>界面形态</span><b>Edge 应用窗口（本地服务 + 零第三方依赖）</b></div>
+        </div>
+      </section>
+
+      <section class="card">
         <div class="card-title">版本更新</div>
         <div class="about-grid about-grid-update">
           <button id="btnCheckUpdate" class="btn btn-primary about-check-btn" type="button">检查更新</button>
@@ -450,20 +462,8 @@
       </section>
 
       <section class="card">
-        <div class="card-title">系统信息</div>
-        <div class="card-sub">软件版本与运行环境的当前状态。</div>
-        <div class="about-grid">
-          <div class="about-item"><span>软件版本</span><b id="aboutVersion2">—</b></div>
-          <div class="about-item"><span>Python</span><b id="aboutPython">—</b></div>
-          <div class="about-item"><span>运行平台</span><b id="aboutPlatform">—</b></div>
-          <div class="about-item"><span>规格版本</span><b>v2.x（SPEC.md，独立编号）</b></div>
-          <div class="about-item"><span>界面形态</span><b>Edge 应用窗口（本地服务 + 零第三方依赖）</b></div>
-        </div>
-      </section>
-
-      <section class="card">
         <div class="card-title">系统日志</div>
-        <div class="card-sub">运行时报错会连带记录组件与环境状态，可打开系统日志查看原始记录。</div>
+        <div class="card-sub">运行时报错会连带记录组件与环境状态，可打开系统日志查看原始记录。日志按天归档，自动保留最近 7 天。</div>
         <div class="about-item">
           <div class="about-log-row">
             <b class="mono" id="aboutLog">—</b>

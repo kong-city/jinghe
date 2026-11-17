@@ -823,27 +823,18 @@
     });
   }
 
-  /* ------------------------------ 输出目录选择 ------------------------------ */
-  // v0.3.7：首页取消「选择文件夹」入口后，本函数只服务输出目录；
-  // 输入路径改为粘贴，或用「打开」多选文件，不再弹原生目录选择框。
+  /* ------------------------------ 输出目录打开 ------------------------------ */
+  // 首页输出区「打开」：只在系统文件管理器中浏览当前输出**文件夹**，
+  // 不再弹「选择文件夹」对话框、也不接受文件（后端只收目录）。
+  // 想改输出目录可直接编辑输入框。
   function browseOutput() {
     if (running || previewing) return;
-    var btn = el.btnBrowseOut;
-    var old = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = "选择中…";
-    // pick-folder 要等用户操作原生对话框，第三参数传 0 = 绝不 abort。
-    api("/api/pick-folder", { initial: el.outPath.value.trim() }, 0).then(function (r) {
-      if (r && r.path) {
-        el.outPath.value = r.path;
-        rememberPaths();
-        refreshMergedButton();
-      }
+    var target = (el.outPath.value || "").trim();
+    if (!target) { showError("请先填写输出目录路径"); return; }
+    api("/api/open-folder", { path: target }, 10000).then(function (r) {
+      if (!r || !r.ok) showError("打开文件夹失败：" + ((r && r.error) || "未知"));
     }).catch(function (err) {
-      showError("打开文件夹选择框失败：" + (err.message || err));
-    }).finally(function () {
-      btn.textContent = old;
-      updateControls();
+      showError("打开文件夹失败：" + (err.message || err));
     });
   }
 
