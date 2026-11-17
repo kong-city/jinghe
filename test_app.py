@@ -3334,8 +3334,8 @@ class AppContractTest(unittest.TestCase):
 
         # ⑤ 冻结契约：test_06 / test_11 与原主流水线不得被本轮改动碰过
         extract_src = (ROOT / "extract.py").read_text(encoding="utf-8")
-        # v0.5.0：S7 精读/修订能力落地，版本号随发版升号（0.4.9 → 0.5.0）
-        self.assertIn('__version__ = "0.5.0"', extract_src, "版本号未升到 0.5.0")
+        # v0.6.0：S8 可信提纯能力落地，版本号随发版升号（0.5.0 → 0.6.0）
+        self.assertIn('__version__ = "0.6.0"', extract_src, "版本号未升到 0.6.0")
         self.assertIn("if args.dry_run:", extract_src, "extract.py 冻结主流水线被改动")
 
         # ⑥ 真实 HTTP：GET 检查更新 200、POST 同路径仍 404（锁死根因）、上传落盘
@@ -3820,9 +3820,14 @@ class AppContractTest(unittest.TestCase):
         md_out, html_out = R.render_both(cores, changes, meta)
         ok, why = R.verify_marks(changes, md_out, html_out)
         self.assertTrue(ok, "标记完整性校验失败：%s" % why)
-        self.assertIn("[++ 尤其零依赖 ++]", md_out)
+        # S8：补写（add）已改为独立分区 + `[AI ++ … ++]` 专用标记
+        self.assertIn("[AI ++ 尤其零依赖 ++]", md_out)
+        self.assertIn("## AI 补充（模型生成，请核对）", md_out, "补写未落在独立分区")
+        self.assertNotIn("[AI ++ 尤其零依赖 ++]",
+                         md_out.split("## AI 补充")[0],
+                         "补写内容混进了核心区")
         self.assertIn("[[~~ 本地处理 ~~ → 全程离线处理]]", md_out)
-        self.assertIn('class="add"', html_out)
+        self.assertIn('class="ai-item"', html_out)
         self.assertIn('text-decoration:line-through', html_out)
         # 篡改任一份产物都应被校验抓出
         self.assertFalse(R.verify_marks(changes, md_out.replace("尤其零依赖", "被改"), html_out)[0])
@@ -3838,7 +3843,7 @@ class AppContractTest(unittest.TestCase):
         def ratio(a, b):
             l1, l2 = sorted([lum(a), lum(b)], reverse=True)
             return (l1+0.05)/(l2+0.05)
-        self.assertGreaterEqual(ratio(R.C_ADD_FG, R.C_ADD_BG), 4.5, "新增字色未达 AA")
+        self.assertGreaterEqual(ratio(R.C_AI_FG, R.C_AI_BG), 4.5, "AI 补写字色未达 AA")
         self.assertGreaterEqual(ratio(R.C_MOD_OLD, "#FFFFFF"), 4.5, "修改前字色未达 AA")
         self.assertGreaterEqual(ratio(R.C_MOD_NEW, "#FFFFFF"), 4.5, "修改后字色未达 AA")
         self.assertGreaterEqual(ratio(R.C_TEXT, "#FFFFFF"), 4.5, "原文黑未达 AA")
@@ -3856,11 +3861,13 @@ class AppContractTest(unittest.TestCase):
         cap = {"tools": {"backend": {"kind": "cloud"}}, "capability": "available"}
         refine._TASK = {"state": "running", "running": True, "cancelled": False,
                         "events": [], "output": "", "error": None}
-        # S8 起修订按 mode 分流；本用例守的是 **LLM 双产物路径**，显式切 llm 模式
+        # S8 起修订按 mode 分流；本用例守的是 **LLM 双产物路径**，显式切 llm 模式。
+        # 补写开关开启，才能验「changes 里每条（含补写）都在两份落盘产物中」——
+        # 开关关闭时 add 被丢弃，那是 S8c 的另一条契约（由 test_54 守）。
         with mock.patch.object(backend, "load_config",
                                return_value={"mode": backend.MODE_LLM,
                                              "kind": backend.KIND_CLOUD,
-                                             "allow_suppplement": False}):
+                                             "allow_suppplement": True}):
             refine._run_revise_inner(str(core_file), "m", str(self.tmp), FakeRevise({}), cap)
         st = refine.status()
         self.assertEqual(st["state"], "done", "修订失败：%s" % st["error"])
@@ -4258,6 +4265,115 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("el.reviseInstruction.disabled = !llm", js, "额外要求未按模式置灰")
         # 初始化即联动（首屏控件状态正确）
         self.assertIn('api("/api/refine/backend", undefined, 10000)', js)
+
+    # ------------------------------------------------------------------ #
+    # 54) S8c：C 档补写 —— 开关真正生效 + 独立分区隔离 + 双产物同步
+    # ------------------------------------------------------------------ #
+    def test_54_s8c_supplement_isolation(self):
+        import backend
+        import json as _json
+        import refine
+        import revise_engine as R
+        from unittest import mock
+
+        cores = [{"block": 2, "text": "注重隐私"}, {"block": 4, "text": "本地处理"}]
+        resp = _json.dumps({"changes": [
+            {"type": "add", "block": 2, "text": "尤其零依赖"},
+            {"type": "modify", "block": 4, "old": "本地处理", "text": "全程离线处理"},
+        ]})
+
+        # ① 开关关闭 → add（补写）类变更必须被丢弃，不能只是「提示核对」
+        off, off_skipped = R.parse_changes(resp, cores, allow_suppplement=False)
+        self.assertEqual(len(off), 1, "开关关闭却保留了补写变更")
+        self.assertEqual(off[0]["type"], "modify")
+        self.assertEqual(off_skipped, 1, "丢弃数未计入补写项")
+        md_off, html_off = R.render_both(cores, off, {
+            "stem": "t", "doc_id": "doc_abc123456789", "skipped": off_skipped})
+        self.assertNotIn("尤其零依赖", md_off, "开关关闭却产出了补写内容")
+        self.assertNotIn("## AI 补充", md_off)
+        self.assertTrue(R.verify_marks(off, md_off, html_off)[0])
+
+        # ② 开关开启 → 补写进**独立分区**，标记专用，绝不与核心混同
+        on, on_skipped = R.parse_changes(resp, cores, allow_suppplement=True)
+        self.assertEqual(len(on), 2)
+        md_on, html_on = R.render_both(cores, on, {
+            "stem": "t", "doc_id": "doc_abc123456789", "skipped": on_skipped})
+        ok, why = R.verify_marks(on, md_on, html_on)
+        self.assertTrue(ok, "补写隔离校验失败：%s" % why)
+        self.assertIn("## AI 补充（模型生成，请核对）", md_on)
+        self.assertIn("[AI ++ 尤其零依赖 ++]", md_on)
+        # 核心区里绝不能出现补写内容
+        self.assertNotIn("尤其零依赖", md_on.split("## AI 补充")[0],
+                         "补写内容混进了核心区")
+        # 头部诚实告知
+        self.assertIn("本文件含模型生成内容", md_on)
+        self.assertIn("原文并不存在", md_on)
+        # html 同步隔离
+        self.assertIn('class="ai-item"', html_on)
+        self.assertIn("本文件含模型生成内容", html_on)
+
+        # ③ 隔离标记被破坏 → 校验必须抓出（防止"混同"悄悄发生）
+        broken = md_on.replace("[AI ++ 尤其零依赖 ++]", "尤其零依赖")
+        self.assertFalse(R.verify_marks(on, broken, html_on)[0],
+                         "补写失去隔离标记却通过了校验")
+
+        # ④ 补写项**不声明块锚点**（它不对应任何原文块）
+        ai_zone = md_on.split("## AI 补充")[1]
+        self.assertNotIn("<!-- anchor:", ai_zone,
+                         "补写项不应声明块锚点")
+
+        # ⑤ 端到端：LLM 模式 + 开关开启 → 产物含独立补写分区
+        outdir = Path(self.tmp) / "s8c"
+        (outdir / "derived").mkdir(parents=True, exist_ok=True)
+        core_file = outdir / "derived" / "doc_abc123456789.refine.md"
+        core_file.write_text(
+            "<!-- src: x -->\n## 核心知识点\n\n"
+            "<!-- anchor: doc_abc123456789 | block: 2 -->\n- 注重隐私（来源块 2）\n\n"
+            "<!-- anchor: doc_abc123456789 | block: 4 -->\n- 本地处理（来源块 4）\n",
+            encoding="utf-8")
+
+        class FakeLLM(backend.Backend):
+            kind = "cloud"
+            def chat(self, messages):
+                return resp
+
+        cap = {"tools": {"backend": {"kind": "cloud"}}, "capability": "available"}
+        for allow, want_supplement in ((True, True), (False, False)):
+            with mock.patch.object(backend, "CONFIG_FILE",
+                                   Path(self.tmp) / ("be_%s.json" % allow)), \
+                 mock.patch.object(backend, "_CACHE", None):
+                backend.save_config({"mode": backend.MODE_LLM, "kind": "cloud",
+                                     "endpoint": "https://x/v1", "api_key": "k",
+                                     "allow_suppplement": allow})
+                refine._TASK = {"state": "running", "running": True,
+                                "cancelled": False, "events": [],
+                                "output": "", "error": None}
+                refine._run_revise_inner(str(core_file), "m", str(outdir),
+                                         FakeLLM({}), cap, "")
+                st = refine.status()
+                self.assertEqual(st["state"], "done",
+                                 "修订失败：%s" % st["error"])
+                text = Path(st["output"]).read_text(encoding="utf-8")
+                if want_supplement:
+                    self.assertIn("## AI 补充（模型生成，请核对）", text)
+                    self.assertIn("尤其零依赖", text)
+                    self.assertIn("本文件含模型生成内容", text)
+                else:
+                    self.assertNotIn("尤其零依赖", text,
+                                     "补写开关关闭却产出了补写内容")
+                    self.assertNotIn("## AI 补充", text)
+                # 两种情况核心修改都必须在
+                self.assertIn("全程离线处理", text)
+
+        # ⑥ 契约一致性：配置键名贯通 backend / app / refine
+        bsrc = (ROOT / "backend.py").read_text(encoding="utf-8")
+        asrc = (ROOT / "app.py").read_text(encoding="utf-8")
+        rsrc = (ROOT / "refine.py").read_text(encoding="utf-8")
+        for name, src in (("backend", bsrc), ("app", asrc), ("refine", rsrc)):
+            self.assertIn("allow_suppplement", src,
+                          "%s 未贯通补写开关" % name)
+        # 补写开关默认关闭
+        self.assertIn('"allow_suppplement": False', bsrc)
 
 
 def print_summary(result=None) -> None:

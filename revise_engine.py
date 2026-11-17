@@ -36,12 +36,17 @@ REVISE_HTML_SUFFIX = ".revise.html"
 # md 符号标记（与 refine.py 契约 §4.3 一致）
 MD_ADD_OPEN, MD_ADD_CLOSE = "[++ ", " ++]"
 MD_MOD_OPEN, MD_MOD_MID, MD_MOD_CLOSE = "[[~~ ", " ~~ → ", "]]"
+# S8：AI 补写（模型生成）专用标记 —— 与修订新增 `[++ ]` 物理区分
+MD_AI_OPEN, MD_AI_CLOSE = "[AI ++ ", " ++]"
 
 # html 颜色（WCAG AA：正文对白底 ≥4.5:1）
 C_ADD_FG, C_ADD_BG = "#1F6B3B", "#EDF7F0"   # 新增绿字浅绿底
 C_MOD_OLD = "#A32D2D"                       # 修改旧：红删除线
 C_MOD_NEW = "#185FA5"                       # 修改新：蓝字
 C_TEXT = "#1F1F1D"                          # 原文黑
+# S8：AI 补写（模型生成）专用色 —— 警示性红系，与「修改」的蓝/红区分：
+# 修改是对原文的调整，补写是原文之外的新增内容，性质不同、必须一眼可辨。
+C_AI_FG, C_AI_BG = "#501313", "#FCEBEB"
 
 _ANCHOR_RE = re.compile(r"<!--\s*anchor:\s*doc_[0-9a-f]{12}\s*\|\s*block:\s*(\d+)\s*-->")
 _CORE_RE = re.compile(r"^-\s+(.*?)（来源块\s*(\d+)）\s*$")
@@ -134,8 +139,13 @@ def _strip_fence(text: str) -> str:
     return m.group(1).strip() if m else s
 
 
-def parse_changes(response_text: str, cores: list[dict]) -> tuple[list[dict], int]:
+def parse_changes(response_text: str, cores: list[dict],
+                  allow_suppplement: bool = True) -> tuple[list[dict], int]:
     """解析变更列表并校验：block 必须有效、type 合法、modify 的 old 匹配原文。
+
+    S8：**补写开关真正生效** —— ``allow_suppplement=False`` 时，
+    ``type="add"``（补写）类变更一律丢弃并计入 skipped。
+    开关关闭就必须真的没有补写内容，而不是"提示用户去核对"。
 
     返回 ``(有效变更列表, 丢弃条数)``。
     """
@@ -161,6 +171,10 @@ def parse_changes(response_text: str, cores: list[dict]) -> tuple[list[dict], in
                 or not isinstance(text, str) or not text.strip()):
             skipped += 1
             continue
+        # 补写开关关闭 → 丢弃 add（补写）类变更
+        if typ == "add" and not allow_suppplement:
+            skipped += 1
+            continue
         entry = {"type": typ, "block": block, "text": text.strip()}
         if typ == "modify":
             old = item.get("old")
@@ -183,36 +197,51 @@ def _render_md(cores: list[dict], changes: list[dict], meta: dict) -> str:
 
     lines = [
         "<!-- 精核 · 修订文档（符号标记版） -->",
-        "<!-- 图例：[++ 新增 ++] 模型补写 ｜ [[~~ 原文 ~~ → 修改]] 模型修改 ｜ 无标记 = 精读原文核心 -->",
+        "<!-- 图例：[[~~ 原文 ~~ → 修改]] 模型修改 ｜ [AI ++ … ++] AI 补写（模型生成） ｜ 无标记 = 精读原文核心 -->",
         "",
         "# %s · 修订（补写 + 修改）" % meta.get("stem", "文档"),
         "",
         "## 文档信息", "",
         "- 生成时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S"),
         "- 后端：%s ｜ 模型：%s" % (meta.get("backend_kind", "?"), meta.get("model", "?")),
-        "- 新增：%d 条 ｜ 修改：%d 条 ｜ 丢弃非法变更：%d 条"
-        % (len(adds), len(mods), int(meta.get("skipped", 0))),
+        "- 修改：%d 条 ｜ AI 补写：%d 条 ｜ 丢弃非法变更：%d 条"
+        % (len(mods), len(adds), int(meta.get("skipped", 0))),
         "",
+    ]
+    if adds:
+        lines += [
+            "> **本文件含模型生成内容**（AI 补写分区），仅供参考，请核对原文。",
+            "",
+        ]
+    lines += [
         "> 标记内容由模型补写/修改，请对照原文核对。",
         "", "## 核心知识点（含修订）", "",
     ]
     for c in cores:
         lines.append(media_runtime.block_anchor(meta.get("doc_id", "doc_000000000000"), c["block"]))
         base = "- " + by_block[c["block"]]
-        # 先写原文核心，再追加该块的新增/修改标记
+        # 先写原文核心，再追加该块的**修改**标记（补写不进核心区）
         lines.append(base)
         for ch in changes:
-            if ch["block"] != c["block"]:
+            if ch["block"] != c["block"] or ch["type"] != "modify":
                 continue
-            if ch["type"] == "add":
-                lines.append("  " + MD_ADD_OPEN + ch["text"] + MD_ADD_CLOSE)
-            else:
-                lines.append("  " + MD_MOD_OPEN + ch["old"] + MD_MOD_MID
-                             + ch["text"] + MD_MOD_CLOSE)
+            lines.append("  " + MD_MOD_OPEN + ch["old"] + MD_MOD_MID
+                         + ch["text"] + MD_MOD_CLOSE)
+        lines.append("")
+    # S8：AI 补写**独立分区**（物理隔离 + 强制标注 + 不声明块锚点）
+    if adds:
+        lines += [
+            "## AI 补充（模型生成，请核对）", "",
+            "> 以下内容由模型补写，**原文并不存在**，仅供补充参考；请自行核对。",
+            "",
+        ]
+        for ch in adds:
+            lines.append("- " + MD_AI_OPEN + ch["text"] + MD_AI_CLOSE)
         lines.append("")
     lines += ["## 修订元数据", "",
               "- 原文核心块数：%d" % len(cores),
-              "- 标记语法：%s / %s" % (MD_ADD_OPEN.strip(), MD_MOD_OPEN.strip()),
+              "- 标记语法：%s / %s / %s" % (MD_MOD_OPEN.strip(), MD_ADD_OPEN.strip(),
+                                          MD_AI_OPEN.strip()),
               "- 产物区：out/derived/（不参与阶段 1 件数对账）", ""]
     return "\n".join(lines)
 
@@ -224,29 +253,46 @@ def _render_html(cores: list[dict], changes: list[dict], meta: dict) -> str:
     for c in cores:
         parts = ['<div class="core">', '<div class="base">%s</div>' % esc(by_block[c["block"]])]
         for ch in changes:
-            if ch["block"] != c["block"]:
+            if ch["block"] != c["block"] or ch["type"] != "modify":
                 continue
-            if ch["type"] == "add":
-                parts.append('<div class="add">+ %s</div>' % esc(ch["text"]))
-            else:
-                parts.append('<div class="mod-old">- %s</div>' % esc(ch["old"]))
-                parts.append('<div class="mod-new">→ %s</div>' % esc(ch["text"]))
+            parts.append('<div class="mod-old">- %s</div>' % esc(ch["old"]))
+            parts.append('<div class="mod-new">→ %s</div>' % esc(ch["text"]))
         parts.append("</div>")
         body.append("".join(parts))
-    adds = sum(1 for c in changes if c["type"] == "add")
-    mods = len(changes) - adds
+    adds = [c for c in changes if c["type"] == "add"]
+    mods = [c for c in changes if c["type"] == "modify"]
+    # S8：AI 补写独立分区（与核心区物理分离）
+    supp_html: list[str] = []
+    if adds:
+        supp_html.append('<h2 class="ai-h">AI 补充（模型生成，请核对）</h2>')
+        supp_html.append('<div class="ai-note">以下内容由模型补写，<b>原文并不存在</b>，'
+                         '仅供补充参考；请自行核对。</div>')
+        for ch in adds:
+            supp_html.append('<div class="ai-item">+ %s</div>' % esc(ch["text"]))
     style = (
         "body{font-family:system-ui,'Microsoft YaHei',sans-serif;max-width:860px;"
         "margin:40px auto;padding:0 20px;color:%s;line-height:1.7;font-size:14px}"
         "h1{font-size:22px;font-weight:600}h2{font-size:17px;font-weight:600;margin-top:28px}"
         ".note{background:#F4F6F8;border-left:3px solid %s;padding:10px 12px;font-size:13px}"
+        ".warn{background:%s;border-left:3px solid %s;padding:10px 12px;font-size:13px;"
+        "color:%s;margin:10px 0}"
         ".core{border:1px solid #E5E3DC;border-radius:8px;padding:12px 14px;margin:12px 0}"
         ".base{color:%s}"
         ".add{color:%s;background:%s;padding:4px 8px;border-radius:4px;margin-top:6px}"
         ".mod-old{color:%s;text-decoration:line-through;margin-top:6px}"
         ".mod-new{color:%s;margin-top:2px}"
+        ".ai-h{color:%s;margin-top:34px;padding-top:14px;border-top:2px solid %s}"
+        ".ai-note{background:%s;border-left:3px solid %s;padding:10px 12px;"
+        "font-size:13px;color:%s}"
+        ".ai-item{color:%s;background:%s;padding:8px 10px;border-radius:6px;"
+        "margin:8px 0;border-left:3px solid %s}"
         ".legend span{margin-right:16px;font-size:13px}"
-    ) % (C_TEXT, C_MOD_NEW, C_TEXT, C_ADD_FG, C_ADD_BG, C_MOD_OLD, C_MOD_NEW)
+    ) % (C_TEXT, C_MOD_NEW, C_AI_BG, C_MOD_OLD, C_AI_FG, C_TEXT, C_ADD_FG, C_ADD_BG,
+         C_MOD_OLD, C_MOD_NEW,
+         C_AI_FG, C_MOD_OLD, C_AI_BG, C_MOD_OLD, C_AI_FG,
+         C_AI_FG, C_AI_BG, C_MOD_OLD)
+    warn = ('<div class="warn">本文件含模型生成内容（AI 补充分区），仅供参考，请核对原文。</div>'
+            if adds else "")
     return "\n".join([
         "<!DOCTYPE html>", '<html lang="zh-CN"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
@@ -255,15 +301,17 @@ def _render_html(cores: list[dict], changes: list[dict], meta: dict) -> str:
         '<div class="note">标记内容由模型补写/修改，<b>请对照原文核对</b>。'
         '后端：%s ｜ 模型：%s</div>' % (esc(str(meta.get("backend_kind", "?"))),
                                     esc(str(meta.get("model", "?")))),
+        warn,
         '<h2>图例</h2><div class="legend">',
-        '<span style="color:%s">新增（补写）</span>' % C_ADD_FG,
         '<span style="color:%s;text-decoration:line-through">修改前</span>' % C_MOD_OLD,
         '<span style="color:%s">修改后</span>' % C_MOD_NEW,
+        ('<span style="color:%s">AI 补写（模型生成）</span>' % C_MOD_OLD) if adds else "",
         "</div>",
         "<h2>核心知识点（含修订）</h2>",
         *body,
-        "<p>新增 %d 条 ｜ 修改 %d 条 ｜ 丢弃非法变更 %d 条</p>"
-        % (adds, mods, int(meta.get("skipped", 0))),
+        *supp_html,
+        "<p>修改 %d 条 ｜ AI 补写 %d 条 ｜ 丢弃非法变更 %d 条</p>"
+        % (len(mods), len(adds), int(meta.get("skipped", 0))),
         "</body></html>",
     ])
 
@@ -278,20 +326,37 @@ def render_both(cores: list[dict], changes: list[dict],
 # 5. 标记完整性校验（红线 2）
 # --------------------------------------------------------------------------- #
 def verify_marks(changes: list[dict], md_text: str, html_text: str) -> tuple[bool, str]:
-    """逐条校验每条变更在两份产物中都有对应标记；对不上则返回失败原因。"""
+    """逐条校验每条变更在两份产物中都有对应标记；对不上则返回失败原因。
+
+    S8：补写（add）项额外要求**物理隔离** —— 必须落在「AI 补充」分区内，
+    且核心区里不得出现补写内容，避免模型生成物被误当成原文核心。
+    """
+    core_zone = md_text
+    ai_zone = ""
+    if "## AI 补充（模型生成，请核对）" in md_text:
+        head, _, tail = md_text.partition("## AI 补充（模型生成，请核对）")
+        core_zone = head
+        ai_zone = tail
     for ch in changes:
         text = ch["text"]
         if ch["type"] == "add":
-            if MD_ADD_OPEN + text + MD_ADD_CLOSE not in md_text:
-                return False, "md 缺新增标记：%s" % text[:20]
+            frag = MD_AI_OPEN + text + MD_AI_CLOSE
+            if frag not in md_text:
+                return False, "md 缺 AI 补写标记：%s" % text[:20]
+            if frag in core_zone:
+                return False, "AI 补写内容混进了核心区：%s" % text[:20]
+            if not ai_zone or frag not in ai_zone:
+                return False, "AI 补写未落在独立分区：%s" % text[:20]
+            if 'class="ai-item"' not in html_text:
+                return False, "html 缺 AI 补写分区"
             if '">+ ' + _html.escape(text) + "</div>" not in html_text:
-                return False, "html 缺新增标记：%s" % text[:20]
+                return False, "html 缺 AI 补写标记：%s" % text[:20]
         else:
             frag = (MD_MOD_OPEN + ch["old"] + MD_MOD_MID + text + MD_MOD_CLOSE)
             if frag not in md_text:
                 return False, "md 缺修改标记：%s" % text[:20]
-            if ('">- ' + _html.escape(ch["old"]) + "</div>") not in html_text:
+            if ('- ' + _html.escape(ch["old"]) + "</div>") not in html_text:
                 return False, "html 缺修改前标记：%s" % ch["old"][:20]
-            if ('">→ ' + _html.escape(text) + "</div>") not in html_text:
+            if ('→ ' + _html.escape(text) + "</div>") not in html_text:
                 return False, "html 缺修改后标记：%s" % text[:20]
     return True, ""

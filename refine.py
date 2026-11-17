@@ -630,7 +630,11 @@ def _run_revise_llm(path: str, model: str, outdir: str, backend_obj,
                 _TASK["error"] = "后端调用失败：%s" % type(exc).__name__
             return
 
-        changes, skipped = _revise.parse_changes(response, cores)
+        # S8：补写开关真正生效 —— 关闭时 add（补写）类变更一律丢弃
+        _cfg = backend.load_config()
+        _allow_supp = bool(_cfg.get("allow_suppplement"))
+        changes, skipped = _revise.parse_changes(response, cores,
+                                                 allow_suppplement=_allow_supp)
         _task_add("log", "校验变更：有效 %d 条，丢弃 %d 条" % (len(changes), skipped), 0.65)
         if not changes:
             _task_add("error", "无有效修订（锚点校验后为空），未产出文档", 1.0)
