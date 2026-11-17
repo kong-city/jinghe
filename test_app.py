@@ -1307,7 +1307,19 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn('id="aboutExportResult"', html, "关于页仍保留导出路径回显")
         self.assertNotIn("function exportLog", js, "app.js 仍保留已移除的导出日志函数")
         self.assertNotIn('"已打开日志文件"', js, "app.js 仍保留已移除的打开成功提示")
-        self.assertIn("<span>系统日志</span>", html, "「日志文件」未更名为「系统日志」")
+        self.assertIn('<div class="card-title">系统信息</div>', html,
+                      "运行日志卡片未更名为系统信息")
+        self.assertIn('<div class="card-title">系统日志</div>', html,
+                      "系统日志未独立成同级卡片")
+        self.assertNotIn('<div class="card-title">运行日志</div>', html,
+                         "旧的「运行日志」卡片标题仍在")
+        # 系统日志卡片必须紧排在系统信息卡片下面，且日志控件已从系统信息中移出
+        info_head = html.index('<div class="card-title">系统信息</div>')
+        log_head = html.index('<div class="card-title">系统日志</div>')
+        self.assertLess(info_head, log_head, "系统日志卡片未排在系统信息下面")
+        info_end = html.index("</section>", info_head)
+        self.assertNotIn("aboutLog", html[info_head:info_end],
+                         "系统日志控件仍在系统信息卡片内")
         self.assertIn('class="about-log-row"', html, "系统日志项缺少同行布局")
 
         # ④ 检查更新接口：离线也要诚实降级，但下载链接始终可用

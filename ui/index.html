@@ -450,20 +450,24 @@
       </section>
 
       <section class="card">
-        <div class="card-title">运行日志</div>
-        <div class="card-sub">运行时报错会连带记录组件与环境状态。可打开系统日志查看原始记录。</div>
+        <div class="card-title">系统信息</div>
+        <div class="card-sub">软件版本与运行环境的当前状态。</div>
         <div class="about-grid">
           <div class="about-item"><span>软件版本</span><b id="aboutVersion2">—</b></div>
           <div class="about-item"><span>Python</span><b id="aboutPython">—</b></div>
           <div class="about-item"><span>运行平台</span><b id="aboutPlatform">—</b></div>
           <div class="about-item"><span>规格版本</span><b>v2.x（SPEC.md，独立编号）</b></div>
           <div class="about-item"><span>界面形态</span><b>Edge 应用窗口（本地服务 + 零第三方依赖）</b></div>
-          <div class="about-item">
-            <span>系统日志</span>
-            <div class="about-log-row">
-              <b class="mono" id="aboutLog">—</b>
-              <button id="btnOpenAboutLog" class="btn btn-ghost btn-mini" type="button" aria-label="打开系统日志">打开</button>
-            </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">系统日志</div>
+        <div class="card-sub">运行时报错会连带记录组件与环境状态，可打开系统日志查看原始记录。</div>
+        <div class="about-item">
+          <div class="about-log-row">
+            <b class="mono" id="aboutLog">—</b>
+            <button id="btnOpenAboutLog" class="btn btn-ghost btn-mini" type="button" aria-label="打开系统日志">打开</button>
           </div>
         </div>
       </section>
