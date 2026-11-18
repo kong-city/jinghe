@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "description": "精核 UI 结构 + 视觉 rubric（2026-11-18 界面调整后的固化验收）",
+  "pages": [
+    {
+      "name": "about",
+      "hash": "#about",
+      "structure": [
+        {
+          "kind": "text_contains",
+          "name": "系统信息卡片存在",
+          "text": "系统信息"
+        },
+        {
+          "kind": "text_contains",
+          "name": "系统日志卡片存在",
+          "text": "系统日志"
+        },
+        {
+          "kind": "text_contains",
+          "name": "版本更新卡片存在",
+          "text": "版本更新"
+        },
+        {
+          "kind": "order_before",
+          "name": "系统信息在版本更新之上",
+          "first": ">系统信息<",
+          "second": ">版本更新<"
+        },
+        {
+          "kind": "text_absent",
+          "name": "关于页旧「运行日志」卡片标题已移除",
+          "text": "<div class=\"card-title\">运行日志</div>"
+        },
+        {
+          "kind": "text_absent",
+          "name": "日志导出栏已移除",
+          "text": "生成指定文件"
+        },
+        {
+          "kind": "text_absent",
+          "name": "仅导出报错选项已移除",
+          "text": "仅导出报错"
+        },
+        {
+          "kind": "id_exists",
+          "name": "系统日志打开按钮存在",
+          "id": "btnOpenAboutLog"
+        },
+        {
+          "kind": "id_exists",
+          "name": "系统日志路径元素存在",
+          "id": "aboutLog"
+        },
+        {
+          "kind": "text_contains",
+          "name": "保留期策略已说明",
+          "text": "自动保留最近 7 天"
+        },
+        {
+          "kind": "id_exists",
+          "name": "检查更新按钮存在",
+          "id": "btnCheckUpdate"
+        }
+      ],
+      "vlm": {
+        "question": "关于页是否呈现为一个层级清晰、无重叠、无截断的界面？两张卡片（系统信息、版本更新）应各自完整可见。",
+        "pass_criteria": [
+          "页面没有文字重叠或被裁切",
+          "系统信息与版本更新两张卡片边界清晰、互不遮挡",
+          "整体留白合理，不像渲染错乱"
+        ]
+      }
+    },
+    {
+      "name": "home",
+      "hash": "#home",
+      "structure": [
+        {
+          "kind": "id_exists",
+          "name": "输出目录输入框存在",
+          "id": "outPath"
+        },
+        {
+          "kind": "id_exists",
+          "name": "输出区打开按钮存在",
+          "id": "btnBrowseOut"
+        },
+        {
+          "kind": "text_absent",
+          "name": "旧「更改」文案已移除",
+          "text": ">更改<"
+        },
+        {
+          "kind": "id_exists",
+          "name": "链接提取卡片存在",
+          "id": "linkCard"
+        },
+        {
+          "kind": "id_exists",
+          "name": "链接输入区存在",
+          "id": "linkUrls"
+        },
+        {
+          "kind": "id_exists",
+          "name": "链接运行按钮存在",
+          "id": "btnLinkRun"
+        },
+        {
+          "kind": "text_contains",
+          "name": "SSRF 防护说明存在",
+          "text": "内网 / 保留地址一律拒绝"
+        },
+        {
+          "kind": "text_contains",
+          "name": "cookie 只读说明存在",
+          "text": "只读引用"
+        }
+      ],
+      "vlm": {
+        "question": "首页布局是否正常？输入、输出、后处理、链接提取四个卡片应依次排列，无重叠、无截断。",
+        "pass_criteria": [
+          "四张卡片自上而下顺序正确",
+          "卡片内控件无重叠、无被裁切",
+          "输出区的「打开」按钮与输入框同行且不重叠"
+        ]
+      }
+    },
+    {
+      "name": "nav",
+      "hash": "",
+      "structure": [
+        {
+          "kind": "id_exists",
+          "name": "侧栏存在",
+          "id": "sidebar"
+        },
+        {
+          "kind": "id_exists",
+          "name": "版本号在侧栏",
+          "id": "sideVersion"
+        },
+        {
+          "kind": "id_exists",
+          "name": "折叠按钮存在",
+          "id": "btnToggleNav"
+        },
+        {
+          "kind": "text_contains",
+          "name": "折叠按钮为三条横杠",
+          "text": "M4 7h16M4 12h16M4 17h16"
+        },
+        {
+          "kind": "text_contains",
+          "name": "精读图标已更换",
+          "text": "M12 3.2l2.5 5.2"
+        },
+        {
+          "kind": "text_absent",
+          "name": "精读旧列表箭头已移除",
+          "text": "M4 5.5h11"
+        }
+      ],
+      "vlm": {
+        "question": "左侧导航栏是否正常？底部应显示品牌方块图标与版本号，顶部折叠按钮为三条横杠，导航项图标清晰。",
+        "pass_criteria": [
+          "侧栏顶部是三横杠按钮而非箭头",
+          "底部品牌图标与版本号上下排列且不拥挤",
+          "各导航图标线条清晰、无重叠"
+        ]
+      }
+    }
+  ]
+}

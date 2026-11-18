@@ -364,3 +364,9 @@
   2. **端点（增量）**：`POST /api/link/inspect`（只读预检，零下载）、`/api/media/run|status|cancel`；`/api/tools/probe` 顶层 `link_resolve` 字段。既有端点与 TOOL_SPECS 三工具零改动，`media_ready()` 仍恒 False。
   3. **DNS 重绑定诚实边界**：yt-dlp 自行解析 DNS，零依赖架构下无法在连接层固定预检 IP（改 host 会破坏 HTTPS 证书校验）。采用「预检逐跳校验 + 下载后实际 URL 二次校验 + 跳数上限」，覆盖绝大多数 SSRF；**残留重绑定窗口如实披露**，不假装完全消除。
   4. 测试基线 85 → **87 用例**（test_58 SSRF 红线、test_59 编排/端点/cookie/冻结不变量）；全量 + 门禁 9/9 + Edge DOM + 冻结态 exe 实测全绿。SPEC.md v2.11 与冻结主流水线零改动。
+
+- **v0.9.7（2026-11-18 · S9 验收工具链：外部体检 + UI 视觉判分层，软件仍为 v0.6.1）**：用户要求引入 workbuddy-bench（腾讯官方 Agent 评测基准）的两件东西——① 用其 Office 子集给精核做外部体检；② 借鉴其 `VLMJudgeRunner` 给 UI 验收加视觉判分层。
+  1. **外部体检**（`tools/bench_office_check.py`）：从 `tencent/workbuddy-bench` 的 Office v1.0 拉 `contract-extract-L3-014`（45 个混合素材 docx/txt/json/xlsx/pdf），精核实跑提取（40 成功 / 5 扫描件降级），把 bench rubric 的六个考察维度逐条映射到**产物中确实存在的证据**：来源标识、审计链、异常单列、非占位、上下文不丢、汇总一致 → **对齐 6/6**。**诚实边界**：bench 官方判分需 Docker 沙箱 + LLM judge + xlsx/json/pptx 产物，本报告不是官方分数，只认有据可查的证据。
+  2. **UI 视觉判分层**（`tools/visual_check.py` + `tools/ui_rubrics.json`）：两层——**结构层**（Edge headless 取 DOM + 截图，做 id/文本/顺序/计数断言，纯 Python 零依赖，必做）与**视觉层**（把截图交给**已配置的多模态后端**判分，复用 `backend.py` 既有 OpenAI 兼容 `chat()`，messages 原样透传即多模态，**不引入新依赖、不新增凭据通道**；未配置时**诚实跳过**并写明原因）。守 bench 两条原则：保守合取（多判据取 min）、有据才给分。
+  3. **首跑即抓到两处真实不一致**：① 关于页旧「运行日志」卡片标题断言过粗（误伤主页面同名 tab）→ 断言改精确；② 功能路线卡片仍把已交付的 Word 导出标「规划中」→ **顺手修正（P-2）**，并补上视频链接提取 / 精读修订两项真实进度。
+  4. 测试基线 87 → **88 用例**（test_60）；另修 test_56 的**写死日期脆弱断言**（2026-11-18 实测跨天变红，改为相对日期基准）。全量 + 门禁 9/9 全绿；SPEC.md 与冻结主流水线零改动。

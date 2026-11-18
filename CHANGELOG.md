@@ -21,6 +21,7 @@
 
 - **系统日志按天切割 + 保留 7 天**（新增 `log_rotate.py`，零依赖）：当前日志真源仍是 `app.log`（不动白名单与导出契约），跨天时按文件修改时间归档为 `app-YYYY-MM-DD.log`；后台每小时轮询清理 7 天前的归档（只删严格日期形状的归档，不碰 `app.log` / `app.log.1` / 其它文件）。跨天即时切割由写入钩子完成，长期挂着靠轮询兜底。
 - **输出区「打开」文件夹端点** `/api/open-folder`：只接受**目录**、拒绝文件路径，在系统文件管理器中浏览输出文件夹。
+- **外部体检 + UI 视觉判分层**（借鉴 workbuddy-bench）：新增 `tools/bench_office_check.py`（用 bench Office 题集实跑精核，rubric 六维对齐 6/6）与 `tools/visual_check.py`（结构层断言零依赖必做 + 视觉层复用已配置多模态后端，未配置则诚实跳过）；顺手修正功能路线卡片把已交付的 Word 导出误标「规划中」。
 - **S5 视频链接 → .md**：新增「视频链接」卡片，粘贴链接（每行一条，≤20）本机 yt-dlp 下载后复用视频 handler 产出三区块 .md，落 out/derived/。域名不设限但 SSRF 内网防护为硬红线；可选本机 cookie 文件（只读不落盘）；独立批量进度/取消。DNS 重绑定残留窗口已在契约如实披露。
 - **LLM 模式真推理接入**（补齐 S8 最后缺口）：`LocalBackend.chat` 走本机 ollama 的 OpenAI 兼容 `/v1/chat/completions`（模型空时从 `/api/tags` 诚实取第一个），`CloudBackend.chat` 走客户端点 `/chat/completions`；共用 HTTP 层，`api_key` 只在 Bearer 头短暂出现、异常只报状态码不回显 key，空响应/形状不符一律报错、绝不返回假结果。基类 `Backend.chat` 保留 NotImplementedError（未配置后端时诚实拒绝）。至此「大模型提纯」与「AI 补写开关」在真实环境可用。
 

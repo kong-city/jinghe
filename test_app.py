@@ -4541,7 +4541,9 @@ class AppContractTest(unittest.TestCase):
         # ---------- ① 归档命名严格形状 ----------
         self.assertEqual(log_rotate.archive_name(_dt.date(2026, 11, 17)),
                          "app-2026-11-17.log")
-        day = _dt.date(2026, 11, 17)
+        # 用「今天」做基准，而非写死日期：写死会在跨天后必然变红
+        # （2026-11-18 实测踩到：archive 名随「今天」漂移）。
+        day = _dt.date.today()
         logdir = Path(self.tmp) / "logs"
         logdir.mkdir()
         # 造 9 天归档 + 当前日志 + 干扰文件
@@ -4579,12 +4581,15 @@ class AppContractTest(unittest.TestCase):
         src = logdir / "app.log"
         src.write_text("yesterday log", encoding="utf-8")
         import os as _os
-        old = time.time() - 2 * 86400
-        _os.utime(src, (old, old))
+        # mtime 精确设为「两天前的中午」，跨天/跨时区都不漂移
+        stamp = _dt.datetime.combine(day - _dt.timedelta(days=2),
+                                      _dt.time(12, 0)).timestamp()
+        _os.utime(src, (stamp, stamp))
         arc = log_rotate.rotate_if_needed(src, today=day)
-        self.assertTrue(arc and arc.startswith("app-2026-11-15"),
-                        "归档名应按 mtime 日期（11-15）：%s" % arc)
-        self.assertRegex(arc, r"^app-2026-11-15(-\d{6})?\.log$")
+        expect = "app-%s" % (day - _dt.timedelta(days=2)).isoformat()
+        self.assertTrue(arc and arc.startswith(expect),
+                        "归档名应按 mtime 日期（%s）：%s" % (expect, arc))
+        self.assertRegex(arc, r"^%s(-\d{6})?\.log$" % re.escape(expect))
         self.assertFalse(src.exists(), "归档后原 app.log 应被改名，由 sink 重开")
 
         # ⑤ app.py 接入钩子 + 后台轮询
@@ -4936,6 +4941,94 @@ class AppContractTest(unittest.TestCase):
         for token in ("域名不设限", "cookie 文件", "不判断内容归属",
                       "SSRF 内网防护保留为硬红线"):
             self.assertIn(token, doc, "对账文档缺裁决：%s" % token)
+
+    # ------------------------------------------------------------------ #
+    # 60) S9 验收工具：Office 外部体检 + UI 视觉判分层（诚实降级红线）
+    # ------------------------------------------------------------------ #
+    def test_60_bench_and_visual_check_tools(self):
+        import json
+        from unittest import mock
+
+        # ① 两个验收工具存在且可编译（门禁亦覆盖）
+        for rel in ("tools/bench_office_check.py", "tools/visual_check.py",
+                    "tools/ui_rubrics.json"):
+            self.assertTrue((ROOT / rel).is_file(), "缺少验收工具：%s" % rel)
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        for rel in ("tools/bench_office_check.py", "tools/visual_check.py"):
+            self.assertIn(rel, gate, "门禁未纳入 %s 的语法校验" % rel)
+
+        # ② Office 体检工具：产物缺失时诚实失败，不假装通过
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "bench_office_check", ROOT / "tools" / "bench_office_check.py")
+        boc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(boc)
+        self.assertFalse(boc.main(["--outdir", str(Path(self.tmp) / "nope")]) == 0,
+                         "产物目录不存在时应返回非零")
+        # 维度表必须覆盖 bench rubric 的六个考察维度
+        dims = {d[0] for d in boc.DIMENSIONS}
+        for need in ("source_identity", "audit_trail", "exception_handling",
+                     "no_placeholder", "context_preserved", "consistency"):
+            self.assertIn(need, dims, "体检维度缺失：%s" % need)
+
+        # ③ 构造一份「合规产物」跑体检：六维应全部对齐
+        good = Path(self.tmp) / "good"
+        (good / "md").mkdir(parents=True)
+        (good / "md" / "001-a.md").write_text(
+            "<!-- source: a.txt | format: .txt | extracted: 2026-01-01 -->\n"
+            "<!-- src: doc_aaa | path: a.txt | format: .txt -->\n"
+            "<!-- anchor: doc_aaa | block: 1 -->\n"
+            "# a.txt\n\n合同金额: 100 元\n日期: 2026-01-01\n",
+            encoding="utf-8")
+        (good / "INDEX.md").write_text(
+            "成功 1 | 失败 0\n| 1 | a.txt | .txt | 失败 | 扫描件 需 OCR |\n",
+            encoding="utf-8")
+        (good / "MERGED.md").write_text("# 合并\n\n内容\n", encoding="utf-8")
+        (good / "provenance.json").write_text(
+            json.dumps({"entries": [{"doc_id": "doc_aaa"}]}), encoding="utf-8")
+        d = boc.collect(good)
+        self.assertEqual(len(d["mds"]), 1)
+        for dim, _name, _desc in boc.DIMENSIONS:
+            s, ev = boc.score(dim, d)
+            self.assertEqual(s, 1, "维度 %s 未对齐（证据：%s）" % (dim, ev))
+        # 反例：空产物必须判不通过（诚实判分，不是橡皮章）
+        bad = Path(self.tmp) / "bad"
+        (bad / "md").mkdir(parents=True)
+        (bad / "md" / "001-b.md").write_text(
+            "<!-- src: doc_bbb | -->\n<!-- anchor: doc_bbb | block: 1 -->\n",
+            encoding="utf-8")
+        (bad / "INDEX.md").write_text("成功 0\n", encoding="utf-8")
+        (bad / "MERGED.md").write_text("", encoding="utf-8")
+        db = boc.collect(bad)
+        self.assertEqual(boc.score("no_placeholder", db)[0], 0,
+                         "空正文产物被误判为对齐")
+
+        # ④ 视觉判分层：无后端时必须「跳过」而非「判过」
+        spec2 = importlib.util.spec_from_file_location(
+            "visual_check", ROOT / "tools" / "visual_check.py")
+        vc = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(vc)
+        png = Path(self.tmp) / "x.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        with mock.patch.dict("sys.modules", {"backend": None}):
+            res = vc.vlm_judge(png, "看起来对吗", ["不重叠"])
+        self.assertEqual(res["status"], "skipped",
+                         "无后端时必须跳过，不能假装判过")
+        self.assertTrue("后端" in res["reason"] or "backend" in res["reason"],
+                        "跳过原因应说明后端不可用：%s" % res["reason"])
+        # rubric JSON 结构合法
+        rub = json.loads((ROOT / "tools" / "ui_rubrics.json").read_text(
+            encoding="utf-8"))
+        self.assertIn("pages", rub)
+        self.assertTrue(rub["pages"], "rubric 不得为空")
+        for page in rub["pages"]:
+            self.assertIn("name", page)
+            self.assertIn("structure", page)
+
+        # ⑤ 功能路线卡片不得再把已交付能力标成规划中
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("阶段 2（二期）：Word 导出（当前输出格式固定为 Markdown）",
+                         html, "Word 导出已交付，功能路线仍标规划中")
 
 
 def print_summary(result=None) -> None:
