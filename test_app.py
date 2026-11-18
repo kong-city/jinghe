@@ -4902,13 +4902,23 @@ class AppContractTest(unittest.TestCase):
         self.assertFalse(M.start(["https://a.test/v"] * 21, str(outdir))["ok"])
         self.assertFalse(M.start(["file:///etc/passwd"], str(outdir))["ok"])
 
-        # ⑧ 冻结契约不变量：S5 不碰冻结文件与既有 handler 红线
-        for rel in ("SPEC.md", "extract.py", "test_extract.py",
+        # ⑧ 冻结契约不变量：S5 不碰冻结文件与既有 handler 红线。
+        # extract.py 的「冻结」指主流水线行为，不含发版升号（__version__ 是
+        # 版本唯一真源，每次发版都要改；v0.7.0 实测踩到过这个误判）。
+        for rel in ("SPEC.md", "test_extract.py",
                     "audio_transcribe.py", "video_transcribe.py"):
             self.assertEqual(
                 subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel],
                                cwd=str(ROOT), capture_output=True).returncode, 0,
                 "%s 被 S5 改动" % rel)
+        diff = subprocess.run(["git", "diff", "--unified=0", "HEAD", "--", "extract.py"],
+                              cwd=str(ROOT), capture_output=True, text=True).stdout
+        changed = [ln for ln in diff.splitlines()
+                   if (ln.startswith("+") or ln.startswith("-"))
+                   and not ln.startswith(("+++", "---"))]
+        for ln in changed:
+            self.assertIn("__version__", ln,
+                          "extract.py 只允许版本号变更，实际改动：%s" % ln)
         asrc = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn('path == "/api/link/inspect"', asrc)
         self.assertIn('path == "/api/media/run"', asrc)
