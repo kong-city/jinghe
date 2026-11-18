@@ -53,6 +53,7 @@ import link_media  # S5b：链接批量编排（复用 S4 handler，独立队列
 import refine  # S7：精读提纯 / 修订增修（可插拔后端，独立后处理层，冻结内核零改动）
 import backend  # S7b：可插拔大模型后端适配层（Local ollama / Cloud 兼容端点）
 import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行中的程序并重启）
+import kb  # S9：阶段 4 知识库（独立后处理层，冻结内核 / SPEC 零改动）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -108,6 +109,8 @@ INDEX_FILE = UI_DIR / "index.html"
 # 冻结后没有控制台，所有异常必须落盘，否则用户只能看到「双击没反应」
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA") or str(Path.home())) / "Jinghe"
 LOG_FILE = LOG_DIR / "app.log"
+# S9：知识库数据目录（随数据目录，不污染产物盘；退出/卸载都不自动删）
+KB_DIR = Path(os.environ.get("JINGHE_KB_DIR") or str(LOG_DIR / "kb"))
 # 日志封顶：超过就轮转为 app.log.1（只留 1 份历史）。桌面端长期运行 +
 # 高频请求会让日志无限增长，不封顶迟早撑爆磁盘。
 LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -2097,6 +2100,11 @@ class Handler(BaseHTTPRequestHandler):
                 _touch_heartbeat()
                 self._send_json(self._api_state())
                 return
+            if path == "/api/kb/status":
+                # S9：知识库状态（条目数 / 分词器 / 是否已初始化）
+                _touch_heartbeat()
+                self._send_json(kb.kb_status(KB_DIR))
+                return
             if path == "/api/progress":
                 _touch_heartbeat()
                 qs = parse_qs(parsed.query)
@@ -2486,6 +2494,28 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/refine/open":
                 # S7d：打开精读/修订产物（独立端点，不动 /api/open 的白名单契约）
                 self._send_json(self._api_refine_open(str(data.get("path") or "").strip()))
+            elif path == "/api/kb/ingest":
+                # S9：把产物目录入库（include_ai 默认关，路径须在允许根目录内）
+                kb_roots = [str(KB_DIR), os.getcwd()]
+                self._send_json(kb.ingest_dir(
+                    KB_DIR,
+                    str(data.get("dir") or "").strip(),
+                    include_ai=bool(data.get("include_ai", False)),
+                    allowed_roots=kb_roots,
+                ))
+            elif path == "/api/kb/query":
+                # S9：关键词检索（trigram 主 / LIKE 降级，结果带来源标注）
+                self._send_json(kb.query(
+                    KB_DIR, str(data.get("q") or "").strip(),
+                    limit=min(int(data.get("limit") or 20), 100),
+                ))
+            elif path == "/api/kb/open-source":
+                # S9：回跳原文位置（只解析坐标，不执行打开；路径围栏）
+                kb_roots = [str(KB_DIR), os.getcwd()]
+                self._send_json(kb.open_source(
+                    KB_DIR, str(data.get("id") or "").strip(),
+                    allowed_roots=kb_roots,
+                ))
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态
