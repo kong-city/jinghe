@@ -144,7 +144,9 @@ def main(argv: list[str] | None = None) -> int:
                 "revise_engine.py", "extract_engine.py", "log_rotate.py",
                 "link_guard.py", "link_downloader.py", "link_media.py",
                 # 验收工具（S5 外部体检 + UI 视觉判分层）
-                "tools/bench_office_check.py", "tools/visual_check.py"):
+                "tools/bench_office_check.py", "tools/visual_check.py",
+                # S9 阶段 4 知识库（远端 85feb75 合并进来）
+                "kb.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:
