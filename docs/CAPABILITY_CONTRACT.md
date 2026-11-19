@@ -407,3 +407,9 @@
   - **修复**：`.sidebar` 显式加 `overflow-x: hidden`（双轴都 hidden）；`.nav-resizer` 从 `right:-3px` 改为 `right:0`（贴边，7px 热区仍在）。test_65 锁定两处防回退。
   - **CDP 浏览器实测**（不再靠 CSS 推理）：`.sidebar` scrollWidth=183 = clientWidth=183、scrollHeight=487 = clientHeight=487、overflowX/Y 均 hidden、**横纵溢出皆 false**。证据确凿。
   - 全量 **124 用例**（65+28+16+15）+ 门禁 9/9 + 视觉判分 26/26；按规则升号 0.8.7 → 0.8.8，未上传。
+
+- **v1.0.8（2026-11-19 · 折叠按钮位置固定，软件升号 v0.8.9）**：用户反馈「折叠按钮展开/折叠时位置变化，希望与下方功能按钮对齐不动」。
+  - **CDP 实测根因**：图标 x 两态恒为 20（本就不动）；按钮 x 展开 10 → 折叠 15.5（跳 5.5px）。折叠态因 `.app.nav-collapsed .side-top{justify-content:center}` 使按钮中心对齐，但展开态按钮 `space-between` 左缘贴边 → 两态基准不一致。
+  - **修复**：删掉折叠态居中覆盖；`.side-top` 固定 `padding-left:10px` + `justify-content:flex-start`（左内边距 10 + 侧栏 10 = 20px，与 `.nav-item` 图标左缘同一基准）。
+  - **CDP 复测**：按钮 x 展开 20 → 折叠 20（位移 **0px**），图标 x 恒定 20，按钮与图标左缘偏差 **0px**（两态严丝合缝）。新增 `tools/_cdp_nav_probe.py` 供以后实测，test_66 锁定 CSS 契约。
+  - 全量 **125 用例**（66+28+16+15）+ 门禁 9/9 + 视觉判分 26/26；按规则升号 0.8.8 → 0.8.9，未上传。

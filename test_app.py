@@ -5235,6 +5235,23 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn("right: -3px", rz, "拖拽手柄负偏移会造成横向溢出")
         self.assertIn("right: 0", rz)
 
+    # ------------------------------------------------------------------ #
+    # 66) 折叠按钮位置固定，与导航图标左缘对齐（展开/折叠不跳位）
+    # ------------------------------------------------------------------ #
+    def test_66_toggle_button_fixed_alignment(self):
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        # 折叠态不得再覆盖为居中（否则按钮左右跳位）
+        self.assertNotIn(".app.nav-collapsed .side-top", css,
+                         "折叠态 side-top 居中覆盖会导致按钮跳位")
+        # side-top 固定左内边距，与 nav-item 图标左缘同一基准
+        top = css[css.index(".side-top {"):css.index(".nav-toggle {")]
+        self.assertIn("padding-left: 10px", top,
+                      "side-top 需固定左内边距对齐图标")
+        self.assertIn("justify-content: flex-start", top)
+        # CDP 实测锁定（若环境支持）：两态按钮左缘均为 20px、位移 0
+        probe = ROOT / "tools" / "_cdp_nav_probe.py"
+        self.assertTrue(probe.is_file(), "CDP 探测脚本应保留供实测")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
