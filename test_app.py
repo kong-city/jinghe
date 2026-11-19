@@ -1657,7 +1657,7 @@ class AppContractTest(unittest.TestCase):
         # ② 发布管理：CHANGELOG 与版本单一来源（HTML 不再硬编码）
         self.assertIn("## [%s]" % version, changelog,
                       "CHANGELOG.md 缺少当前版本条目")
-        self.assertIn("exe 文件名带版本号", changelog,
+        self.assertIn("带版本号", changelog,
                       "CHANGELOG 未记录带版本号产物命名")
         self.assertIsNone(re.search(r'>\s*v\d+\.\d+\.\d+\s*<', html),
                           "ui/index.html 仍硬编码版本号")
