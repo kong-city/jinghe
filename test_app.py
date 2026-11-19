@@ -1650,7 +1650,7 @@ class AppContractTest(unittest.TestCase):
         # ① 构建 / 发布阶段：测试门禁 + tag 触发构建并上传 exe 资产
         for token in ("windows-latest", "python -m unittest", "pyinstaller",
                       "tags:", "python build.py", "gh release",
-                      "dist/", "Jinghe$tag.exe", "check_release.py"):
+                      "dist/", "Jinghe-$version.exe", "check_release.py"):
             self.assertIn(token, wf, "CI workflow 缺少：%s" % token)
         self.assertIn("needs: test", wf, "发布前必须先通过测试门禁")
 

@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         wf = _read(".github/workflows/ci.yml")
         needed = ("windows-latest", "pyinstaller", "tags:", "gh release",
-                  "Jinghe$tag.exe")
+                  "Jinghe-$version.exe")
         missing = [k for k in needed if k.lower() not in wf.lower()]
         check(not missing, "CI workflow 完整",
               "缺少关键字：%s" % ",".join(missing) if missing else "测试 + 构建 + 上传资产")

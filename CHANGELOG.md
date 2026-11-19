@@ -4,6 +4,10 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.8.6] - 2026-11-19
+
+- 修 CI 资产命名：Jinghe$tag.exe 拼错(带v无连字符)，改为 Jinghe-$version.exe
+
 ## [0.8.5] - 2026-11-19
 
 - 修 test_32 断言：CHANGELOG 文案与断言不一致导致 CI 干净环境失败
