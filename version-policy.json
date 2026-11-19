@@ -1,0 +1,59 @@
+{
+  "schema": "jinghe.version-policy.v1",
+  "description": "精核版本迭代契约（机器可读，双终端共享）。改代码/上传前必须读此文件。",
+  "version_source": {
+    "file": "extract.py",
+    "pattern": "^__version__\\s*=\\s*[\"']([^\"']+)[\"']",
+    "note": "唯一真源。其它文件（CHANGELOG/使用说明/契约状态行）均由此派生，不得手写第二份。"
+  },
+  "release_source": {
+    "api": "https://api.github.com/repos/kong-city/jinghe/releases/latest",
+    "field": "tag_name",
+    "normalize": "strip leading v"
+  },
+  "bump_rules": [
+    {
+      "id": "patch",
+      "when": "修 bug / 文案 / 测试 / 文档 / 配置，不新增能力",
+      "action": "patch + 1, minor/major 不变",
+      "example": "0.7.0 -> 0.7.1"
+    },
+    {
+      "id": "minor",
+      "when": "新增模块 / 新端点 / 新能力（即使修了 bug 也算）",
+      "action": "minor + 1, patch 归零",
+      "example": "0.7.0 -> 0.8.0"
+    },
+    {
+      "id": "major",
+      "when": "冻结契约破坏 / 架构级变更 / 产物格式不兼容",
+      "action": "major + 1, minor/patch 归零",
+      "example": "0.7.0 -> 1.0.0"
+    }
+  ],
+  "spec_version_track": {
+    "file": "SPEC.md",
+    "pattern": "^.*规格版本.*v(\\d+\\.\\d+)",
+    "independent": true,
+    "note": "规格版本 v2.x 与软件版本双轨，永不互推。"
+  },
+  "collaboration": {
+    "pre_change": [
+      "git fetch origin",
+      "比对 git rev-list --left-right --count origin/main...HEAD",
+      "若远端独有 > 0：先 git pull --ff-only 拉取再改",
+      "若本地独有 > 0：正常改（上传仍需用户明确指令）"
+    ],
+    "pre_upload": [
+      "运行 tools/version_check.py --for-upload，必须通过",
+      "本地版本号必须严格大于 GitHub latest（版本相同 = 拒绝上传）",
+      "此规则确保另一终端能从版本号识别代码已变更，触发拉取"
+    ],
+    "why_strict_bump": "两终端共用 GitHub 连接器，若上传不改版本号，另一终端无法凭版本判断是否需要拉取，会重复劳动或覆盖。故上传必升号是硬约束。"
+  },
+  "terminals": {
+    "count": 2,
+    "roles": ["本地终端", "另一终端（GitHub 连接器）"],
+    "sync_signal": "版本号递增（优先） + commit 差距（辅助）"
+  }
+}

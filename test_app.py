@@ -48,6 +48,7 @@ MessageBoxW 兜底、/api/pick-folder 的原生文件夹对话框、以及「只
 """
 from __future__ import annotations
 
+import io
 import gc
 import json
 import os
@@ -5039,6 +5040,74 @@ class AppContractTest(unittest.TestCase):
         html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("阶段 2（二期）：Word 导出（当前输出格式固定为 Markdown）",
                          html, "Word 导出已交付，功能路线仍标规划中")
+
+    # ------------------------------------------------------------------ #
+    # 61) C 方案无浏览器痕迹窗口 + 版本契约判定器（双终端协作护栏）
+    # ------------------------------------------------------------------ #
+    def test_61_app_window_and_version_policy(self):
+        import json
+        from unittest import mock
+        # ① C 方案：open_window 必须用 Edge --app 模式（无地址栏/标签页）
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('"--app=%s" % url', app_src,
+                      "open_window 必须用 --app 模式，退化为普通标签页")
+        self.assertIn("def find_edge", app_src)
+        self.assertIn("webbrowser.open(url)", app_src,
+                      "必须保留无 Edge 时的浏览器兜底")
+        # HTML 有 title（--app 模式下作窗口标题）
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("<title>精核", html, "--app 模式窗口需要 title")
+
+        # ② 版本契约机器可读且完整
+        pol = json.loads((ROOT / "version-policy.json").read_text(encoding="utf-8"))
+        self.assertEqual(pol["schema"], "jinghe.version-policy.v1")
+        self.assertEqual(pol["version_source"]["file"], "extract.py")
+        kinds = {r["id"] for r in pol["bump_rules"]}
+        self.assertEqual(kinds, {"patch", "minor", "major"})
+        self.assertTrue(pol["collaboration"]["pre_upload"], "缺上传前规则")
+        # 人可读说明存在
+        self.assertIn("上传必升号",
+                      (ROOT / "VERSIONING.md").read_text(encoding="utf-8"))
+
+        # ③ 判定器三种模式
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "version_check", ROOT / "tools" / "version_check.py")
+        vc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vc)
+        lv, lnums = vc.local_version()
+        self.assertTrue(lv)
+        self.assertEqual(len(lnums), 3)
+        # suggest 算号正确
+        with mock.patch.object(vc, "local_version", return_value=("0.7.0", (0, 7, 0))):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as so:
+                vc.cmd_suggest(mock.Mock(kind="minor"))
+            self.assertIn("0.8.0", so.getvalue())
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as so:
+                vc.cmd_suggest(mock.Mock(kind="patch"))
+            self.assertIn("0.7.1", so.getvalue())
+        # for-upload：同版本必须 BLOCK
+        with mock.patch.object(vc, "local_version", return_value=("0.7.0", (0, 7, 0))):
+            with mock.patch.object(vc, "remote_latest",
+                                   return_value={"ok": True, "version": "0.7.0",
+                                                 "tag": "v0.7.0", "error": ""}):
+                with mock.patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(vc.cmd_for_upload(mock.Mock()), 1,
+                                     "同版本必须拒绝上传")
+        # for-upload：更新版本必须放行
+        with mock.patch.object(vc, "local_version", return_value=("0.7.1", (0, 7, 1))):
+            with mock.patch.object(vc, "remote_latest",
+                                   return_value={"ok": True, "version": "0.7.0",
+                                                 "tag": "v0.7.0", "error": ""}):
+                with mock.patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(vc.cmd_for_upload(mock.Mock()), 0)
+        # for-upload：离线必须 BLOCK（宁可不动不可盲传）
+        with mock.patch.object(vc, "local_version", return_value=("0.7.1", (0, 7, 1))):
+            with mock.patch.object(vc, "remote_latest",
+                                   return_value={"ok": False, "version": "",
+                                                 "tag": "", "error": "offline"}):
+                with mock.patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(vc.cmd_for_upload(mock.Mock()), 2)
 
 
 def print_summary(result=None) -> None:

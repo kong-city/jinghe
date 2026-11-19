@@ -148,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
                 # S9 阶段 4 知识库（远端 85feb75 合并进来）
                 "kb.py",
                 # S10 可选组件管理（用户裁决：必须有测试 + 门禁守护）
-                "components.py", "test_components.py"):
+                "components.py", "test_components.py",
+                # 版本契约判定器（双终端协作护栏）
+                "tools/version_check.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:
