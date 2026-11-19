@@ -5036,10 +5036,15 @@ class AppContractTest(unittest.TestCase):
             self.assertIn("name", page)
             self.assertIn("structure", page)
 
-        # ⑤ 功能路线卡片不得再把已交付能力标成规划中
+        # ⑤ 功能路线卡片已移除（v0.8.2 用户裁决）：关于页不再展示静态路线图，
+        #    其职责由 CHANGELOG / 文档承担，避免过时进度误导用户
         html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
-        self.assertNotIn("阶段 2（二期）：Word 导出（当前输出格式固定为 Markdown）",
-                         html, "Word 导出已交付，功能路线仍标规划中")
+        self.assertNotIn("功能路线", html, "功能路线卡片应已删除")
+        self.assertNotIn("road-list", html, "功能路线 CSS 钩子应已移除")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        self.assertNotIn(".road-list", css, "功能路线样式应已移除")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("aboutVersion2", js, "重复的软件版本字段应已移除")
 
     # ------------------------------------------------------------------ #
     # 61) C 方案无浏览器痕迹窗口 + 版本契约判定器（双终端协作护栏）

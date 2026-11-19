@@ -139,7 +139,6 @@
     updateProgressBar: $("updateProgressBar"),
     updateProgressText: $("updateProgressText"),
     // 关于页 · 运行日志
-    aboutVersion2: $("aboutVersion2"),
     aboutPython: $("aboutPython"),
     aboutPlatform: $("aboutPlatform"),
     aboutLog: $("aboutLog"),
@@ -398,7 +397,6 @@
       if (!st) return;
       var ver = st.version || "—";
       if (el.aboutVersion) el.aboutVersion.textContent = ver;
-      if (el.aboutVersion2) el.aboutVersion2.textContent = ver;
       if (el.aboutPython) el.aboutPython.textContent = st.python || "—";
       if (el.aboutPlatform) el.aboutPlatform.textContent = st.platform || "—";
       if (el.aboutLog) el.aboutLog.textContent = st.log_file || "—";
