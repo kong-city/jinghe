@@ -428,3 +428,10 @@
   - **历史号修正**：0.8.10 是旧规则产物且尚未上传 → 按新规则修正为 **v0.9.0**（extract.py / CHANGELOG / 使用说明三处同步），故版本序列不会出现 0.8.10。
   - **不影响比较逻辑**：`self_update.version_tuple` 用数值元组比较，0.8.10 > 0.8.9 判断本就正确，无需改动。
   - 新增 test_67 锁定 8 组进位用例 + 撞号顶升 + 契约声明 + 「当前版本每段 ≤9」断言。全量 **127 用例**（67+28+16+16）+ 门禁 9/9；SPEC.md 与冻结主流水线零改动。
+
+- **v1.1.1（2026-11-19 · 修桌面弹终端窗 + 组件装探错位，软件升号 v0.9.1）**：用户反馈「Whisper 安装仍报错」+「桌面一直弹终端窗口」。
+  - **弹窗根因（自造 bug）**：本轮新增的 `_pip_scripts_dir()` 调 `subprocess.run([python, "-c", ...])` **漏加 `creationflags=CREATE_NO_WINDOW`**（同文件 pip 安装处已正确带）→ 每探测一次组件就在桌面弹一个控制台黑框。已修并新增 `TestNoConsolePopup`（括号配平切块扫描全部子进程调用，杜绝裸调用）。
+  - **装探错位根因**：`Path(python).resolve()` 会展开 Windows junction（本机 `...\versions\3.13.12` → `...\vendor\python`），而 pip 用**未解析的真实路径** → 「pip 装到 A、探测去 B」。改为**问 pip 自己** `sysconfig.get_path('scripts')`（`_pip_scripts_dir`）；`_scripts_dir()` 改用它；新增 `_candidate_scripts_dirs()` 注入 PATH 里**所有** Scripts 目录；`_python_for_pip()` 加 PATH 指纹缓存（PATH 变即重查）。
+  - **报错带诊断**：安装后探测失败时明示 pip 用的 Python、探测查找目录、目标文件是否存在（不再只报一句谜语）。
+  - **越界自查**：曾顺手给 `extract.py`（冻结契约文件）加 NO_WINDOW，被 `test_59` 冻结断言拦下 → **已撤回**，冻结文件零改动。
+  - 回归 `test_components.py` 16 → **22 用例**；冻结态 exe 实测连续探测 4 次无黑框、三组件全部 detected。全量 **133 用例**（67+28+16+22）+ 门禁 9/9；SPEC.md 与冻结主流水线零改动。

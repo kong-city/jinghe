@@ -4,6 +4,12 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.9.1] - 2026-11-19
+
+- **修桌面弹终端窗（用户实测反馈）**：`_pip_scripts_dir()` 探测 pip 路径时调用 `subprocess.run([python, "-c", ...])` **漏加 `creationflags=CREATE_NO_WINDOW`** → 每探测一次组件就在桌面弹一个控制台黑框。新增 `test_components.py::TestNoConsolePopup`（括号配平切块，扫描全部子进程调用，杜绝裸调用）。
+- **修组件安装「装探错位」**：新增 `_pip_scripts_dir()`——**问 pip 自己** `sysconfig.get_path('scripts')`，不再用 `Path.resolve()` 猜（junction 展开会让 pip 用真实路径、探测用别名路径，两者可能不是同一目录）。`_scripts_dir()` 改用该函数；新增 `_candidate_scripts_dirs()` 把 PATH 里**所有** Scripts 目录一并注入 PATH（多 Python 共存场景）；`_python_for_pip()` 增加 PATH 指纹缓存（PATH 变化即重新查找，保证装与探同源）。
+- **安装失败报错带诊断**：不再只报「仍探测不到 whisper.exe」，改为明示 pip 用的 Python、探测查找目录、目标文件是否存在。
+
 ## [0.9.0] - 2026-11-19
 
 - 修组件安装找不到 Python：PATH 只有 Scripts 时从父目录反推 python.exe，多策略兜底 + 明确体积/指引

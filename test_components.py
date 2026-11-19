@@ -127,6 +127,13 @@ class TestPipInterpreter(unittest.TestCase):
     def setUp(self):
         import components
         self.c = components
+        # 清冻结态 Python 选择缓存（否则跨用例污染）
+        self.c._PIP_PYTHON = ""
+        self.c._PIP_PYTHON_FP = ""
+
+    def tearDown(self):
+        self.c._PIP_PYTHON = ""
+        self.c._PIP_PYTHON_FP = ""
 
     def test_source_mode_uses_sys_executable(self):
         with mock.patch.object(self.c.sys, "frozen", False, create=True):
@@ -207,6 +214,109 @@ class TestPipInterpreter(unittest.TestCase):
             d = self.c._scripts_dir()
         self.assertIn("Python313", str(d))
         self.assertTrue(str(d).lower().endswith("scripts"))
+
+
+
+class TestPipProbeSameSource(unittest.TestCase):
+    """回归：pip 装到哪个 Python，探测就必须查那个 Python 的 Scripts。
+
+    用户 2026-11-19 实测报错「安装结束但仍探测不到 whisper.exe」——
+    根因是 junction 展开（Path.resolve）导致 pip 用真实路径、探测用别名
+    路径，两者可能不是同一目录 → 装探错位。本组测试锁死同源。
+    """
+
+    def setUp(self):
+        import components
+        self.c = components
+        self.c._PIP_PYTHON = ""
+        self.c._PIP_PYTHON_FP = ""
+
+    def tearDown(self):
+        self.c._PIP_PYTHON = ""
+        self.c._PIP_PYTHON_FP = ""
+
+    def test_scripts_dir_comes_from_pip_itself(self):
+        """_scripts_dir 必须问 pip（sysconfig），不得用 resolve() 猜。"""
+        with tempfile.TemporaryDirectory() as td:
+            py = Path(td) / "PyA" / "python.exe"
+            py.parent.mkdir(parents=True)
+            py.write_bytes(b"")
+            fake_scripts = py.parent / "Scripts"
+            fake_scripts.mkdir()
+            with mock.patch.object(self.c, "_python_for_pip", return_value=str(py)), \
+                 mock.patch.object(self.c, "_pip_scripts_dir",
+                                   return_value=fake_scripts) as m:
+                got = self.c._scripts_dir()
+            self.assertEqual(got, fake_scripts)
+            m.assert_called_once_with(str(py))
+
+    def test_pip_scripts_dir_asks_pip(self):
+        """_pip_scripts_dir 应执行 python -c sysconfig 并采用其输出。"""
+        with tempfile.TemporaryDirectory() as td:
+            scripts = Path(td) / "RealScripts"
+            scripts.mkdir()
+            py = Path(td) / "python.exe"
+            py.write_bytes(b"")
+            out = mock.Mock(stdout=str(scripts) + "\n", stderr="", returncode=0)
+            with mock.patch.object(self.c.subprocess, "run", return_value=out):
+                got = self.c._pip_scripts_dir(str(py))
+            self.assertEqual(got, scripts)
+
+    def test_candidate_dirs_include_all_scripts(self):
+        """候选目录必须包含 PATH 里所有 Scripts（多 Python 共存场景）。"""
+        with tempfile.TemporaryDirectory() as td:
+            a = Path(td) / "A" / "Scripts"
+            b = Path(td) / "B" / "Scripts"
+            a.mkdir(parents=True); b.mkdir(parents=True)
+            with mock.patch.object(self.c, "_scripts_dir", return_value=a), \
+                 mock.patch.dict(os.environ, {"PATH": str(b)}, clear=False):
+                dirs = [str(x) for x in self.c._candidate_scripts_dirs()]
+            self.assertIn(str(a), dirs)
+            self.assertIn(str(b), dirs)
+
+    def test_install_error_carries_diagnostics(self):
+        """安装后探测失败的报错必须带诊断信息，不能只有一句谜语。"""
+        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        self.assertIn("诊断：pip 使用 Python", src)
+        self.assertIn("探测查找目录", src)
+        self.assertIn("目标文件是否存在", src)
+
+
+
+class TestNoConsolePopup(unittest.TestCase):
+    """回归：所有子进程调用必须隐藏控制台窗口。
+
+    用户 2026-11-19 实测：桌面一直弹终端黑框。根因是探测 pip 路径的
+    ``subprocess.run([python, "-c", ...])`` 漏加 ``creationflags``，
+    每探测一次组件就弹一个窗。此处锁死「不得有裸 subprocess 调用」。
+    """
+
+    def test_components_subprocess_all_hide_window(self):
+        import re
+        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        bad = []
+        # 用括号配平切出完整调用块，再看是否带 creationflags
+        for m in re.finditer(r"subprocess\.(run|Popen|call)\(", src):
+            i = src.index("(", m.start())
+            depth, j = 0, i
+            while j < len(src):
+                if src[j] == "(":
+                    depth += 1
+                elif src[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            blk = src[i:j + 1]
+            if "creationflags" not in blk and "NO_WINDOW" not in blk:
+                bad.append(src[:m.start()].count("\n") + 1)
+        self.assertEqual(bad, [], "components.py 存在会弹终端窗的子进程调用，行号 %s" % bad)
+
+    def test_pip_scripts_dir_hides_window(self):
+        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        blk = src[src.index("def _pip_scripts_dir"):src.index("def _python_for_pip")]
+        self.assertIn("creationflags=_CREATE_NO_WINDOW", blk,
+                      "_pip_scripts_dir 必须隐藏控制台窗口，否则桌面弹黑框")
 
 
 if __name__ == "__main__":
