@@ -1918,11 +1918,10 @@ def _merged_path(outdir: str) -> Path | None:
     又被前端静默吞掉，表现成「按钮点了没反应」。这里统一由后端解析。
     """
     if not outdir:
-        # 空输出目录 → 落到默认目录（%TEMP%\jinghe-out，用户 2026-11-19 裁决）。
-        # 只有默认目录里确实有 MERGED.md 时才认，否则仍返回 None
-        # （保持「请先完成一次提取」的诚实语义）。
-        candidate = DEFAULT_OUTDIR / MERGED_NAME
-        return candidate if candidate.is_file() else None
+        # 空 outdir 一律返回 None（保持「请先完成一次提取」的诚实语义：
+        # 不能因为默认目录里恰好有旧的 MERGED.md 就谎报存在）。
+        # 前端已改为下发默认目录的绝对路径，不靠这里的兜底。
+        return None
     try:
         base = Path(os.path.abspath(os.path.expanduser(outdir)))
     except (OSError, ValueError):

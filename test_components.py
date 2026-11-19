@@ -319,5 +319,55 @@ class TestNoConsolePopup(unittest.TestCase):
                       "_pip_scripts_dir 必须隐藏控制台窗口，否则桌面弹黑框")
 
 
+
+class TestConsoleScriptRecovery(unittest.TestCase):
+    """回归：包已装但 console script（exe）缺失时，必须离线补生成。
+
+    用户 2026-11-19 实测：pip 报 "Requirement already satisfied" 就整个
+    跳过安装，**不会补回丢失的 whisper.exe** → 软件报「安装结束仍探测不到」。
+    重装（--force-reinstall）不可行：需重下 640MB 且内网镜像不可达。
+    """
+
+    def setUp(self):
+        import components
+        self.c = components
+        self.c._PIP_PYTHON = ""
+        self.c._PIP_PYTHON_FP = ""
+
+    def tearDown(self):
+        self.c._PIP_PYTHON = ""
+        self.c._PIP_PYTHON_FP = ""
+
+    def test_ensure_console_script_uses_distlib_scriptmaker(self):
+        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        self.assertIn("def _ensure_console_script", src)
+        # 必须用 pip 自带的 distlib ScriptMaker（离线、不重装）
+        self.assertIn("ScriptMaker", src)
+        self.assertIn("pip._vendor.distlib.scripts", src)
+        # 不得依赖 force-reinstall（需重下 640MB 且该模式在部分网络下
+        # 会报 "from versions: none"）——只看 _pip_cmd_install 的实际命令行
+        cmd_fn = src[src.index("def _pip_cmd_install"):
+                     src.index("def _pip_install")]
+        self.assertNotIn("--force-reinstall", cmd_fn,
+                         "不得用 force-reinstall：需重下 640MB 且可能不可达")
+
+    def test_install_worker_calls_recovery_when_exe_missing(self):
+        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        blk = src[src.index("def _install_worker"):]
+        blk = blk[:blk.index("def ", 10)]
+        self.assertIn("_ensure_console_script", blk,
+                      "安装流程必须在 exe 缺失时调用补生成")
+        self.assertIn("is_file()", blk)
+
+    def test_recovery_raises_with_readable_message(self):
+        with mock.patch.object(self.c.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=1, stdout="", stderr="boom")
+            with self.assertRaises(RuntimeError) as ctx:
+                self.c._ensure_console_script(r"C:/fake/python.exe",
+                                              "openai-whisper", "whisper.exe")
+        self.assertIn("whisper.exe", str(ctx.exception))
+        self.assertIn("boom", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -441,3 +441,10 @@
   - **修复（前后端双保险）**：① 后端新增常量 `DEFAULT_OUTDIR = %TEMP%\jinghe-out`，`/api/settings` 下发 `default_outdir_path`（绝对路径）；② 前端 `defaultOutdir()` 改用后端下发路径，不再拼相对路径；③ `applySettings` 由整体替换改为**合并**，避免保存设置后把 `default_outdir_path` 抹掉；④ settings 异步加载完成后若输出框仍空则补齐（init 先于该回调）；⑤ 后端 `_api_run` 空 outdir **自动兜底**到默认目录（不再报错）；⑥ `_merged_path` 空值时认默认目录下的 MERGED.md（仅在确实存在时，保持「请先完成提取」的诚实语义）。
   - **端到端实测**：冻结态 exe 空 outdir 直接跑通 → 产物落 `%TEMP%\jinghe-out`（INDEX.md / MERGED.md / md/ / provenance.json / run.log），**TEMP 根下无任何 out-* 随机名目录**。
   - 新增 test_68 锁定契约（前端不再拼相对路径、后端常量与下发、空值兜底、实际路径在 temp 下）；全量 **134 用例**（68+28+16+22）+ 门禁 9/9；SPEC.md 与冻结主流水线零改动。
+
+- **v1.1.3（2026-11-19 · 组件安装「装完仍探测不到」根治，软件升号 v0.9.3）**：用户截图给出 v0.9.2 的诊断信息（pip Python 与探测目录同源、目标文件存在=True 却仍探测失败）。
+  - **根因（pip 的语义盲区）**：pip 装的是**包**，`whisper.exe` 只是 console script 副产品。包若早已安装，pip 报 **"Requirement already satisfied"** 就**整个跳过**，**不会补回丢失的 exe** → 软件报「安装结束仍探测不到」。重装不可行：`--force-reinstall` 需重下 640 MB，且该模式下镜像报 `from versions: none`（实测两个镜像本身均可达，阿里 0.4s / 清华 0.7s）。
+  - **修复**：新增 `_ensure_console_script()`——用 **pip 自带的 distlib ScriptMaker**（`pip._vendor.distlib.scripts`，fallback `pip._internal.operations.install.wheel`）**离线重建** console script，不联网、不重装依赖、生成器与 pip 版本天然匹配。`_install_worker` 在 pip 完成后检查 exe 是否存在，缺失则补生成。
+  - **端到端实测**：移走 whisper.exe → 桌面 PATH 启动冻结 exe → 点安装 → 事件「补生成 whisper.exe 启动器…」→「Whisper 安装成功」→ 重新探测 `installed=True`，**全程零下载**。
+  - **契约回退自查**：`_merged_path` 空 outdir 的兜底曾违反 test_29「空 outdir 不应谎报存在」→ **已撤回**（前端已下发绝对路径，兜底多余）。冻结文件零改动。
+  - 新增 `TestConsoleScriptRecovery` 3 组用例；`test_components.py` 22 → **25 用例**；全量 **137 用例**（68+28+16+25）+ 门禁 9/9。

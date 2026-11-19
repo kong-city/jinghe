@@ -533,6 +533,61 @@ def _pip_install(package: str, component_id: str) -> str:
     return "安装完成"
 
 
+def _ensure_console_script(python_exe: str, package: str, exe_name: str) -> str:
+    """包已装但 console script（exe）缺失时，**离线补生成**该 exe。
+
+    **为什么需要（用户 2026-11-19 实测踩坑）**：pip 装的其实是「包」，
+    ``whisper.exe`` 只是它的 console script 副产品。若包早已安装
+    （``Requirement already satisfied``），pip 会**整个跳过**，
+    **不会补回丢失的 exe** → 软件报「安装结束仍探测不到 whisper.exe」。
+    重装（``--force-reinstall``）也不可行：需重下 640 MB，且内网镜像
+    在部分网络下不可达（``from versions: none``）。
+
+    这里用 **pip 自带的 distlib ScriptMaker** 离线重建启动器：
+    不联网、不重装依赖、pip 与生成器版本天然匹配。
+    返回生成结果描述；失败时抛异常，由调用方转成可读报错。
+    """
+    code = r"""
+import sys
+from importlib.metadata import distribution
+try:
+    from pip._vendor.distlib.scripts import ScriptMaker
+except Exception:
+    from pip._internal.operations.install.wheel import ScriptMaker
+pkg = sys.argv[1]
+exe = sys.argv[2]
+scripts_dir = sys.argv[3]
+dist = distribution(pkg)
+eps = [e for e in dist.entry_points if e.group == "console_scripts"]
+if not eps:
+    raise SystemExit("包 %s 没有 console_scripts 入口点" % pkg)
+maker = ScriptMaker(None, scripts_dir)
+maker.executable = sys.executable
+maker.set_mode = True
+made = []
+for ep in eps:
+    made += maker.make("%s = %s" % (ep.name, ep.value))
+print("|".join(made))
+"""
+    scripts_dir = str(_scripts_dir())
+    try:
+        out = subprocess.run(
+            [python_exe, "-c", code, package, exe_name, scripts_dir],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", timeout=120,
+            creationflags=_CREATE_NO_WINDOW)
+    except Exception as exc:
+        raise RuntimeError("补生成 %s 失败：%s" % (exe_name, exc))
+    if out.returncode != 0:
+        raise RuntimeError("补生成 %s 失败：%s" % (
+            exe_name, (out.stderr or out.stdout or "").strip()[:300]))
+    made = (out.stdout or "").strip().splitlines()[-1:] if out.stdout else []
+    target = os.path.join(scripts_dir, exe_name)
+    if not os.path.isfile(target):
+        raise RuntimeError("补生成 %s 后仍未找到：%s" % (exe_name, target))
+    return "已离线补生成 %s" % (made[0] if made else exe_name)
+
+
 def _install_worker(component_id: str) -> None:
     comp = _BY_ID.get(component_id)
     try:
@@ -546,6 +601,16 @@ def _install_worker(component_id: str) -> None:
             detail = _extract_ffmpeg(dest)
         else:
             detail = _pip_install(comp["package"], component_id)
+            # pip 装的是「包」，exe 是它的副产品：包已装但 exe 丢失时，
+            # pip 会「already satisfied」整个跳过、不会补回 exe → 离线补生成。
+            try:
+                exe_path = _scripts_dir() / comp["exe"]
+            except RuntimeError:
+                exe_path = None
+            if exe_path is not None and not exe_path.is_file():
+                _emit("progress", "补生成 %s 启动器…" % comp["exe"], 0.97)
+                detail = _ensure_console_script(
+                    _python_for_pip(), comp["package"], comp["exe"])
 
         if _cancelled():
             raise RuntimeError("cancelled")
