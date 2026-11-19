@@ -146,7 +146,9 @@ def main(argv: list[str] | None = None) -> int:
                 # 验收工具（S5 外部体检 + UI 视觉判分层）
                 "tools/bench_office_check.py", "tools/visual_check.py",
                 # S9 阶段 4 知识库（远端 85feb75 合并进来）
-                "kb.py"):
+                "kb.py",
+                # S10 可选组件管理（用户裁决：必须有测试 + 门禁守护）
+                "components.py", "test_components.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:

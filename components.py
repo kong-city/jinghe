@@ -5,9 +5,14 @@
 * 纯标准库；组件探测复用 media_tools.ToolAdapter，不碰 TOOL_SPECS / capabilities()
   （S1 契约 test_33/34 锁死「恰好 3 工具 + 全 False」，本模块只加独立字段）。
 * 三个核心组件：ffmpeg（音视频基础）、whisper（本机转写）、yt-dlp（链接下载）。
-* 内置固定下载源：ffmpeg=gyan.dev 静态 zip；whisper / yt-dlp=pip 阿里镜像。
-  下载地址只从本文件的 COMPONENTS 常量取，前端不能传任意 URL（防 SSRF）。
+* **绝不主动下载（用户 2026-11-19 硬裁决）**：软件启动、能力探测、定时任务
+  一律不下载任何组件；只有用户在设置页**手动点击「启用」按钮**，才触发下载。
+  技术上以 ``_USER_OPT_IN`` 令牌强制：任何下载路径必须先经 :func:`install`
+  写入令牌，绕过者（含未来误调）直接拒绝。
+* 内置固定源仅供手动安装使用：ffmpeg=gyan.dev 静态 zip；whisper/yt-dlp=pip
+  阿里镜像。下载地址只从本文件的 COMPONENTS 常量取，前端不能传任意 URL（防 SSRF）。
 * 安装到 %LOCALAPPDATA%/Jinghe/components/bin，不写系统目录、不需要管理员权限。
+  **工具二进制不进 exe、不进 Release、不随 GitHub 上传**（build.spec binaries=[]）。
 * 安装过程后台线程执行，进度通过 install_status(since) 事件队列暴露，前端轮询。
 
 对外 API：
@@ -76,6 +81,11 @@ _BY_ID = {c["id"]: c for c in COMPONENTS}
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _LOCK = threading.Lock()
+# 手动点击令牌（用户 2026-11-19 硬裁决：绝不主动下载）。
+# 只有 install() 在确认「用户点了启用按钮」后才会置 True；_install_worker
+# 消费一次即清。任何绕过 install() 直接调 _download/_pip_install 的路径，
+# 令牌为空 → 拒绝下载，从代码层杜绝自动/误触下载。
+_USER_OPT_IN = {"granted": False, "component_id": ""}
 _JOB = {
     "running": False,
     "id": "",
@@ -214,8 +224,25 @@ def _cancelled() -> bool:
 # --------------------------------------------------------------------------- #
 # 下载与安装
 # --------------------------------------------------------------------------- #
-def _download(url: str, dest: Path) -> None:
-    """流式下载（走环境变量代理），写 .part 后原子替换。"""
+def _require_opt_in(component_id: str) -> None:
+    """下载前的硬闸门：必须存在刚由 install() 写入的手动点击令牌。
+
+    这是「绝不主动下载」的代码级保证：探测 / 定时器 / 其它模块即使误调
+    下载函数，也会因无令牌而失败，不会发出任何网络请求。
+    """
+    with _LOCK:
+        ok = (_USER_OPT_IN["granted"]
+              and _USER_OPT_IN["component_id"] == component_id)
+        if ok:
+            _USER_OPT_IN["granted"] = False   # 一次性消费
+            _USER_OPT_IN["component_id"] = ""
+    if not ok:
+        raise RuntimeError("未获用户手动启用授权，拒绝下载（软件绝不主动下载）")
+
+
+def _download(url: str, dest: Path, component_id: str) -> None:
+    """流式下载（走环境变量代理），写 .part 后原子替换。必须持手动令牌。"""
+    _require_opt_in(component_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "jinghe-component-installer"})
@@ -263,8 +290,9 @@ def _extract_ffmpeg(zip_path: Path) -> str:
     return "已解压 " + ", ".join(copied)
 
 
-def _pip_install(package: str) -> str:
-    """用内置镜像装 Python 包，解析 pip 输出映射为 5%~95% 的进度。"""
+def _pip_install(package: str, component_id: str) -> str:
+    """用内置镜像装 Python 包，解析 pip 输出映射为 5%~95% 的进度。必须持手动令牌。"""
+    _require_opt_in(component_id)
     cmd = [sys.executable, "-m", "pip", "install", package,
            "-i", PIP_INDEX, "--trusted-host", PIP_TRUSTED_HOST,
            "--proxy", (os.environ.get("HTTPS_PROXY") or "").strip(),
@@ -310,11 +338,11 @@ def _install_worker(component_id: str) -> None:
         _emit("progress", "准备安装 %s…" % comp["name"], 0.01)
         if comp["kind"] == "zip":
             dest = COMPONENT_DIR / (comp["id"] + ".zip")
-            _download(comp["url"], dest)
+            _download(comp["url"], dest, component_id)
             _emit("progress", "解压中…", 0.9)
             detail = _extract_ffmpeg(dest)
         else:
-            detail = _pip_install(comp["package"])
+            detail = _pip_install(comp["package"], component_id)
 
         if _cancelled():
             raise RuntimeError("cancelled")
@@ -339,27 +367,33 @@ def _install_worker(component_id: str) -> None:
 
 
 def install(component_id: str) -> dict:
-    """启动安装（异步）。同一时刻只允许一个任务。"""
+    """启动安装（异步）。**仅代表用户手动点击「启用」后由 UI 调用**。
+
+    软件内部（启动 / 探测 / 定时器 / 其它模块）一律不得调用本函数去下载；
+    令牌机制保证即便误调，下载层也会拒绝。
+    """
     comp = _BY_ID.get(component_id)
     if not comp:
         return {"ok": False, "error": "未知组件"}
     with _LOCK:
         if _JOB["running"]:
             return {"ok": False, "error": "已有组件正在安装，请等待完成"}
-        # 已安装则直接回报成功，不重复下载
+    check = _probe_one(comp["probe"])
+    if check["available"]:
+        with _LOCK:
+            _JOB.update({"running": False, "state": "done", "percent": 100.0,
+                         "id": component_id, "events": [], "next_seq": 1})
+        _emit("done", "%s 已安装" % comp["name"], 1.0)
+        return {"ok": True, "already_installed": True}
+    # 只有走到这里（用户点了启用 + 组件确实未安装）才发令牌
+    with _LOCK:
+        _USER_OPT_IN["granted"] = True
+        _USER_OPT_IN["component_id"] = component_id
         _JOB.update({
             "running": True, "id": component_id, "state": "running",
             "percent": 0.0, "message": "", "error": "", "cancelled": False,
             "events": [], "next_seq": 1,
         })
-    check = _probe_one(comp["probe"])
-    if check["available"]:
-        with _LOCK:
-            _JOB["running"] = False
-            _JOB["state"] = "done"
-            _JOB["percent"] = 100.0
-        _emit("done", "%s 已安装" % comp["name"], 1.0)
-        return {"ok": True, "already_installed": True}
     threading.Thread(target=_install_worker, args=(component_id,),
                      name="jinghe-component-install", daemon=True).start()
     return {"ok": True, "already_installed": False}
