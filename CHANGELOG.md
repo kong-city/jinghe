@@ -4,6 +4,10 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.9.2] - 2026-11-19
+
+- 产物目录固定到 %TEMP%\jinghe-out，不再建时间戳随机名子目录（修文件夹不存在）
+
 ## [0.9.1] - 2026-11-19
 
 - **修桌面弹终端窗（用户实测反馈）**：`_pip_scripts_dir()` 探测 pip 路径时调用 `subprocess.run([python, "-c", ...])` **漏加 `creationflags=CREATE_NO_WINDOW`** → 每探测一次组件就在桌面弹一个控制台黑框。新增 `test_components.py::TestNoConsolePopup`（括号配平切块，扫描全部子进程调用，杜绝裸调用）。

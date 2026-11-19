@@ -5284,6 +5284,39 @@ class AppContractTest(unittest.TestCase):
             self.assertLessEqual(int(seg), 9,
                                  "版本号每段须 ≤9，当前 %s 违反进位规则" % cur)
 
+    # ------------------------------------------------------------------ #
+    # 68) 产物目录固定到 TEMP，不再建时间戳随机名子目录
+    # ------------------------------------------------------------------ #
+    def test_68_fixed_default_outdir(self):
+        import tempfile
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        src_py = (ROOT / "app.py").read_text(encoding="utf-8")
+        # ① 前端不得再拼相对路径（只看代码行，注释不算）
+        fn = js.split("function defaultOutdir")[1][:700]
+        code = "\n".join(ln.split("//")[0] for ln in fn.splitlines())
+        self.assertNotIn("\\out-", code,
+                         "前端不得再拼带随机名的相对输出目录")
+        self.assertNotIn('"out-"', code,
+                         "defaultOutdir 不得再生成 out-* 随机名目录")
+        # ② 前端必须用后端下发的绝对路径
+        self.assertIn("default_outdir_path", js,
+                      "前端未使用后端下发的默认输出目录")
+        # ③ 后端常量：%TEMP%\jinghe-out
+        self.assertIn("DEFAULT_OUTDIR", src_py)
+        self.assertIn("jinghe-out", src_py)
+        # ④ /api/settings 下发该路径
+        self.assertIn('"default_outdir_path"', src_py,
+                      "/api/settings 未下发默认输出目录")
+        # ⑤ 空输出目录自动兜底（不再报「请先填写输出目录」）
+        self.assertNotIn('"请先填写输出目录"', src_py,
+                         "空输出目录应自动落到默认目录")
+        self.assertIn("DEFAULT_OUTDIR", src_py)
+        # ⑥ 实际路径确实在 temp 下
+        import app as _app
+        self.assertTrue(str(_app.DEFAULT_OUTDIR).lower().startswith(
+            tempfile.gettempdir().lower()))
+        self.assertEqual(_app.DEFAULT_OUTDIR.name, "jinghe-out")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

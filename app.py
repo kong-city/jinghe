@@ -112,6 +112,11 @@ LOG_DIR = Path(os.environ.get("LOCALAPPDATA") or str(Path.home())) / "Jinghe"
 LOG_FILE = LOG_DIR / "app.log"
 # S9：知识库数据目录（随数据目录，不污染产物盘；退出/卸载都不自动删）
 KB_DIR = Path(os.environ.get("JINGHE_KB_DIR") or str(LOG_DIR / "kb"))
+# 默认输出目录：固定在系统临时目录下的 jinghe-out（用户 2026-11-19 裁决）。
+# 旧实现由前端拼相对路径 ".\out-YYYYMMDD-HHmm"，会随程序工作目录漂移，
+# 在某些机器上解析到不可写/不存在的位置 → 老是提示「文件夹不存在」。
+# 现在统一由后端给出绝对路径，产物直接落这里，不再套随机名子目录。
+DEFAULT_OUTDIR = Path(tempfile.gettempdir()) / "jinghe-out"
 # 日志封顶：超过就轮转为 app.log.1（只留 1 份历史）。桌面端长期运行 +
 # 高频请求会让日志无限增长，不封顶迟早撑爆磁盘。
 LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -1913,7 +1918,11 @@ def _merged_path(outdir: str) -> Path | None:
     又被前端静默吞掉，表现成「按钮点了没反应」。这里统一由后端解析。
     """
     if not outdir:
-        return None
+        # 空输出目录 → 落到默认目录（%TEMP%\jinghe-out，用户 2026-11-19 裁决）。
+        # 只有默认目录里确实有 MERGED.md 时才认，否则仍返回 None
+        # （保持「请先完成一次提取」的诚实语义）。
+        candidate = DEFAULT_OUTDIR / MERGED_NAME
+        return candidate if candidate.is_file() else None
     try:
         base = Path(os.path.abspath(os.path.expanduser(outdir)))
     except (OSError, ValueError):
@@ -2095,6 +2104,8 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "settings": _load_settings(),
                     "settings_file": str(SETTINGS_FILE),
+                    # 默认输出目录由后端给绝对路径（前端不再拼相对路径）
+                    "default_outdir_path": str(DEFAULT_OUTDIR),
                 })
                 return
             if path == "/api/state":
@@ -2561,8 +2572,10 @@ class Handler(BaseHTTPRequestHandler):
         global _JOB, _LAST_INPUT, _LAST_INPUTS, _LAST_OUTDIR
         if not inputs:
             return {"ok": False, "error": "请先填写输入路径"}
-        if not outdir:
-            return {"ok": False, "error": "请先填写输出目录"}
+        # 空输出目录自动落到默认目录（%TEMP%\jinghe-out），
+        # 不再要求用户手填；前端亦已改为下发绝对路径（用户 2026-11-19 裁决）
+        if not outdir.strip():
+            outdir = str(DEFAULT_OUTDIR)
         missing = [p for p in inputs if not os.path.exists(p)]
         if missing:
             return {"ok": False, "error": "输入路径不存在：%s" % _missing_text(missing)}

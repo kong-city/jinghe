@@ -435,3 +435,9 @@
   - **报错带诊断**：安装后探测失败时明示 pip 用的 Python、探测查找目录、目标文件是否存在（不再只报一句谜语）。
   - **越界自查**：曾顺手给 `extract.py`（冻结契约文件）加 NO_WINDOW，被 `test_59` 冻结断言拦下 → **已撤回**，冻结文件零改动。
   - 回归 `test_components.py` 16 → **22 用例**；冻结态 exe 实测连续探测 4 次无黑框、三组件全部 detected。全量 **133 用例**（67+28+16+22）+ 门禁 9/9；SPEC.md 与冻结主流水线零改动。
+
+- **v1.1.2（2026-11-19 · 产物目录固定到 %TEMP%\jinghe-out，软件升号 v0.9.2）**：用户裁决「out-open 文件直接放在 temp 目录下，不要再创建随机名后再放 out-open 文件夹，不然系统没有随机文件夹，老是提示文件夹不存在」。
+  - **根因**：默认输出目录由**前端**拼 `".\out-YYYYMMDD-HHmm"`——相对路径会随程序工作目录漂移，解析到不可写/不存在的位置 → 老是提示「文件夹不存在」。后端 `_api_run` 对空 outdir 直接报错「请先填写输出目录」。
+  - **修复（前后端双保险）**：① 后端新增常量 `DEFAULT_OUTDIR = %TEMP%\jinghe-out`，`/api/settings` 下发 `default_outdir_path`（绝对路径）；② 前端 `defaultOutdir()` 改用后端下发路径，不再拼相对路径；③ `applySettings` 由整体替换改为**合并**，避免保存设置后把 `default_outdir_path` 抹掉；④ settings 异步加载完成后若输出框仍空则补齐（init 先于该回调）；⑤ 后端 `_api_run` 空 outdir **自动兜底**到默认目录（不再报错）；⑥ `_merged_path` 空值时认默认目录下的 MERGED.md（仅在确实存在时，保持「请先完成提取」的诚实语义）。
+  - **端到端实测**：冻结态 exe 空 outdir 直接跑通 → 产物落 `%TEMP%\jinghe-out`（INDEX.md / MERGED.md / md/ / provenance.json / run.log），**TEMP 根下无任何 out-* 随机名目录**。
+  - 新增 test_68 锁定契约（前端不再拼相对路径、后端常量与下发、空值兜底、实际路径在 temp 下）；全量 **134 用例**（68+28+16+22）+ 门禁 9/9；SPEC.md 与冻结主流水线零改动。

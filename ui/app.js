@@ -223,9 +223,12 @@
 
   function defaultOutdir() {
     if (settings.default_outdir) return settings.default_outdir;
-    var d = new Date();
-    return ".\\out-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
-      "-" + pad(d.getHours()) + pad(d.getMinutes());
+    // 用户 2026-11-19 裁决：产物直接放系统临时目录，不再在前端拼
+    // ".\out-YYYYMMDD-HHmm" 这类带随机名的相对路径子目录——相对路径会
+    // 随程序工作目录漂移，老是提示「文件夹不存在」。
+    // 绝对路径由后端 /api/settings 的 default_outdir_path 提供。
+    if (settings.default_outdir_path) return settings.default_outdir_path;
+    return "";
   }
 
   // ---- 桌面端便利：跨重启记住路径 ------------------------------------- //
@@ -265,7 +268,9 @@
     auto_exit: true,
     exit_grace_seconds: 90,
     remember_paths: true,
-    default_outdir: ""
+    default_outdir: "",
+    // 后端给的默认输出目录绝对路径（%TEMP%\jinghe-out）
+    default_outdir_path: ""
   };
 
   var PAGE_META = {
@@ -351,7 +356,15 @@
   }
 
   function applySettings(cfg) {
-    if (cfg && typeof cfg === "object") settings = cfg;
+    // 合并而非整体替换：default_outdir_path 是后端下发的绝对路径，
+    // 不在 settings 落盘内容里，整体替换会把它抹掉（保存设置后即失效）。
+    if (cfg && typeof cfg === "object") {
+      var keepPath = settings.default_outdir_path;
+      settings = cfg;
+      if (!settings.default_outdir_path && keepPath) {
+        settings.default_outdir_path = keepPath;
+      }
+    }
     if (el.setAutoExit) el.setAutoExit.checked = settings.auto_exit !== false;
     if (el.setExitGrace) el.setExitGrace.value = settings.exit_grace_seconds;
     if (el.setRememberPaths) el.setRememberPaths.checked = settings.remember_paths !== false;
@@ -362,6 +375,14 @@
     api("/api/settings", undefined, 10000).then(function (r) {
       if (!r || !r.ok) return;
       applySettings(r.settings);
+      // 默认输出目录（绝对路径）由后端下发，前端不再自己拼
+      if (r.default_outdir_path) settings.default_outdir_path = r.default_outdir_path;
+      // init() 先于本回调执行，那时尚无后端路径 → 这里补齐，
+      // 避免输出框留空导致「请先填写输出目录」
+      if (el.outPath && !el.outPath.value.trim()) {
+        var dflt = defaultOutdir();
+        if (dflt) el.outPath.value = dflt;
+      }
       if (el.settingsLogPath) el.settingsLogPath.textContent = logFile || "—";
       if (el.settingsFilePath) el.settingsFilePath.textContent = r.settings_file || "—";
     }).catch(function () { /* 设置读不到时保持现状，不打断使用 */ });
