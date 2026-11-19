@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         wf = _read(".github/workflows/ci.yml")
         needed = ("windows-latest", "pyinstaller", "tags:", "gh release",
-                  "dist/Jinghe.exe")
+                  "Jinghe$tag.exe")
         missing = [k for k in needed if k.lower() not in wf.lower()]
         check(not missing, "CI workflow 完整",
               "缺少关键字：%s" % ",".join(missing) if missing else "测试 + 构建 + 上传资产")
@@ -158,7 +158,11 @@ def main(argv: list[str] | None = None) -> int:
     check(not bad, "关键源文件语法可编译", "; ".join(bad))
 
     # ⑧ exe 产物（发布阶段强制；本地构建后可选）
-    exe = ROOT / "dist" / "Jinghe.exe"
+    # 对外产物名带版本号（dist/Jinghe-<version>.exe，用户 2026-11-19 裁决），
+    # 兼容旧的 Jinghe.exe（过渡期）。两者都没有才算缺失。
+    exe = next(iter(sorted((ROOT / "dist").glob("Jinghe-*.exe"))), None)
+    if exe is None:
+        exe = ROOT / "dist" / "Jinghe.exe"
     if args.no_exe:
         check(True, "exe 产物", "CI 测试阶段按 --no-exe 跳过")
     elif exe.is_file():

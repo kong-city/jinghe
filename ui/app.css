@@ -38,7 +38,8 @@ button, input { font-family: inherit; }
   flex: 0 0 auto;
   width: var(--sidebar-w);
   height: 100vh;
-  overflow-y: auto;
+  /* 导航栏固定不滚动：内容始终在视口内，无需滚动条 */
+  overflow-y: hidden;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -170,10 +171,10 @@ button, input { font-family: inherit; }
 }
 /* 精核「精」图标从顶部移到底部版本号旁（仍用同一品牌样式，缩小适配侧栏） */
 .side-foot .brand-mark {
-  width: 30px;
+  width: 34px;
   height: 30px;
   border-radius: 8px;
-  font-size: 15px;
+  font-size: 12px;
 }
 
 .content {

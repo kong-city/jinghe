@@ -4,6 +4,11 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.8.4] - 2026-11-19
+
+- **exe 对外产物改名带版本号**：`dist/Jinghe.exe` → `dist/Jinghe-0.8.4.exe`（build.py 打包后按 `__version__` 自动重命名，PyInstaller 内部仍产出 Jinghe.exe 以保自我重入契约）。CI 上传 `Jinghe$tag.exe`，门禁 glob 匹配 `Jinghe-*.exe`，自更新前缀 `Jinghe*` 兼容。本地只保留带版本号那份。
+- **左侧导航栏底部精简**：删除版本号（`sideVersion` 元素 + JS 赋值），品牌文字从「精」改为「精核」；侧栏去掉滚动条（`overflow-y: hidden`），配合已锁死的视口布局始终固定。
+
 ## [0.8.3] - 2026-11-19
 
 - 修复导航栏随内容滚动：改为 .app 锁视口 + .content 独立滚动 + .sidebar 固定；新版 exe 让用户重启看到删除生效

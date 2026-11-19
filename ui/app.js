@@ -72,7 +72,6 @@
     sidebar: $("sidebar"),
     navResizer: $("navResizer"),
     btnToggleNav: $("btnToggleNav"),
-    sideVersion: $("sideVersion"),
     pageTitle: $("pageTitle"),
     pageSub: $("pageSub"),
     headerTag: $("headerTag"),
@@ -400,7 +399,6 @@
       if (el.aboutPython) el.aboutPython.textContent = st.python || "—";
       if (el.aboutPlatform) el.aboutPlatform.textContent = st.platform || "—";
       if (el.aboutLog) el.aboutLog.textContent = st.log_file || "—";
-      if (el.sideVersion) el.sideVersion.textContent = "v" + ver;
       if (el.headerTag) el.headerTag.textContent = "v" + ver;
     }).catch(function () { /* 读不到就保持占位符 */ });
   }
@@ -2362,7 +2360,6 @@
       if (st.version && st.version !== "unknown") {
         document.title = "精核 · 文件提取 v" + st.version;
         if (el.headerTag) el.headerTag.textContent = "v" + st.version;
-        if (el.sideVersion) el.sideVersion.textContent = "v" + st.version;
       }
       if (st.log_file) {
         logFile = st.log_file;

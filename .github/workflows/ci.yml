@@ -68,17 +68,20 @@ jobs:
       - name: 校验产物与版本一致性
         run: python tools/check_release.py --require-exe
 
-      - name: 创建 Release 并上传 Jinghe.exe
+      - name: 创建 Release 并上传带版本号的 exe
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "${{ github.ref_name }}"
+          $asset = "Jinghe$tag.exe"
+          $exe = "dist/$asset"
+          if (-not (Test-Path $exe)) { throw "找不到产物 $exe（build.py 应产出带版本号资产）" }
           gh release view $tag 2>$null | Out-Null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title "精核 $tag" --generate-notes
             if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败" }
           }
-          gh release upload $tag dist/Jinghe.exe --clobber
+          gh release upload $tag $exe --clobber
           if ($LASTEXITCODE -ne 0) { throw "上传 exe 资产失败" }
-          Write-Host "已发布 $tag，资产 Jinghe.exe"
+          Write-Host "已发布 $tag，资产 $asset"

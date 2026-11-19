@@ -137,11 +137,6 @@
         },
         {
           "kind": "id_exists",
-          "name": "版本号在侧栏",
-          "id": "sideVersion"
-        },
-        {
-          "kind": "id_exists",
           "name": "折叠按钮存在",
           "id": "btnToggleNav"
         },
@@ -159,6 +154,16 @@
           "kind": "text_absent",
           "name": "精读旧列表箭头已移除",
           "text": "M4 5.5h11"
+        },
+        {
+          "kind": "text_absent",
+          "name": "底部版本号已取消",
+          "text": "id=\"sideVersion\""
+        },
+        {
+          "kind": "text_contains",
+          "name": "底部品牌为精核",
+          "text": ">精核<"
         }
       ],
       "vlm": {

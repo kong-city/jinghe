@@ -1650,14 +1650,15 @@ class AppContractTest(unittest.TestCase):
         # ① 构建 / 发布阶段：测试门禁 + tag 触发构建并上传 exe 资产
         for token in ("windows-latest", "python -m unittest", "pyinstaller",
                       "tags:", "python build.py", "gh release",
-                      "dist/Jinghe.exe", "check_release.py"):
+                      "dist/", "Jinghe$tag.exe", "check_release.py"):
             self.assertIn(token, wf, "CI workflow 缺少：%s" % token)
         self.assertIn("needs: test", wf, "发布前必须先通过测试门禁")
 
         # ② 发布管理：CHANGELOG 与版本单一来源（HTML 不再硬编码）
         self.assertIn("## [%s]" % version, changelog,
                       "CHANGELOG.md 缺少当前版本条目")
-        self.assertIn("Jinghe.exe", changelog)
+        self.assertIn("exe 文件名带版本号", changelog,
+                      "CHANGELOG 未记录带版本号产物命名")
         self.assertIsNone(re.search(r'>\s*v\d+\.\d+\.\d+\s*<', html),
                           "ui/index.html 仍硬编码版本号")
         self.assertIn('id="headerTag"', html)
@@ -4633,8 +4634,9 @@ class AppContractTest(unittest.TestCase):
         # ---------- ⑧ 左侧导航：精图标在底部、汉堡键、精读换图标 ----------
         side_foot = html[html.index('<div class="side-foot">'):
                          html.index('</aside>', html.index('<div class="side-foot">'))]
-        self.assertIn('class="brand-mark"', side_foot, "精图标未移到底部版本号旁")
-        self.assertIn('id="sideVersion"', side_foot)
+        self.assertIn('class="brand-mark"', side_foot, "精核品牌标记未在底部")
+        self.assertIn('>精核<', side_foot, "底部品牌文字应为「精核」")
+        self.assertNotIn('id="sideVersion"', side_foot, "底部版本号应已取消")
         top = html[html.index('<div class="side-top">'):
                    html.index('<nav class="nav"')]
         self.assertNotIn("brand-mark", top, "顶部导航栏仍残留精图标")
@@ -5184,6 +5186,38 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn("功能路线", html)
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("aboutVersion2", js)
+
+    # ------------------------------------------------------------------ #
+    # 64) exe 带版本号命名 + 导航栏底部精简（用户 2026-11-19 裁决）
+    # ------------------------------------------------------------------ #
+    def test_64_versioned_exe_and_sidebar_footer(self):
+        import re as _re
+        version = _re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']',
+                             (ROOT / "extract.py").read_text(encoding="utf-8"),
+                             _re.M).group(1)
+        # ① build.py 打包后按版本重命名对外产物
+        bp = (ROOT / "build.py").read_text(encoding="utf-8")
+        self.assertIn("Jinghe-", bp, "build.py 缺带版本号命名逻辑")
+        self.assertIn("current_version", bp)
+        # ② CI 上传带版本号资产
+        wf = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("Jinghe$tag.exe", wf, "CI 应上传带版本号资产")
+        # ③ 门禁识别带版本号产物 + 自更新前缀兼容
+        gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
+        self.assertIn("Jinghe-*.exe", gate)
+        su = (ROOT / "self_update.py").read_text(encoding="utf-8")
+        self.assertIn('startswith("jinghe")', su, "自更新须兼容 Jinghe* 前缀")
+        # ④ 导航栏底部：无版本号、品牌为精核、侧栏无滚动条
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("sideVersion", html, "底部版本号应已取消")
+        side_foot = html[html.index('<div class="side-foot">'):
+                         html.index('</aside>')]
+        self.assertIn(">精核<", side_foot)
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        side_block = css[css.index(".sidebar {"):css.index(".app.nav-resizing")]
+        self.assertIn("overflow-y: hidden", side_block, "侧栏不应有滚动条")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("sideVersion", js)
 
 
 def print_summary(result=None) -> None:
