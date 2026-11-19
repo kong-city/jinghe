@@ -55,6 +55,7 @@ import backend  # S7b：可插拔大模型后端适配层（Local ollama / Cloud
 import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行中的程序并重启）
 import kb  # S9：阶段 4 知识库（独立后处理层，冻结内核 / SPEC 零改动）
 import components  # S10：设置页可选组件安装（ffmpeg / whisper / yt-dlp）
+import pdf_ocr  # 可选 OCR 增强：扫描件 PDF 图片页识别（独立后处理层）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -117,6 +118,45 @@ KB_DIR = Path(os.environ.get("JINGHE_KB_DIR") or str(LOG_DIR / "kb"))
 # 在某些机器上解析到不可写/不存在的位置 → 老是提示「文件夹不存在」。
 # 现在统一由后端给出绝对路径，产物直接落这里，不再套随机名子目录。
 DEFAULT_OUTDIR = Path(tempfile.gettempdir()) / "jinghe-out"
+
+
+def _default_desktop() -> Path:
+    """取当前用户桌面目录（Windows Known Folder，兼容桌面被重定向到 OneDrive）。
+
+    优先 SHGetKnownFolderPath(FOLDERID_Desktop)，拿不到再退回 ~/Desktop；
+    最后兜底用户主目录，保证任何情况下都返回一个存在的绝对路径。
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _GUID(ctypes.Structure):
+                _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                            ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+            # FOLDERID_Desktop = {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}
+            guid = _GUID(0xB4BFCC3A, 0xDB2C, 0x424C)
+            guid.Data4 = (ctypes.c_ubyte * 8)(0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41)
+            ppath = ctypes.c_wchar_p()
+            if ctypes.windll.shell32.SHGetKnownFolderPath(
+                    ctypes.byref(guid), 0, None, ctypes.byref(ppath)) == 0:
+                val = ppath.value
+                ctypes.windll.ole32.CoTaskMemFree(ppath)
+                if val and Path(val).is_dir():
+                    return Path(val)
+        except Exception:
+            pass
+    for cand in (Path.home() / "Desktop", Path.home() / "桌面", Path.home()):
+        try:
+            if cand.is_dir():
+                return cand
+        except OSError:
+            continue
+    return Path.home()
+
+
+DEFAULT_DESKTOP = _default_desktop()
 # 日志封顶：超过就轮转为 app.log.1（只留 1 份历史）。桌面端长期运行 +
 # 高频请求会让日志无限增长，不封顶迟早撑爆磁盘。
 LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -967,7 +1007,11 @@ DEFAULT_SETTINGS = {
     "auto_exit": True,           # 关闭窗口后自动退出
     "exit_grace_seconds": 90,    # 自动退出宽限期（秒）
     "remember_paths": True,      # 记住上次的输入/输出路径
-    "default_outdir": "",        # 默认输出目录；留空 = 按时间自动生成
+    # 默认输入/输出路径：都指向当前用户桌面（固定路径，不套随机子目录，
+    # 从根上消除「文件夹不存在」的提醒）。用户可在设置里改成任意文件夹；
+    # 清空保存则回退到后端下发的 TEMP/jinghe-out 兜底（test_68 契约）。
+    "default_indir": str(DEFAULT_DESKTOP),
+    "default_outdir": str(DEFAULT_DESKTOP),
 }
 _SETTINGS_LOCK = threading.Lock()
 _SETTINGS_CACHE: dict | None = None
@@ -990,6 +1034,9 @@ def _validate_settings(data: object) -> dict:
     if "default_outdir" in data:
         val = data["default_outdir"]
         out["default_outdir"] = val.strip() if isinstance(val, str) else ""
+    if "default_indir" in data:
+        val = data["default_indir"]
+        out["default_indir"] = val.strip() if isinstance(val, str) else ""
     return out
 
 
@@ -1311,6 +1358,26 @@ def _run_job_inner(job: Job, enc_dir: Path) -> None:
             job.add("log", job.error, raw=job.error)
         else:
             job.state = "done"
+            # 可选 OCR 后处理：扫描件 PDF（无文字层）由内置解析只标注「需 OCR」。
+            # 若本机有 tesseract + poppler，自动补做 OCR 并把文本写入产物目录；
+            # 无工具链时 pdf_ocr 内部快速返回，不产生任何副作用、不报错给用户。
+            try:
+                if pdf_ocr.status().get("available"):
+                    for src in list(job.inputs or []):
+                        if str(src).lower().endswith(".pdf"):
+                            res = pdf_ocr.ocr_pdf_to_md(src, job.outdir)
+                            if res.get("ok") and not res.get("skipped"):
+                                job.add("log", "OCR 补充产物：%s（%s）" % (
+                                    Path(res["path"]).name, res.get("state", "")),
+                                    raw="")
+                            elif res.get("ok") and res.get("skipped"):
+                                pass   # 已有文本产物，无需补
+                            else:
+                                job.add("log", "OCR 未成功：%s（%s）" % (
+                                    Path(src).name, res.get("error", "")), raw="")
+            except Exception as exc:
+                # OCR 是可选增强，任何异常都不能影响主任务成功状态
+                job.add("log", "OCR 后处理跳过：%s" % exc, raw="")
     except Exception as exc:
         # 兜底异常路径：state 必须落为 failed，不能残留 "running"。
         # 只处理「任务体抛出未捕获异常」，正常 done/cancelled/failed 判定不受影响。
@@ -1994,6 +2061,49 @@ class Handler(BaseHTTPRequestHandler):
     def _send_text(self, text: str, code: int = 200) -> None:
         self._send_bytes(text.encode("utf-8"), "text/plain; charset=utf-8", code)
 
+    def _check_write_request(self) -> bool:
+        """写操作请求来源校验（安全加固，防 CSRF / DNS 重绑定）。
+
+        * Content-Type 必须是 application/json —— 恶意站点用 text/plain 发
+          "简单请求"绕过预检的攻击在此被挡（simple request 无法自定义该头
+          为 application/json 而不触发 CORS 预检，而本服务无 do_OPTIONS）。
+        * Origin 若存在，必须来自本机（127.0.0.1 / localhost）——跨站页面
+          发起的请求必带外部 Origin；同源浏览器请求带本机 Origin；原生客户端
+          （curl / 测试）不带 Origin，放行。
+        任一不满足返回 False，调用方回 403/415。
+        """
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            self._send_json({"ok": False, "error": "请求必须是 application/json"}, 415)
+            return False
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin:
+            try:
+                parts = urlparse(origin)
+                host = (parts.hostname or "").lower()
+                if host not in ("127.0.0.1", "localhost", "::1"):
+                    self._send_json({"ok": False, "error": "拒绝跨站请求"}, 403)
+                    return False
+            except Exception:
+                self._send_json({"ok": False, "error": "拒绝跨站请求"}, 403)
+                return False
+        return self._check_host()
+
+    def _check_host(self) -> bool:
+        """Host 头必须是本机地址（防 DNS rebinding：恶意域解析到 127.0.0.1 后
+        请求变同源，若无 Host 校验则可读 /api/state、/api/kb/query 拖库）。"""
+        host = (self.headers.get("Host") or "").strip()
+        if not host:
+            return True   # HTTP/1.0 或原生客户端可能不带，放行
+        try:
+            hostname = host.rsplit(":", 1)[0].strip("[]").lower() if ":" in host else host.lower()
+        except Exception:
+            hostname = host.lower()
+        if hostname not in ("127.0.0.1", "localhost", "::1"):
+            self._send_json({"ok": False, "error": "拒绝非本机 Host"}, 403)
+            return False
+        return True
+
     def _read_json(self) -> dict:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -2075,6 +2185,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if not self._check_host():
+            return
         try:
             if path == "/":
                 self._serve_index()
@@ -2105,6 +2217,8 @@ class Handler(BaseHTTPRequestHandler):
                     "settings_file": str(SETTINGS_FILE),
                     # 默认输出目录由后端给绝对路径（前端不再拼相对路径）
                     "default_outdir_path": str(DEFAULT_OUTDIR),
+                    # 默认输入/输出路径的桌面绝对值（设置页占位与「恢复默认」用）
+                    "default_desktop": str(DEFAULT_DESKTOP),
                 })
                 return
             if path == "/api/state":
@@ -2194,6 +2308,11 @@ class Handler(BaseHTTPRequestHandler):
                 artifact = (qs.get("path") or [""])[0]
                 self._send_json(self._api_refine_artifact(artifact))
                 return
+            if path == "/api/pdf/ocr/status":
+                # 可选 OCR：本机 tesseract + poppler 工具链探测
+                _touch_heartbeat()
+                self._send_json(pdf_ocr.status())
+                return
             if path == "/api/update/check":
                 # v0.4.8：只查版本（当前 / 最新 / 有无安装包），不下载、不安装。
                 _touch_heartbeat()
@@ -2217,12 +2336,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/components/status":
                 # S10：安装进度轮询（since 增量事件，仿自更新的事件队列）
+                # v0.10：cid 指定组件；cid=* 一次返回全部任务（并发安装用）
                 qs = parse_qs(parsed.query)
                 try:
                     since = int((qs.get("since") or ["0"])[0])
                 except (TypeError, ValueError):
                     since = 0
-                self._send_json(components.install_status(since))
+                cid = (qs.get("cid") or [""])[0].strip()
+                self._send_json(components.install_status(since, cid or None))
                 return
             if path == "/favicon.ico":
                 self._send_bytes(b"", "image/x-icon", 204)
@@ -2376,6 +2497,9 @@ class Handler(BaseHTTPRequestHandler):
         # v0.4.9：拖拽上传——body 是文件原始字节而非 JSON，必须在 _read_json 之前拦截。
         if path == "/api/drop-files":
             self._api_drop_files(parsed.query)
+            return
+        # 安全加固：写操作来源校验（CSRF / DNS 重绑定）；drop-files 走独立二进制通道
+        if not self._check_write_request():
             return
         try:
             data = self._read_json()
@@ -2560,8 +2684,22 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/components/install":
                 # S10：启用组件——只接受内置 id，下载源由 components.py 固定，杜绝任意 URL
                 self._send_json(components.install(str(data.get("id") or "").strip()))
+            elif path == "/api/pdf/ocr":
+                # 可选 OCR：对指定扫描件 PDF 做识别，结果写入 outdir 的同名 md。
+                # 路径围栏：只接受本机存在的 .pdf，输出目录必须存在。
+                pdf_path = str(data.get("path") or "").strip()
+                out_dir = str(data.get("outdir") or "").strip()
+                if not pdf_path or not pdf_path.lower().endswith(".pdf"):
+                    self._send_json({"ok": False, "error": "请指定 PDF 文件"}, 400)
+                elif not Path(pdf_path).is_file():
+                    self._send_json({"ok": False, "error": "PDF 文件不存在"}, 404)
+                elif not out_dir or not Path(out_dir).is_dir():
+                    self._send_json({"ok": False, "error": "输出目录不存在"}, 400)
+                else:
+                    self._send_json(pdf_ocr.ocr_pdf_to_md(pdf_path, out_dir))
             elif path == "/api/components/cancel":
-                self._send_json(components.cancel_install())
+                self._send_json(components.cancel_install(
+                    str(data.get("id") or "").strip() or None))
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态

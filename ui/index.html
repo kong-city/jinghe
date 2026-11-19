@@ -344,11 +344,24 @@
 
           <label class="set-row">
             <span class="set-text">
+              <b>默认输入路径</b>
+              <em>启动时自动填入首页的输入框，默认是你的桌面；可改成任意文件夹</em>
+            </span>
+            <input class="text-input set-wide" type="text" id="setDefaultIndir"
+                   spellcheck="false" autocomplete="off" placeholder="留空 = 使用桌面">
+            <button class="btn btn-ghost" type="button" id="btnPickIndir"
+                    title="选择默认输入文件夹">浏览…</button>
+          </label>
+
+          <label class="set-row">
+            <span class="set-text">
               <b>默认输出目录</b>
-              <em>留空则按「out-日期-时间」自动生成；填写后每次提取都用它</em>
+              <em>启动时自动填入首页的输出框，默认是你的桌面（固定路径，不会提示文件夹不存在）；可手动改</em>
             </span>
             <input class="text-input set-wide" type="text" id="setDefaultOutdir"
-                   spellcheck="false" autocomplete="off" placeholder="留空 = 自动生成">
+                   spellcheck="false" autocomplete="off" placeholder="留空 = 使用系统临时目录">
+            <button class="btn btn-ghost" type="button" id="btnPickOutdir"
+                    title="选择默认输出文件夹">浏览…</button>
           </label>
         </div>
 
@@ -442,6 +455,7 @@
         <div id="componentList" class="component-list" aria-live="polite">
           <div class="component-empty">正在检测组件…</div>
         </div>
+        <div class="card-sub" id="ocrStatus" style="margin-top:10px">扫描件 OCR：检测中…</div>
       </section>
 
       <section class="card">

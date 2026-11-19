@@ -85,22 +85,48 @@ _LOCK = threading.Lock()
 # 只有 install() 在确认「用户点了启用按钮」后才会置 True；_install_worker
 # 消费一次即清。任何绕过 install() 直接调 _download/_pip_install 的路径，
 # 令牌为空 → 拒绝下载，从代码层杜绝自动/误触下载。
+# v0.10：令牌改为「按组件 id 集合」，支持多组件并发且互不消费对方的令牌；
+# _USER_OPT_IN 保留为兼容旧测试的「最近一次令牌」视图。
 _USER_OPT_IN = {"granted": False, "component_id": ""}
+_USER_OPT_INS: set[str] = set()
 # 选定的 pip 用 Python（首次查找后锁定，保证「装」与「探」同源）
 _PIP_PYTHON = ""
 # 该选择的 PATH 指纹；PATH 变化则重新查找
 _PIP_PYTHON_FP = ""
-_JOB = {
-    "running": False,
-    "id": "",
-    "state": "idle",       # idle / running / done / failed / cancelled
-    "percent": 0.0,
-    "message": "",
-    "error": "",
-    "cancelled": False,
-    "events": [],          # [{seq, type, text, progress}]
-    "next_seq": 1,
-}
+def _new_job(cid: str = "") -> dict:
+    return {
+        "running": False,
+        "id": cid,
+        "state": "idle",       # idle / running / done / failed / cancelled
+        "percent": 0.0,
+        "message": "",
+        "error": "",
+        "cancelled": False,
+        "events": [],          # [{seq, type, text, progress}]
+        "next_seq": 1,
+    }
+
+
+# 兼容视图：_JOB 始终指向「最近一次操作」的 job 对象（旧 API/测试读它）。
+_JOB = _new_job()
+# 真实状态源：每个组件一个独立 job，支持真并发（各自进度/事件/取消）。
+_JOBS: dict[str, dict] = {}
+
+
+def _job_for(cid: str | None) -> dict:
+    """取组件对应的 job；cid 为空时回落到最近任务（兼容旧调用）。"""
+    if not cid:
+        return _JOB
+    with _LOCK:
+        return _JOBS.setdefault(cid, _new_job(cid))
+
+
+def _sync_recent(cid: str | None) -> None:
+    """把某个 job 设为「最近任务」视图（不拷贝，保持同一对象引用）。"""
+    global _JOB
+    if cid:
+        with _LOCK:
+            _JOB = _JOBS.setdefault(cid, _new_job(cid))
 
 
 # --------------------------------------------------------------------------- #
@@ -236,48 +262,71 @@ def list_components(refresh: bool = False) -> dict:
 # --------------------------------------------------------------------------- #
 # 进度事件
 # --------------------------------------------------------------------------- #
-def _emit(event: str, text: str, progress: float | None = None) -> None:
+def _emit(event: str, text: str, progress: float | None = None,
+          component_id: str | None = None) -> None:
+    job = _job_for(component_id)
     with _LOCK:
-        seq = _JOB["next_seq"]
-        _JOB["next_seq"] = seq + 1
-        ev = {"seq": seq, "type": event, "text": text, "progress": progress}
-        _JOB["events"].append(ev)
-        if len(_JOB["events"]) > 500:
-            _JOB["events"] = _JOB["events"][-200:]
+        seq = job["next_seq"]
+        job["next_seq"] = seq + 1
+        ev = {"seq": seq, "type": event, "text": text, "progress": progress,
+              "cid": job["id"]}
+        job["events"].append(ev)
+        if len(job["events"]) > 500:
+            job["events"] = job["events"][-200:]
         if progress is not None:
-            _JOB["percent"] = max(0.0, min(100.0, float(progress) * 100.0))
-        _JOB["message"] = text
+            job["percent"] = max(0.0, min(100.0, float(progress) * 100.0))
+        job["message"] = text
 
 
-def install_status(since: int = 0) -> dict:
+def install_status(since: int = 0, component_id: str | None = None) -> dict:
+    """单个组件进度（cid 为空=最近任务）；cid='*' 返回全部任务快照。"""
+    if component_id == "*":
+        with _LOCK:
+            jobs = {}
+            for cid, job in _JOBS.items():
+                jobs[cid] = {
+                    "events": [dict(e) for e in job["events"]],
+                    "next": job["next_seq"] - 1,
+                    "running": job["running"], "state": job["state"],
+                    "percent": round(job["percent"], 1),
+                    "message": job["message"], "error": job["error"],
+                    "id": cid,
+                }
+            running_n = sum(1 for j in _JOBS.values() if j["running"])
+        return {"ok": True, "jobs": jobs, "running": running_n,
+                "events": [], "next": 0, "state": "running" if running_n else "idle",
+                "percent": 0.0, "message": "", "error": "", "id": ""}
+    job = _job_for(component_id)
     with _LOCK:
-        events = [dict(e) for e in _JOB["events"] if e["seq"] > since]
-        nxt = _JOB["next_seq"] - 1
+        events = [dict(e) for e in job["events"] if e["seq"] > since]
+        nxt = job["next_seq"] - 1
         return {
             "ok": True,
             "events": events,
             "next": nxt,
-            "running": _JOB["running"],
-            "state": _JOB["state"],
-            "percent": round(_JOB["percent"], 1),
-            "message": _JOB["message"],
-            "error": _JOB["error"],
-            "id": _JOB["id"],
+            "running": job["running"],
+            "state": job["state"],
+            "percent": round(job["percent"], 1),
+            "message": job["message"],
+            "error": job["error"],
+            "id": job["id"],
         }
 
 
-def cancel_install() -> dict:
+def cancel_install(component_id: str | None = None) -> dict:
+    job = _job_for(component_id)
     with _LOCK:
-        if not _JOB["running"]:
+        if not job["running"]:
             return {"ok": False, "error": "当前没有安装任务"}
-        _JOB["cancelled"] = True
-    _emit("info", "已请求取消，正在清理…")
+        job["cancelled"] = True
+    _emit("info", "已请求取消，正在清理…", None, job["id"])
     return {"ok": True}
 
 
-def _cancelled() -> bool:
+def _cancelled(component_id: str | None = None) -> bool:
+    job = _job_for(component_id)
     with _LOCK:
-        return _JOB["cancelled"]
+        return job["cancelled"]
 
 
 # --------------------------------------------------------------------------- #
@@ -290,11 +339,17 @@ def _require_opt_in(component_id: str) -> None:
     下载函数，也会因无令牌而失败，不会发出任何网络请求。
     """
     with _LOCK:
-        ok = (_USER_OPT_IN["granted"]
-              and _USER_OPT_IN["component_id"] == component_id)
-        if ok:
-            _USER_OPT_IN["granted"] = False   # 一次性消费
+        # 新机制：按组件 id 的令牌集合，互不消费（支持并发）。
+        in_set = component_id in _USER_OPT_INS
+        if in_set:
+            _USER_OPT_INS.discard(component_id)
+        # 兼容视图：旧测试/旧调用直接写 _USER_OPT_IN 后调本函数。
+        legacy = (_USER_OPT_IN["granted"]
+                  and _USER_OPT_IN["component_id"] == component_id)
+        if legacy:
+            _USER_OPT_IN["granted"] = False
             _USER_OPT_IN["component_id"] = ""
+        ok = in_set or legacy
     if not ok:
         raise RuntimeError("未获用户手动启用授权，拒绝下载（软件绝不主动下载）")
 
@@ -310,7 +365,7 @@ def _download(url: str, dest: Path, component_id: str) -> None:
         got = 0
         with open(tmp, "wb") as f:
             while True:
-                if _cancelled():
+                if _cancelled(component_id):
                     tmp.unlink(missing_ok=True)
                     raise RuntimeError("cancelled")
                 chunk = resp.read(256 * 1024)
@@ -319,9 +374,11 @@ def _download(url: str, dest: Path, component_id: str) -> None:
                 f.write(chunk)
                 got += len(chunk)
                 if total:
-                    _emit("progress", "下载中 %d%%" % int(got * 100 / total), got / total)
+                    _emit("progress", "下载中 %d%%" % int(got * 100 / total),
+                          got / total, component_id)
                 else:
-                    _emit("progress", "已下载 %.1f MB" % (got / 1024 / 1024), None)
+                    _emit("progress", "已下载 %.1f MB" % (got / 1024 / 1024),
+                          None, component_id)
     tmp.replace(dest)
 
 
@@ -516,7 +573,7 @@ def _pip_install(package: str, component_id: str) -> str:
     errors: list[str] = []   # 收集 pip 的 ERROR 行，失败时回显真实原因
     assert proc.stdout is not None
     for line in proc.stdout:
-        if _cancelled():
+        if _cancelled(component_id):
             proc.terminate()
             try:
                 proc.wait(timeout=5)
@@ -526,15 +583,16 @@ def _pip_install(package: str, component_id: str) -> str:
         text = line.rstrip()
         if "ERROR" in text or "error:" in text.lower():
             errors.append(text[:200])
-            _emit("progress", text[:120], None)
+            _emit("progress", text[:120], None, component_id)
         for i, kw in enumerate(steps):
             if kw in text and kw not in reached:
                 reached.add(kw)
-                _emit("progress", text[:120], min(0.95, (i + 1) / (len(steps) + 1)))
+                _emit("progress", text[:120],
+                      min(0.95, (i + 1) / (len(steps) + 1)), component_id)
                 break
         else:
             if "Downloading" in text or "MB" in text:
-                _emit("progress", text[:120], None)
+                _emit("progress", text[:120], None, component_id)
     rc = proc.wait()
     if rc != 0:
         # 用户要能看到 pip 的真实报错，而不是只有「退出码 2」这种谜语
@@ -600,14 +658,15 @@ print("|".join(made))
 
 def _install_worker(component_id: str) -> None:
     comp = _BY_ID.get(component_id)
+    job = _job_for(component_id)
     try:
         if not comp:
             raise RuntimeError("未知组件：%s" % component_id)
-        _emit("progress", "准备安装 %s…" % comp["name"], 0.01)
+        _emit("progress", "准备安装 %s…" % comp["name"], 0.01, component_id)
         if comp["kind"] == "zip":
             dest = COMPONENT_DIR / (comp["id"] + ".zip")
             _download(comp["url"], dest, component_id)
-            _emit("progress", "解压中…", 0.9)
+            _emit("progress", "解压中…", 0.9, component_id)
             detail = _extract_ffmpeg(dest)
         else:
             detail = _pip_install(comp["package"], component_id)
@@ -618,11 +677,11 @@ def _install_worker(component_id: str) -> None:
             except RuntimeError:
                 exe_path = None
             if exe_path is not None and not exe_path.is_file():
-                _emit("progress", "补生成 %s 启动器…" % comp["exe"], 0.97)
+                _emit("progress", "补生成 %s 启动器…" % comp["exe"], 0.97, component_id)
                 detail = _ensure_console_script(
                     _python_for_pip(), comp["package"], comp["exe"])
 
-        if _cancelled():
+        if _cancelled(component_id):
             raise RuntimeError("cancelled")
         ensure_component_path()
         # 安装流程末尾做**深度验证**（真跑探测命令）：此处必须确认命令真的
@@ -646,49 +705,59 @@ def _install_worker(component_id: str) -> None:
                 % (comp["exe"], py, " | ".join(dirs) or "(无)",
                    (Path(dirs[0]) / comp["exe"]).is_file() if dirs else "未知"))
         with _LOCK:
-            _JOB["state"] = "done"
-            _JOB["percent"] = 100.0
-            _JOB["running"] = False
-        _emit("done", "%s 安装成功（%s）" % (comp["name"], detail or st["version"]), 1.0)
+            job["state"] = "done"
+            job["percent"] = 100.0
+            job["running"] = False
+        _emit("done", "%s 安装成功（%s）" % (comp["name"], detail or st["version"]), 1.0, component_id)
     except Exception as exc:  # noqa: BLE001 - 后台线程必须落地任何失败
         msg = str(exc)
-        cancelled = msg == "cancelled" or _cancelled()
+        cancelled = msg == "cancelled" or _cancelled(component_id)
         with _LOCK:
-            _JOB["state"] = "cancelled" if cancelled else "failed"
-            _JOB["running"] = False
-            _JOB["error"] = "" if cancelled else msg
+            job["state"] = "cancelled" if cancelled else "failed"
+            job["running"] = False
+            job["error"] = "" if cancelled else msg
         _emit("cancelled" if cancelled else "error",
-              "已取消安装" if cancelled else ("安装失败：" + msg), None)
+              "已取消安装" if cancelled else ("安装失败：" + msg), None, component_id)
 
 
 def install(component_id: str) -> dict:
     """启动安装（异步）。**仅代表用户手动点击「启用」后由 UI 调用**。
 
     软件内部（启动 / 探测 / 定时器 / 其它模块）一律不得调用本函数去下载；
-    令牌机制保证即便误调，下载层也会拒绝。
+    令牌机制保证即便误调，下载层也会拒绝。多组件可并发（各自独立 job/令牌）。
     """
+    global _JOB
     comp = _BY_ID.get(component_id)
     if not comp:
         return {"ok": False, "error": "未知组件"}
+    # v0.10：按组件维度判断是否已在装——不同组件可并发，同一组件仍拒绝重复点击
     with _LOCK:
-        if _JOB["running"]:
-            return {"ok": False, "error": "已有组件正在安装，请等待完成"}
+        existing = _JOBS.get(component_id)
+        if existing and existing["running"]:
+            return {"ok": False, "error": "该组件正在安装中，请勿重复点击"}
     check = _probe_one(comp["probe"])
     if check["available"]:
         with _LOCK:
-            _JOB.update({"running": False, "state": "done", "percent": 100.0,
-                         "id": component_id, "events": [], "next_seq": 1})
-        _emit("done", "%s 已安装" % comp["name"], 1.0)
+            job = _JOBS.setdefault(component_id, _new_job(component_id))
+            job.update({"running": False, "state": "done", "percent": 100.0,
+                        "id": component_id, "events": [], "next_seq": 1})
+            _JOB = job
+        _emit("done", "%s 已安装" % comp["name"], 1.0, component_id)
         return {"ok": True, "already_installed": True}
-    # 只有走到这里（用户点了启用 + 组件确实未安装）才发令牌
+    # 只有走到这里（用户点了启用 + 组件确实未安装）才发令牌。
+    # 并发：每组件独立令牌写入 set；兼容视图 _USER_OPT_IN 指向最近一个。
     with _LOCK:
+        _USER_OPT_INS.add(component_id)
         _USER_OPT_IN["granted"] = True
         _USER_OPT_IN["component_id"] = component_id
-        _JOB.update({
+        job = _JOBS.setdefault(component_id, _new_job(component_id))
+        job.update({
             "running": True, "id": component_id, "state": "running",
             "percent": 0.0, "message": "", "error": "", "cancelled": False,
             "events": [], "next_seq": 1,
         })
+        _JOB = job
     threading.Thread(target=_install_worker, args=(component_id,),
-                     name="jinghe-component-install", daemon=True).start()
+                     name="jinghe-component-install-%s" % component_id,
+                     daemon=True).start()
     return {"ok": True, "already_installed": False}

@@ -87,6 +87,9 @@
     setExitGrace: $("setExitGrace"),
     setRememberPaths: $("setRememberPaths"),
     setDefaultOutdir: $("setDefaultOutdir"),
+    setDefaultIndir: $("setDefaultIndir"),
+    btnPickIndir: $("btnPickIndir"),
+    btnPickOutdir: $("btnPickOutdir"),
     btnSaveSettings: $("btnSaveSettings"),
     btnResetSettings: $("btnResetSettings"),
     settingsStatus: $("settingsStatus"),
@@ -269,9 +272,18 @@
     exit_grace_seconds: 90,
     remember_paths: true,
     default_outdir: "",
-    // 后端给的默认输出目录绝对路径（%TEMP%\jinghe-out）
-    default_outdir_path: ""
+    // 默认输入路径（留空 = 用后端下发的桌面）
+    default_indir: "",
+    // 后端给的默认输出目录绝对路径（%TEMP%\jinghe-out，兜底）
+    default_outdir_path: "",
+    // 后端下发的桌面绝对路径（默认输入/输出的占位与恢复默认用）
+    default_desktop: ""
   };
+
+  function defaultIndir() {
+    if (settings.default_indir) return settings.default_indir;
+    return settings.default_desktop || "";
+  }
 
   var PAGE_META = {
     home: { title: "精核 · 文件提取", sub: "阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪" },
@@ -356,19 +368,24 @@
   }
 
   function applySettings(cfg) {
-    // 合并而非整体替换：default_outdir_path 是后端下发的绝对路径，
+    // 合并而非整体替换：default_outdir_path / default_desktop 是后端下发的绝对路径，
     // 不在 settings 落盘内容里，整体替换会把它抹掉（保存设置后即失效）。
     if (cfg && typeof cfg === "object") {
       var keepPath = settings.default_outdir_path;
+      var keepDesktop = settings.default_desktop;
       settings = cfg;
       if (!settings.default_outdir_path && keepPath) {
         settings.default_outdir_path = keepPath;
+      }
+      if (!settings.default_desktop && keepDesktop) {
+        settings.default_desktop = keepDesktop;
       }
     }
     if (el.setAutoExit) el.setAutoExit.checked = settings.auto_exit !== false;
     if (el.setExitGrace) el.setExitGrace.value = settings.exit_grace_seconds;
     if (el.setRememberPaths) el.setRememberPaths.checked = settings.remember_paths !== false;
     if (el.setDefaultOutdir) el.setDefaultOutdir.value = settings.default_outdir || "";
+    if (el.setDefaultIndir) el.setDefaultIndir.value = settings.default_indir || "";
   }
 
   function loadSettingsIntoForm() {
@@ -377,11 +394,24 @@
       applySettings(r.settings);
       // 默认输出目录（绝对路径）由后端下发，前端不再自己拼
       if (r.default_outdir_path) settings.default_outdir_path = r.default_outdir_path;
+      // 桌面绝对路径：默认输入/输出的占位与恢复默认用
+      if (r.default_desktop) settings.default_desktop = r.default_desktop;
       // init() 先于本回调执行，那时尚无后端路径 → 这里补齐，
-      // 避免输出框留空导致「请先填写输出目录」
+      // 避免输入框/输出框留空导致「请先填写」
       if (el.outPath && !el.outPath.value.trim()) {
         var dflt = defaultOutdir();
         if (dflt) el.outPath.value = dflt;
+      }
+      if (el.inputPath && !el.inputPath.value.trim()) {
+        var din = defaultIndir();
+        if (din) el.inputPath.value = din;
+      }
+      // 设置页两个路径框：用户从未设置时显示桌面默认值作为占位/回填
+      if (el.setDefaultIndir && !el.setDefaultIndir.value.trim() && settings.default_desktop) {
+        el.setDefaultIndir.value = settings.default_desktop;
+      }
+      if (el.setDefaultOutdir && !el.setDefaultOutdir.value.trim() && settings.default_desktop) {
+        el.setDefaultOutdir.value = settings.default_desktop;
       }
       if (el.settingsLogPath) el.settingsLogPath.textContent = logFile || "—";
       if (el.settingsFilePath) el.settingsFilePath.textContent = r.settings_file || "—";
@@ -398,6 +428,7 @@
       applySettings(r.settings);
       el.settingsStatus.textContent = okText || "已保存";
       if (settings.default_outdir) el.outPath.value = settings.default_outdir;
+      if (settings.default_indir) el.inputPath.value = settings.default_indir;
     }).catch(function (err) {
       el.settingsStatus.textContent = "保存失败：" + (err.message || err);
     });
@@ -408,8 +439,21 @@
       auto_exit: el.setAutoExit.checked,
       exit_grace_seconds: parseInt(el.setExitGrace.value, 10) || 90,
       remember_paths: el.setRememberPaths.checked,
-      default_outdir: el.setDefaultOutdir.value.trim()
+      default_outdir: el.setDefaultOutdir.value.trim(),
+      default_indir: el.setDefaultIndir.value.trim()
     };
+  }
+
+  // 设置页：为默认输入/输出框选择文件夹（后端原生对话框，pick-* 不设超时）
+  function pickDefaultFolder(inputEl) {
+    if (!inputEl) return;
+    api("/api/pick-folder", { path: inputEl.value.trim() }, 0).then(function (r) {
+      if (r && r.ok === false && r.error) { showToast(r.error, true); return; }
+      var p = (r && r.path) || "";
+      if (p) inputEl.value = p;
+    }).catch(function (err) {
+      showToast("选择文件夹失败：" + (err.message || err), true);
+    });
   }
 
   function loadAbout() {
@@ -1393,21 +1437,36 @@
     });
   }
 
-  // ---------------- S10：设置页「相关组件」----------------
+  // ---------------- S10：设置页「相关组件」（v0.10 支持真并发）----------------
   var componentState = null;
   var componentPoll = null;
-  var componentSince = 0;
+  var componentJobs = {};   // cid -> {next, state, percent, message}
 
   function loadComponents() {
     if (!el.componentList) return;
+    // 扫描件 OCR 能力状态（可选增强，仅探测本机工具链，不下载）
+    api("/api/pdf/ocr/status", undefined, 10000).then(function (o) {
+      var n = document.getElementById("ocrStatus");
+      if (n && o) {
+        n.textContent = "扫描件 OCR（图片页文字识别）：" +
+          (o.available ? "已就绪，提取时自动识别图片页" : ("未启用——" + (o.hint || o.reason || "未检测到工具链")));
+      }
+    }).catch(function () {});
     api("/api/components?refresh=1", undefined, 15000).then(function (r) {
       componentState = (r && r.ok) ? r : null;
       renderComponents();
-      var job = (componentState && componentState.job) || {};
-      if (job.running) startComponentPolling();
+      if ((componentState && componentState.job && componentState.job.running) ||
+          anyComponentRunning()) startComponentPolling();
     }).catch(function (err) {
       el.componentList.textContent = "组件状态读取失败：" + (err.message || err);
     });
+  }
+
+  function anyComponentRunning() {
+    for (var cid in componentJobs) {
+      if (componentJobs[cid] && componentJobs[cid].running) return true;
+    }
+    return false;
   }
 
   function makeEl(tag, cls, text) {
@@ -1420,9 +1479,10 @@
   function renderComponents() {
     if (!el.componentList || !componentState) return;
     var list = componentState.components || [];
-    var job = componentState.job || {};
     el.componentList.textContent = "";
     list.forEach(function (c) {
+      var j = componentJobs[c.id] || {};
+      var installing = !!j.running;
       var row = makeEl("div", "component-row" + (c.installed ? "" : " is-missing"));
       row.setAttribute("data-cid", c.id);
 
@@ -1431,46 +1491,45 @@
       info.appendChild(makeEl("span", "component-desc", c.desc));
       var msg = makeEl("div", "component-msg");
       msg.setAttribute("data-role", "msg");
+      if (installing && j.message) msg.textContent = j.message;
       info.appendChild(msg);
 
-      // 绿色进度条：未安装且正在装此组件时显示
-      var prog = makeEl("div", "component-progress");
+      // 绿色进度条：每个组件独立，正在装时显示
+      var prog = makeEl("div", "component-progress" + (installing ? " is-active" : ""));
       prog.setAttribute("data-role", "progress");
       var track = makeEl("div", "component-progress-track");
       var bar = makeEl("div", "component-progress-bar");
       bar.setAttribute("data-role", "bar");
+      bar.style.width = (installing ? (j.percent || 0) : 0).toFixed(1) + "%";
       track.appendChild(bar);
-      var pct = makeEl("span", "component-progress-text", "0%");
+      var pct = makeEl("span", "component-progress-text",
+                       installing ? ((j.percent || 0).toFixed(0) + "%") : "0%");
       pct.setAttribute("data-role", "pct");
       prog.appendChild(track);
       prog.appendChild(pct);
       info.appendChild(prog);
 
-      // 徽标区分三种状态：已安装 / 未安装 / 探测超时（工具可能已装但响应慢）
       var compState = c.state || (c.installed ? "ok" : "missing");
       var badgeText = c.installed ? "已安装"
                      : (compState === "timeout" ? "探测超时" : "未安装");
       var badge = makeEl("span", "component-badge" + (c.installed ? "" : " is-off"),
-                         badgeText);
+                         installing ? "安装中" : badgeText);
       badge.setAttribute("data-role", "badge");
       if (!c.installed && c.reason) badge.title = c.reason;
 
+      // 只禁用"正在安装的那个"与"已安装的"，其他未装组件保持可点 → 真并发
       var btn = makeEl("button", "btn component-toggle",
-                       job.running && job.id === c.id ? "安装中…" : (c.installed ? "已启用" : "启用"));
+                       installing ? "安装中…" : (c.installed ? "已启用" : "启用"));
       btn.type = "button";
       btn.setAttribute("data-role", "toggle");
       btn.setAttribute("data-cid", c.id);
-      if (c.installed || job.running) btn.disabled = true;
+      if (c.installed || installing) btn.disabled = true;
 
       row.appendChild(info);
       row.appendChild(badge);
       row.appendChild(btn);
       el.componentList.appendChild(row);
     });
-    // 回填当前任务的进度显示
-    if (job.running && job.id) {
-      applyComponentProgress({ percent: job.percent || 0, message: job.message || "", state: job.state });
-    }
   }
 
   function rowFor(cid) {
@@ -1478,36 +1537,59 @@
     return el.componentList.querySelector('.component-row[data-cid="' + cid + '"]');
   }
 
-  function applyComponentProgress(st) {
-    var row = rowFor(componentState && componentState.job && componentState.job.id);
+  function applyComponentJob(cid, st) {
+    var row = rowFor(cid);
     if (!row) return;
     var p = row.querySelector('[data-role="progress"]');
     var bar = row.querySelector('[data-role="bar"]');
     var pct = row.querySelector('[data-role="pct"]');
     var msg = row.querySelector('[data-role="msg"]');
-    if (p && st.state === "running") p.classList.add("is-active");
+    var badge = row.querySelector('[data-role="badge"]');
+    var btn = row.querySelector('[data-role="toggle"]');
+    if (p) p.classList.toggle("is-active", !!st.running || st.state === "running");
     if (bar) bar.style.width = Math.max(0, Math.min(100, st.percent || 0)).toFixed(1) + "%";
     if (pct) pct.textContent = (st.percent || 0).toFixed(0) + "%";
     if (msg) msg.textContent = st.message || "";
+    if (badge && (st.running || st.state === "running")) badge.textContent = "安装中";
+    if (btn && (st.running || st.state === "running")) {
+      btn.disabled = true;
+      btn.textContent = "安装中…";
+    }
   }
 
   function startComponentPolling() {
     if (componentPoll) return;
-    componentSince = 0;
     componentPoll = setInterval(function () {
-      api("/api/components/status?since=" + componentSince, undefined, 10000)
+      api("/api/components/status?cid=*", undefined, 10000)
         .then(function (r) {
           if (!r || !r.ok) return;
-          componentSince = r.next || componentSince;
-          applyComponentProgress(r);
+          var jobs = r.jobs || {};
+          var finished = [];
+          Object.keys(jobs).forEach(function (cid) {
+            var st = jobs[cid];
+            componentJobs[cid] = st;
+            applyComponentJob(cid, st);
+            // 记录完成的任务（由 running -> 非 running），提示一次
+            if (!st.running && st.state && st.state !== "idle") {
+              if (!componentJobs[cid]._notified) {
+                componentJobs[cid]._notified = true;
+                finished.push(st);
+              }
+            } else if (st.running) {
+              componentJobs[cid]._notified = false;
+            }
+          });
+          if (finished.length) {
+            finished.forEach(function (st) {
+              if (st.state === "done") showNotice("组件安装成功：" + (st.id || ""));
+              else if (st.state === "failed") showError("组件安装失败：" + (st.error || "未知原因"));
+              else if (st.state === "cancelled") showNotice("已取消组件安装：" + (st.id || ""));
+            });
+            loadTools();
+          }
           if (!r.running) {
             stopComponentPolling();
-            // 安装完成后重新探测，取消灰显、刷新徽标与按钮
             loadComponents();
-            if (r.state === "done") showNotice("组件安装成功，已启用。");
-            else if (r.state === "failed") showError("组件安装失败：" + (r.error || "未知原因"));
-            else if (r.state === "cancelled") showNotice("已取消组件安装。");
-            loadTools();
           }
         })
         .catch(function () { /* 轮询偶发失败下一次重试，不打断安装 */ });
@@ -1522,8 +1604,8 @@
     api("/api/components/install", { id: cid }, 15000).then(function (r) {
       if (!r || !r.ok) { showError("启动安装失败：" + ((r && r.error) || "未知")); return; }
       if (r.already_installed) { showNotice("该组件已安装。"); loadComponents(); return; }
-      componentSince = 0;
-      loadComponents();
+      componentJobs[cid] = { running: true, state: "running", percent: 0, _notified: false };
+      renderComponents();
       startComponentPolling();
     }).catch(function (err) { showError("启动安装失败：" + (err.message || err)); });
   }
@@ -2309,13 +2391,21 @@
         saveSettings(readSettingsForm(), "已保存");
       });
     }
+    if (el.btnPickIndir) {
+      el.btnPickIndir.addEventListener("click", function () { pickDefaultFolder(el.setDefaultIndir); });
+    }
+    if (el.btnPickOutdir) {
+      el.btnPickOutdir.addEventListener("click", function () { pickDefaultFolder(el.setDefaultOutdir); });
+    }
     if (el.btnResetSettings) {
       el.btnResetSettings.addEventListener("click", function () {
+        var desk = settings.default_desktop || "";
         saveSettings({
           auto_exit: true,
           exit_grace_seconds: 90,
           remember_paths: true,
-          default_outdir: ""
+          default_outdir: desk,
+          default_indir: desk
         }, "已恢复默认");
       });
     }
