@@ -5162,6 +5162,29 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("上传必升号",
                       (ROOT / "VERSIONING.md").read_text(encoding="utf-8"))
 
+    # ------------------------------------------------------------------ #
+    # 63) 左侧导航栏固定不滚动 + 关于页精简确实生效
+    # ------------------------------------------------------------------ #
+    def test_63_fixed_sidebar_and_about_cleanup(self):
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        # .app 锁视口、整页不滚
+        app_block = css[css.index(".app {"):css.index(".sidebar {")]
+        self.assertIn("height: 100vh", app_block)
+        self.assertIn("overflow: hidden", app_block)
+        # .content 独立滚动
+        content_block = css[css.index(".content {"):css.index(".page {")]
+        self.assertIn("overflow-y: auto", content_block)
+        # .sidebar 钉住
+        side_block = css[css.index(".sidebar {"):css.index(".app.nav-resizing")]
+        self.assertIn("position: sticky", side_block)
+        self.assertIn("top: 0", side_block)
+        # 关于页两处确实删除（用户 2026-11-19 裁决，旧进程曾导致误以为没生效）
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("软件版本", html)
+        self.assertNotIn("功能路线", html)
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("aboutVersion2", js)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

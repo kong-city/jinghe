@@ -26,13 +26,19 @@ button, input { font-family: inherit; }
   --sidebar-w: 184px;
   display: flex;
   align-items: stretch;
-  min-height: 100vh;
+  /* 桌面应用布局：整页不滚，视口高度锁死，右侧内容独立滚动。
+     这样左侧导航栏始终固定在原位，不随右侧内容上下移动。 */
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
-  position: relative;
+  position: sticky;
+  top: 0;
   flex: 0 0 auto;
   width: var(--sidebar-w);
+  height: 100vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -173,6 +179,8 @@ button, input { font-family: inherit; }
 .content {
   flex: 1 1 auto;
   min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
