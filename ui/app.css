@@ -38,7 +38,10 @@ button, input { font-family: inherit; }
   flex: 0 0 auto;
   width: var(--sidebar-w);
   height: 100vh;
-  /* 导航栏固定不滚动：内容始终在视口内，无需滚动条 */
+  /* 导航栏固定不滚动：内容始终在视口内，无上下/左右滚动条。
+     必须显式写 overflow-x: hidden —— CSS 规范下 overflow-y:hidden 会把
+     默认 overflow-x:visible 隐式计算为 auto，导致底部冒出横向滚动条。 */
+  overflow-x: hidden;
   overflow-y: hidden;
   display: flex;
   flex-direction: column;
@@ -54,7 +57,7 @@ button, input { font-family: inherit; }
 .nav-resizer {
   position: absolute;
   top: 0;
-  right: -3px;
+  right: 0;
   width: 7px;
   height: 100%;
   cursor: col-resize;

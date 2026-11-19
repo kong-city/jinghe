@@ -401,3 +401,9 @@
   - 新 exe 实测：页面两处已删、三处 CSS 生效；Edge DOM 视觉判分 25/25。全量 **122 用例**（63+28+16+15）+ 门禁 9/9；按规则升号 0.8.2 → 0.8.3，未上传。
 
 - **v1.0.6（2026-11-19 · exe 带版本号 + 导航栏底部精简，软件升号 v0.8.4）**：用户五项裁决。① **exe 对外产物改名带版本号**：`build.py` 打包后按 `__version__` 自动重命名为 `dist/Jinghe-0.8.4.exe`，PyInstaller 内部仍产出 `Jinghe.exe`（保自我重入 `--cli` 契约）；CI 上传 `Jinghe$tag.exe`，门禁 glob 匹配 `Jinghe-*.exe`，自更新 `Jinghe*.exe` 前缀白名单天然兼容；本地只留带版本号那份（用户选择）。② **导航栏底部**：删 `sideVersion` 版本号（含 JS 两处赋值）、品牌「精」→「精核」（字号调小适配方块）、侧栏 `overflow-y: hidden` 去滚动条。test_64 锁定命名与布局契约，视觉判分 26/26。全量 **123 用例**（64+28+16+15）+ 门禁 9/9；冻结态 exe 实测 UI 五处全绿；SPEC.md 与冻结主流水线零改动。按规则升号 0.8.3 → 0.8.4。
+
+- **v1.0.7（2026-11-19 · 修复侧栏底部横向滚动条，软件升号 v0.8.8）**：用户反馈「左侧导航栏最下面左右滑动条还在」。排查发现 v0.8.7 进程虽是新版、CSS 已是 `overflow-y:hidden`，但**用户说的是横向（左右）滚动条，上次只改了纵向**。
+  - **根因（经典 CSS 陷阱）**：CSS 规范规定 `overflow-y:hidden` 时默认的 `overflow-x:visible` 会被**隐式计算为 `auto`**；`.nav-resizer` 拖拽手柄 `right:-3px` 恰好制造 3px 横向溢出 → 底部冒出横向滚动条。
+  - **修复**：`.sidebar` 显式加 `overflow-x: hidden`（双轴都 hidden）；`.nav-resizer` 从 `right:-3px` 改为 `right:0`（贴边，7px 热区仍在）。test_65 锁定两处防回退。
+  - **CDP 浏览器实测**（不再靠 CSS 推理）：`.sidebar` scrollWidth=183 = clientWidth=183、scrollHeight=487 = clientHeight=487、overflowX/Y 均 hidden、**横纵溢出皆 false**。证据确凿。
+  - 全量 **124 用例**（65+28+16+15）+ 门禁 9/9 + 视觉判分 26/26；按规则升号 0.8.7 → 0.8.8，未上传。

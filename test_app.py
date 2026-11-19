@@ -5219,6 +5219,22 @@ class AppContractTest(unittest.TestCase):
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("sideVersion", js)
 
+    # ------------------------------------------------------------------ #
+    # 65) 侧栏无横向滚动条（overflow-x 陷阱回归）
+    # ------------------------------------------------------------------ #
+    def test_65_no_sidebar_horizontal_scrollbar(self):
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        side = css[css.index(".sidebar {"):css.index(".app.nav-resizing")]
+        # CSS 规范：overflow-y:hidden 会让默认 overflow-x:visible 隐式变 auto，
+        # 必须显式写 overflow-x:hidden，否则底部冒出横向滚动条
+        self.assertIn("overflow-x: hidden", side,
+                      "侧栏必须显式 overflow-x:hidden，杜绝底部横向滚动条")
+        self.assertIn("overflow-y: hidden", side)
+        # 拖拽手柄不得用 right:-3px 制造溢出
+        rz = css[css.index(".nav-resizer {"):css.index(".nav-resizer::after")]
+        self.assertNotIn("right: -3px", rz, "拖拽手柄负偏移会造成横向溢出")
+        self.assertIn("right: 0", rz)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
