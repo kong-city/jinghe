@@ -5201,7 +5201,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("current_version", bp)
         # ② CI 上传带版本号资产
         wf = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("Jinghe$tag.exe", wf, "CI 应上传带版本号资产")
+        self.assertIn("Jinghe-$version.exe", wf, "CI 应上传带版本号资产")
         # ③ 门禁识别带版本号产物 + 自更新前缀兼容
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
         self.assertIn("Jinghe-*.exe", gate)
