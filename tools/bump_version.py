@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""精核 · 一键自动升号（确保永不与远端撞号）。
+
+用户 2026-11-19 裁决：**本地每次改动都要升版本号**，防止版本号与远端相同
+导致 for-upload 门禁拒绝上传。靠人记着手动改必然会漏，故做成本工具。
+
+做什么：
+1. 读 ``version-policy.json`` 规则 + ``extract.py`` 当前版本；
+2. 按改动类型（patch/minor/major）算出候选版本号；
+3. **联网核对 GitHub latest**：若候选号仍 ≤ 远端，自动往上顶（patch +1 直到
+   严格大于远端）——从数学上杜绝撞号；
+4. 原子同步所有「当前版本」派生点：
+   - ``extract.py::__version__``（唯一真源）
+   - ``CHANGELOG.md`` 顶部新增 ``## [x.y.z] - 日期`` 条目
+   - ``使用说明.md`` 的「当前版本 **vX.Y.Z**」
+   历史留痕（契约 vN 记录、CHANGELOG 旧条目、测试里的 mock 值）一律不动。
+
+用法：
+    python tools/bump_version.py minor --reason "新增 XX 能力"
+    python tools/bump_version.py patch --reason "修 XX bug"
+    python tools/bump_version.py --dry-run minor     # 只看会改成什么，不落盘
+    python tools/bump_version.py --bump-to 0.9.0 --reason "指定版本"
+
+零第三方依赖；GitHub 查询失败时**保守处理**（在当前号基础上 +1 patch，
+并在输出里明确提示无法联网核对，由调用方决定是否继续）。
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import re
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+POLICY = ROOT / "version-policy.json"
+EXTRACT = ROOT / "extract.py"
+CHANGELOG = ROOT / "CHANGELOG.md"
+GUIDE = ROOT / "使用说明.md"
+LATEST_API = "https://api.github.com/repos/kong-city/jinghe/releases/latest"
+
+
+def read_version() -> str:
+    src = EXTRACT.read_text(encoding="utf-8")
+    m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', src, re.M)
+    if not m:
+        raise SystemExit("无法从 extract.py 解析 __version__")
+    return m.group(1)
+
+
+def as_tuple(v: str) -> tuple[int, int, int]:
+    parts = [int(x) for x in re.findall(r"\d+", v)[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0], parts[1], parts[2]
+
+
+def fmt(t: tuple[int, int, int]) -> str:
+    return "%d.%d.%d" % t
+
+
+def remote_latest() -> dict:
+    try:
+        req = urllib.request.Request(LATEST_API, headers={
+            "User-Agent": "jinghe-bump-version",
+            "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return {"ok": True, "version": re.sub(r"^v", "", str(data.get("tag_name") or ""))}
+    except Exception as exc:
+        return {"ok": False, "version": "", "error": type(exc).__name__}
+
+
+def compute(kind: str, current: str) -> tuple[tuple[int, int, int], str]:
+    maj, minor, patch = as_tuple(current)
+    if kind == "patch":
+        patch += 1
+    elif kind == "minor":
+        minor, patch = minor + 1, 0
+    elif kind == "major":
+        maj, minor, patch = maj + 1, 0, 0
+    else:
+        raise SystemExit("未知升号类型：%s" % kind)
+    return (maj, minor, patch), kind
+
+
+def ensure_above_remote(candidate: tuple[int, int, int], remote: dict) -> tuple[tuple, str]:
+    """若候选号仍 ≤ 远端，自动 patch +1 顶上去，确保严格大于。"""
+    if not remote.get("ok") or not remote.get("version"):
+        bumped = (candidate[0], candidate[1], candidate[2] + 1)
+        return bumped, "无法联网核对远端，保守再 +1 patch（请人工确认）"
+    r = as_tuple(remote["version"])
+    note = ""
+    while candidate <= r:
+        candidate = (candidate[0], candidate[1], candidate[2] + 1)
+        note = "候选号未超过远端 %s，自动 +1 patch" % remote["version"]
+    return candidate, note
+
+
+def set_extract(version: str, dry: bool) -> None:
+    src = EXTRACT.read_text(encoding="utf-8")
+    new, n = re.subn(r'^(__version__\s*=\s*["\'])[^"\']+(["\'])',
+                     lambda m: m.group(1) + version + m.group(2), src,
+                     count=1, flags=re.M)
+    if n != 1:
+        raise SystemExit("extract.py 版本号替换失败（匹配 %d 处）" % n)
+    if not dry:
+        EXTRACT.write_text(new, encoding="utf-8", newline="")
+
+
+def add_changelog(version: str, reason: str, dry: bool) -> None:
+    text = CHANGELOG.read_text(encoding="utf-8")
+    if re.search(r"^## \[%s\]" % re.escape(version), text, re.M):
+        return  # 已存在，不重复插入
+    today = dt.date.today().isoformat()
+    entry = "## [%s] - %s\n\n- %s\n\n" % (version, today, reason or "版本迭代")
+    # 插到第一个 ## [ 之前（保持倒序，最新在上）
+    m = re.search(r"^## \[", text, re.M)
+    if m:
+        new = text[:m.start()] + entry + text[m.start():]
+    else:
+        new = text.rstrip("\n") + "\n\n" + entry
+    if not dry:
+        CHANGELOG.write_text(new, encoding="utf-8", newline="")
+
+
+def set_guide(version: str, dry: bool) -> None:
+    text = GUIDE.read_text(encoding="utf-8")
+    new, n = re.subn(r'(当前版本 \*\*v)\d+\.\d+\.\d+(\*\*)',
+                     lambda m: m.group(1) + version + m.group(2), text, count=1)
+    if n != 1:
+        raise SystemExit("使用说明.md 当前版本替换失败（匹配 %d 处）" % n)
+    if not dry:
+        GUIDE.write_text(new, encoding="utf-8", newline="")
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="精核一键自动升号")
+    ap.add_argument("kind", nargs="?", choices=("patch", "minor", "major"),
+                    default="patch", help="改动类型（默认 patch）")
+    ap.add_argument("--reason", default="", help="本次改动说明（写入 CHANGELOG）")
+    ap.add_argument("--bump-to", default="", help="直接指定目标版本号（跳过规则计算）")
+    ap.add_argument("--dry-run", action="store_true", help="只预览，不落盘")
+    ap.add_argument("--no-remote", action="store_true", help="跳过远端核对")
+    args = ap.parse_args(argv)
+
+    current = read_version()
+    if args.bump_to:
+        target = as_tuple(args.bump_to)
+        if target <= as_tuple(current):
+            raise SystemExit("指定版本 %s 未高于当前 %s" % (args.bump_to, current))
+        note = "指定版本号"
+    else:
+        target, _ = compute(args.kind, current)
+        if not args.no_remote:
+            target, note = ensure_above_remote(target, remote_latest())
+        else:
+            note = "已跳过远端核对（--no-remote）"
+    new_ver = fmt(target)
+
+    print("当前版本 : %s" % current)
+    print("目标版本 : %s" % new_ver)
+    print("说明     : %s" % (note or "按规则升号"))
+    print("派生点   : extract.py / CHANGELOG.md / 使用说明.md")
+    if args.dry_run:
+        print("[DRY-RUN] 未写入任何文件")
+        return 0
+
+    set_extract(new_ver, dry=False)
+    add_changelog(new_ver, args.reason, dry=False)
+    set_guide(new_ver, dry=False)
+    print("[OK] 已升号 %s → %s，三个派生点已同步" % (current, new_ver))
+    print("下一步：跑门禁 python tools/check_release.py --no-exe，再上传前跑 for-upload")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

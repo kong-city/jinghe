@@ -5109,6 +5109,54 @@ class AppContractTest(unittest.TestCase):
                 with mock.patch("sys.stdout", new_callable=io.StringIO):
                     self.assertEqual(vc.cmd_for_upload(mock.Mock()), 2)
 
+    # ------------------------------------------------------------------ #
+    # 62) 一键升号工具：永不撞号 + 派生点同步（用户裁决「每次改动必升号」）
+    # ------------------------------------------------------------------ #
+    def test_62_bump_version_tool(self):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location(
+            "bump_version", ROOT / "tools" / "bump_version.py")
+        bv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bv)
+
+        # ① 三种改动类型算号正确
+        self.assertEqual(bv.compute("patch", "0.7.0")[0], (0, 7, 1))
+        self.assertEqual(bv.compute("minor", "0.7.0")[0], (0, 8, 0))
+        self.assertEqual(bv.compute("major", "0.7.0")[0], (1, 0, 0))
+
+        # ② 核心：撞号时自动往上顶，数学上杜绝与远端同号
+        t, note = bv.ensure_above_remote((0, 7, 1),
+                                         {"ok": True, "version": "0.7.3"})
+        self.assertEqual(t, (0, 7, 4), "候选号未超远端必须自动 +1")
+        self.assertIn("自动", note)
+        # 不撞号保持不变
+        self.assertEqual(bv.ensure_above_remote(
+            (0, 8, 0), {"ok": True, "version": "0.7.3"})[0], (0, 8, 0))
+        # 离线保守 +1（宁可多升也不撞号）
+        self.assertEqual(bv.ensure_above_remote(
+            (0, 7, 1), {"ok": False, "version": ""})[0], (0, 7, 2))
+
+        # ③ 三个派生点定位函数存在且能解析（用 dry-run 不落盘）
+        self.assertTrue(bv.read_version())
+        self.assertEqual(len(bv.as_tuple("0.7.0")), 3)
+        first_change = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("## [", first_change, "CHANGELOG 应有版本条目锚点")
+
+        # ④ dry-run 不落盘
+        before = (ROOT / "extract.py").read_text(encoding="utf-8")
+        with mock.patch.object(sys, "stdout", new_callable=io.StringIO):
+            rc = bv.main(["patch", "--dry-run", "--no-remote", "--reason", "t"])
+        self.assertEqual(rc, 0)
+        self.assertEqual((ROOT / "extract.py").read_text(encoding="utf-8"), before,
+                         "dry-run 不得修改文件")
+
+        # ⑤ 契约声明了升号工具与「每次改动必升号」铁律
+        pol = json.loads((ROOT / "version-policy.json").read_text(encoding="utf-8"))
+        self.assertIn("bump_version", json.dumps(pol, ensure_ascii=False))
+        self.assertIn("上传必升号",
+                      (ROOT / "VERSIONING.md").read_text(encoding="utf-8"))
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

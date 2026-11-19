@@ -149,8 +149,8 @@ def main(argv: list[str] | None = None) -> int:
                 "kb.py",
                 # S10 可选组件管理（用户裁决：必须有测试 + 门禁守护）
                 "components.py", "test_components.py",
-                # 版本契约判定器（双终端协作护栏）
-                "tools/version_check.py"):
+                # 版本契约判定器 + 一键升号（双终端协作护栏）
+                "tools/version_check.py", "tools/bump_version.py"):
         try:
             compile(_read(rel), rel, "exec")
         except (SyntaxError, OSError, UnicodeError) as exc:

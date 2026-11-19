@@ -29,6 +29,24 @@
 
 拿不准时问判定器：`python tools/version_check.py suggest minor`。
 
+## 一键升号（每次改动必做）
+
+**不要手动改版本号** —— 用工具，它会自动同步三个派生点并确保不撞号：
+
+```bash
+python tools/bump_version.py patch --reason "修 XX bug"
+python tools/bump_version.py minor --reason "新增 XX 能力"
+python tools/bump_version.py major --reason "架构级变更"
+```
+
+工具会：① 按 `version-policy.json` 规则算号；② **联网核对 GitHub latest，
+若候选号仍 ≤ 远端就自动 +1 顶上去**（数学上杜绝撞号）；③ 同步
+`extract.py` / `CHANGELOG.md` / `使用说明.md` 三个当前版本派生点。
+预览用 `--dry-run`。离线时保守 +1 并提示人工确认。
+
+**为什么每次改动都要升号**：本地与远端共用一套版本号，若上传时版本没变，
+`for-upload` 会拒绝（另一终端也无法凭版本识别代码变更）。升号是上传的通行证。
+
 ## 两个必做检查
 
 **改代码前**：
