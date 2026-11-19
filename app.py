@@ -2273,7 +2273,22 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(body, ctype)
 
     def _api_tools_probe(self, refresh: bool = False) -> dict:
-        """S1：本机工具健康探测 + 能力启用状态；缺工具一律诚实回显。"""
+        """S1：本机工具健康探测 + 能力启用状态；缺工具一律诚实回显。
+
+        一轮刷新只真探一次：payload → audio_transcribe → video_transcribe
+        三处都会取工具状态，若各自带 refresh=True 就是把同一份探测跑 3 遍
+        （用户 2026-11-19 实测端点耗时 4 秒）。这里开「刷新窗口」，
+        本轮内三处共享同一份结果。
+        """
+        if refresh:
+            media_tools.begin_refresh()
+        try:
+            return self._tools_probe_body(refresh)
+        finally:
+            if refresh:
+                media_tools.end_refresh()
+
+    def _tools_probe_body(self, refresh: bool) -> dict:
         data = media_tools.payload(refresh=refresh)
         # 顺带声明独立产物区契约（只描述、不创建目录、不写冻结对账盘）。
         data["derived"] = {

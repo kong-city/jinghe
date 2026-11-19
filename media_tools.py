@@ -40,7 +40,123 @@ TOOL_SPECS: tuple[tuple[str, list[str], str | None], ...] = (
 )
 
 _CACHE: dict[str, dict] | None = None
+# 刷新窗口：开启期间，同一轮内的重复 refresh=True 复用同一份结果
+_REFRESH_OPEN = False
 _LOCK = threading.Lock()
+
+
+# --------------------------------------------------------------------------- #
+# 轻量存在性检查（快路径）
+# --------------------------------------------------------------------------- #
+# 为什么需要（用户 2026-11-19 实测踩坑）：
+# whisper 的真实探测命令是 ``whisper --help``，它会连带 ``import torch``
+# （site-packages 里 509 MB），冷启动实测 4–7 秒；机器繁忙时逼近 15 秒
+# 超时阈值 → **被静默误判为「未安装」**（界面与 exe 真丢失完全无法区分）。
+#
+# 这里给 whisper 加一条**快路径**：只做文件系统检查（dist-info + 包目录 +
+# entry point 三重校验），实测 0.003 秒。证据强度远高于「文件存在」，
+# 因此不违背本模块「绝不因文件存在就报可用」的诚实原则。
+# 真实命令探测（深度验证）依然保留：安装流程末尾与真正转写前都会真跑一次。
+#
+# **TOOL_SPECS 三元组结构一字不动**（S1 契约锁死），轻量检查是独立层。
+
+def _dist_info_version(dist_info: Path) -> str:
+    """从 .dist-info/METADATA 读 Version（纯文件读，不 import 目标包）。"""
+    meta = dist_info / "METADATA"
+    try:
+        if meta.is_file():
+            for line in meta.read_text(encoding="utf-8",
+                                       errors="replace").splitlines()[:20]:
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _site_packages_roots(exe_path: str) -> list:
+    """由 exe 路径反推可能的 site-packages 目录。
+
+    exe 位于某 Python 的 ``Scripts`` 下，其父目录即 Python 根目录。
+    两者可能经由 Windows junction 互为别名（``versions\\3.13.12`` ↔
+    ``vendor\\python``），故两条路径都试。
+    """
+    from pathlib import Path
+    roots = []
+    try:
+        scripts = Path(exe_path).resolve().parent
+        for base in (scripts.parent, Path(os.path.abspath(scripts.parent))):
+            for sp in (base / "Lib" / "site-packages",
+                       base / "lib" / "site-packages"):
+                key = os.path.normcase(str(sp))
+                if key not in {os.path.normcase(str(r)) for r in roots}:
+                    roots.append(sp)
+    except (OSError, ValueError):
+        pass
+    return roots
+
+
+def _light_check_package(exe_path: str, dist_glob: str, pkg_dir: str,
+                        script_name: str) -> str | None:
+    """轻量确认某 pip 包已安装；返回版本号，未确认则 None（走深度验证）。
+
+    三重校验（缺一不可）：
+      1. ``<dist_glob>`` 存在 → pip 装过这个发行版；
+      2. 包目录存在（导入包名，如 whisper / yt_dlp）；
+      3. ``entry_points.txt`` 声明了对应的 console script。
+
+    证据强度远高于「文件存在」，因此不违背本模块「绝不因文件存在就报可用」
+    的诚实原则。
+    """
+    from pathlib import Path
+    for sp in _site_packages_roots(exe_path):
+        try:
+            if not sp.is_dir():
+                continue
+            dists = sorted(sp.glob(dist_glob))
+            if not dists:
+                continue
+            if not (sp / pkg_dir).is_dir():
+                continue
+            eps = dists[-1] / "entry_points.txt"
+            ok_eps = False
+            if eps.is_file():
+                try:
+                    txt = eps.read_text(encoding="utf-8", errors="replace")
+                    ok_eps = bool(re.search(
+                        r"^\s*%s\s*=" % re.escape(script_name), txt, re.M))
+                except OSError:
+                    ok_eps = False
+            if not ok_eps:
+                continue
+            return _dist_info_version(dists[-1])
+        except OSError:
+            continue
+    return None
+
+
+def _light_check_whisper(exe_path: str) -> str | None:
+    """轻量确认 whisper 包已安装（openai-whisper → 导入包名 ``whisper``）。"""
+    return _light_check_package(exe_path, "openai_whisper-*.dist-info",
+                                "whisper", "whisper")
+
+
+def _light_check_ytdlp(exe_path: str) -> str | None:
+    """轻量确认 yt-dlp 包已安装（导入包名 ``yt_dlp``）。
+
+    yt-dlp 的 ``--version`` 要启动 Python 解释器（约 1.2 秒），而默认探测
+    超时只有 2.0 秒，余量很小；轻量路径把它降到毫秒级。
+    """
+    return _light_check_package(exe_path, "yt_dlp-*.dist-info",
+                                "yt_dlp", "yt-dlp")
+
+
+# 工具名 → 轻量检查函数（返回版本号 = 已确认安装；None = 需走深度验证）。
+# ffmpeg 不在此列：它是独立二进制（无 Python 包），本就是毫秒级探测。
+_LIGHT_CHECKS: dict[str, Callable[[str], str | None]] = {
+    "whisper": _light_check_whisper,
+    "yt-dlp": _light_check_ytdlp,
+}
 
 
 class ToolAdapter:
@@ -54,25 +170,50 @@ class ToolAdapter:
                  version_re: str | None = None,
                  timeout: float = DEFAULT_TIMEOUT,
                  which: Callable[[str], str | None] | None = None,
-                 runner: Callable | None = None) -> None:
+                 runner: Callable | None = None,
+                 deep: bool = False) -> None:
         self.name = name
         self.argv = list(argv)
         self.version_re = re.compile(version_re) if version_re else None
         self.timeout = timeout
         self._which = which or shutil.which
         self._runner = runner
+        # deep=True 时跳过轻量快路径，强制真跑探测命令（深度验证用）。
+        self.deep = deep
 
     def probe(self) -> dict:
-        base = {"available": False, "path": "", "version": "", "reason": ""}
+        # state: ok / missing / timeout / error
+        # 关键：**timeout（探测超时）与 missing（真没装）必须区分**——
+        # 用户 2026-11-19 实测被「超时被静默判成未安装」坑过。
+        base = {"available": False, "path": "", "version": "", "reason": "",
+                "state": "error"}
         try:
             found = self._which(self.name)
         except Exception as exc:
             base["reason"] = "工具查找失败：%s" % exc
+            base["state"] = "error"
             return base
         if not found:
             base["reason"] = "本机未找到 %s，请安装后重试" % self.name
+            base["state"] = "missing"
             return base
         base["path"] = str(found)
+        # 快路径：轻量存在性检查（仅限声明了检查函数的工具，如 whisper）。
+        # 证据强度是「包确已安装」，远高于「文件存在」；真跑命令的深度验证
+        # 仍保留在安装流程末尾与真正调用时执行。
+        if not self.deep:
+            light = _LIGHT_CHECKS.get(self.name)
+            if light is not None:
+                try:
+                    ver = light(str(found))
+                except Exception:
+                    ver = None
+                if ver is not None:
+                    base["available"] = True
+                    base["version"] = ver
+                    base["reason"] = ""
+                    base["state"] = "ok"
+                    return base
         kwargs = {
             "args": [str(found)] + self.argv,
             "capture_output": True,
@@ -87,18 +228,23 @@ class ToolAdapter:
             run = self._runner or subprocess.run
             res = run(**kwargs)
         except subprocess.TimeoutExpired:
-            base["reason"] = "%s 探测超时（%.1fs），本次判定为未启用" % (
+            # 超时 ≠ 未安装：工具可能已装好，只是本机繁忙导致响应慢
+            base["reason"] = "%s 探测超时（%.1fs），工具可能已安装但响应慢" % (
                 self.name, self.timeout)
+            base["state"] = "timeout"
             return base
         except (OSError, ValueError, TypeError) as exc:
             base["reason"] = "%s 探测失败：%s" % (self.name, exc)
+            base["state"] = "error"
             return base
         except Exception as exc:  # 外部 CLI 千差万别，一律诚实降级
             base["reason"] = "%s 探测异常：%s" % (self.name, exc)
+            base["state"] = "error"
             return base
         if getattr(res, "returncode", -1) != 0:
             base["reason"] = "%s 探测命令退出码 %s，本次判定为未启用" % (
                 self.name, getattr(res, "returncode", -1))
+            base["state"] = "error"
             return base
         text = (getattr(res, "stdout", "") or "") + (getattr(res, "stderr", "") or "")
         if self.version_re:
@@ -107,6 +253,7 @@ class ToolAdapter:
                 base["version"] = m.group(1).strip()
         base["available"] = True
         base["reason"] = "可用"
+        base["state"] = "ok"
         return base
 
     def run(self, *args, **kwargs):
@@ -115,27 +262,84 @@ class ToolAdapter:
             "%s 的真实调用将在对应能力阶段（S3/S4/S5）接入" % self.name)
 
 
-def _adapters() -> dict[str, ToolAdapter]:
+def _adapters(deep: bool = False) -> dict[str, ToolAdapter]:
     # TOOL_SPECS 三元组结构保持不变（S1 契约锁死）；只按工具名覆盖探测超时。
     return {name: ToolAdapter(name, argv, ver,
-                              timeout=PROBE_TIMEOUTS.get(name, DEFAULT_TIMEOUT))
+                              timeout=PROBE_TIMEOUTS.get(name, DEFAULT_TIMEOUT),
+                              deep=deep)
             for name, argv, ver in TOOL_SPECS}
+
+
+def probe_deep(name: str) -> dict:
+    """**深度验证**：真跑探测命令，不走轻量快路径。
+
+    用于「必须确认命令真的能跑」的时刻：组件安装流程末尾（确认装好了）
+    与真正调用前。普通界面探测走 :func:`probe_all` 的快路径（毫秒级）。
+    """
+    spec = next((s for s in TOOL_SPECS if s[0] == name), None)
+    if spec is None:
+        return {"available": False, "path": "", "version": "",
+                "reason": "无探测规格"}
+    adapter = ToolAdapter(spec[0], spec[1], spec[2],
+                          timeout=PROBE_TIMEOUTS.get(name, DEFAULT_TIMEOUT),
+                          deep=True)
+    return adapter.probe()
 
 
 def reset_cache() -> None:
     """清空缓存（测试与「刷新探测」用）。"""
-    global _CACHE
+    global _CACHE, _REFRESH_OPEN
     with _LOCK:
         _CACHE = None
+        _REFRESH_OPEN = False
 
 
 def probe_all(refresh: bool = False) -> dict:
-    """探测全部工具，结果进程内缓存；刷新时重新执行。"""
+    """探测全部工具，结果进程内缓存；刷新时重新执行。
+
+    **同一轮刷新只真探一次**（用户 2026-11-19 实测：/api/tools/probe 会依次调
+    payload → audio_transcribe → video_transcribe，若每处都带 refresh=True
+    就会把同一份探测跑 3 遍）。
+
+    做法：用「刷新令牌」区分「新一轮刷新」与「同一轮内的重复调用」。
+    显式调用 :func:`begin_refresh` 开启新一轮；同一轮内重复调用直接复用缓存。
+    未开启新轮次时，refresh=True 也只真探一次（令牌不变则复用）。
+    """
     global _CACHE
+    # 注意：**绝不在持有 _LOCK 时调用 _probe_now()**——它内部会再取同一把
+    # 非重入锁 → 死锁（用户 2026-11-19 实测 /api/tools/probe 直接超时）。
     with _LOCK:
-        cached = None if refresh else _CACHE
+        if not refresh:
+            cached = _CACHE
+        else:
+            # refresh=True：本轮窗口已开 → 同轮重复调用，复用缓存
+            cached = _CACHE if _REFRESH_OPEN else None
     if cached is not None:
         return dict(cached)
+    return _probe_now()
+
+
+def begin_refresh() -> None:
+    """开启新一轮刷新（清缓存 + 打开刷新窗口）。
+
+    由调用方（/api/tools/probe 等）在处理一次用户「刷新」动作时调用一次，
+    使该轮内的多处探测共享同一份结果。"""
+    global _CACHE, _REFRESH_OPEN
+    with _LOCK:
+        _CACHE = None
+        _REFRESH_OPEN = True
+
+
+def end_refresh() -> None:
+    """结束刷新窗口（此后 refresh=True 会真探一次新的）。"""
+    global _REFRESH_OPEN
+    with _LOCK:
+        _REFRESH_OPEN = False
+
+
+def _probe_now() -> dict:
+    """真正执行一轮探测并写入缓存。"""
+    global _CACHE
     result = {}
     for name, adapter in _adapters().items():
         result[name] = adapter.probe()

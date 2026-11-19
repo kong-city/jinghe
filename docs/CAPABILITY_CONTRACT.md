@@ -448,3 +448,12 @@
   - **端到端实测**：移走 whisper.exe → 桌面 PATH 启动冻结 exe → 点安装 → 事件「补生成 whisper.exe 启动器…」→「Whisper 安装成功」→ 重新探测 `installed=True`，**全程零下载**。
   - **契约回退自查**：`_merged_path` 空 outdir 的兜底曾违反 test_29「空 outdir 不应谎报存在」→ **已撤回**（前端已下发绝对路径，兜底多余）。冻结文件零改动。
   - 新增 `TestConsoleScriptRecovery` 3 组用例；`test_components.py` 22 → **25 用例**；全量 **137 用例**（68+28+16+25）+ 门禁 9/9。
+
+- **v1.1.4（2026-11-19 · 探测性能优化 + 超时语义分离，软件升号 v0.9.4）**：用户追问「Whisper 安装下载体积大导致下载慢所以超时，是这个意思吗」——实测澄清**不是下载**：断网时 `whisper --help` 仍 5.72 秒跑完（不下载任何东西），满载时才 14.73 秒。根因是 `import whisper` 连带加载 torch（509 MB，4.3 秒）。
+  - **优化一 · 轻量快路径**：`media_tools` 新增 `_LIGHT_CHECKS` 独立层——纯文件系统三重校验（`*.dist-info` 发行版 + 包目录 + `entry_points.txt` console script），**毫秒级、零子进程、零 torch**。证据强度远高于「文件存在」，不违背本模块「绝不因文件存在就报可用」的诚实原则。`TOOL_SPECS` 三元组结构**一字不动**（S1 契约锁死）。whisper 与 yt-dlp 适用；ffmpeg 是独立二进制（无 Python 包）保持真跑命令。
+  - **优化二 · 深度验证保留**：新增 `ToolAdapter(deep=True)` 与 `media_tools.probe_deep()`——安装流程末尾（`_probe_one(..., deep=True)`）与真正转写前仍**真跑命令**验证，双轨并行、诚实原则不破。
+  - **优化三 · 超时与未安装分离**：probe 返回新增 `state` 字段（ok / missing / timeout / error），超时的 reason 改为「工具可能已安装但响应慢」；前端徽标区分「已安装 / 未安装 / 探测超时」。此前超时与「exe 真丢失」在界面上完全无法区分。
+  - **优化四 · 一轮刷新只真探一次**：`/api/tools/probe` 会依次调 payload → audio_transcribe → video_transcribe，各自带 refresh=True 就是把同一份探测跑 3 遍。新增「刷新窗口」（`begin_refresh` / `end_refresh`），一轮内三处共享同一份结果。
+  - **实测收益**：`/api/tools/probe?refresh=1` 4.03 → **0.22 秒**；`/api/components?refresh=1` 2.05 → **1.13 秒**；whisper 单项 5.0 → **0.003 秒**；满载下 14.73 秒 → 毫秒级。test_app 耗时 204 → **86 秒**。
+  - **踩坑自查**：`_probe_now()` 曾在持 `_LOCK` 时调用（非重入锁 → **死锁**，端点直接超时）→ 已修，`test_probe_now_not_called_under_lock` 锁死。
+  - 新增 `TestFastProbePath` + `TestProbeRefreshWindow` 10 组用例；`test_components.py` 25 → **34 用例**；全量 **146 用例**（68+28+16+34）+ 门禁 9/9 + 视觉判分 26/26；SPEC.md 与冻结主流水线零改动。

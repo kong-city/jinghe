@@ -12,6 +12,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -367,6 +368,139 @@ class TestConsoleScriptRecovery(unittest.TestCase):
                                               "openai-whisper", "whisper.exe")
         self.assertIn("whisper.exe", str(ctx.exception))
         self.assertIn("boom", str(ctx.exception))
+
+
+
+class TestFastProbePath(unittest.TestCase):
+    """回归：whisper 探测走轻量快路径，且超时与「未安装」严格区分。
+
+    用户 2026-11-19 实测：`whisper --help` 会连带 import torch（509 MB），
+    冷启动 4–7 秒，机器繁忙时逼近 15 秒超时 → **被静默误判为「未安装」**。
+    修复：轻量快路径（纯文件检查，毫秒级）+ 深度验证（真跑命令）双轨。
+    """
+
+    def test_toOL_specs_structure_unchanged(self):
+        """S1 契约：TOOL_SPECS 三元组结构一字不动。"""
+        import media_tools
+        self.assertEqual(len(media_tools.TOOL_SPECS), 3)
+        for spec in media_tools.TOOL_SPECS:
+            self.assertEqual(len(spec), 3, "TOOL_SPECS 三元组结构被改动")
+        self.assertEqual([s[0] for s in media_tools.TOOL_SPECS],
+                         ["ffmpeg", "whisper", "yt-dlp"])
+
+    def test_light_check_requires_three_evidence(self):
+        """轻量检查必须三重校验：dist-info + 包目录 + entry point。"""
+        import media_tools
+        src = (ROOT / "media_tools.py").read_text(encoding="utf-8")
+        # 三重校验在通用实现 _light_check_package 里
+        blk = src[src.index("def _light_check_package"):
+                  src.index("def _light_check_whisper")]
+        self.assertIn("entry_points.txt", blk)
+        self.assertIn("sp.glob(dist_glob)", blk, "必须按发行版 glob 找 dist-info")
+        self.assertIn("(sp / pkg_dir).is_dir()", blk, "必须校验包目录存在")
+        # 各工具的包名映射
+        self.assertIn("openai_whisper-*.dist-info", src)
+        self.assertIn("yt_dlp-*.dist-info", src)
+        self.assertIn('"whisper"', src)
+        self.assertIn('"yt-dlp"', src)
+
+    def test_probe_state_distinguishes_timeout_from_missing(self):
+        """超时必须与「真没装」区分开（state 字段）。"""
+        import media_tools
+        ad = media_tools.ToolAdapter("whisper", ["--help"], None, timeout=0.01,
+                                     which=lambda n: r"C://fake//whisper.exe")
+        def _timeout_runner(**kw):
+            raise subprocess.TimeoutExpired(cmd="x", timeout=0.01)
+        ad._runner = _timeout_runner
+        r = ad.probe()
+        self.assertEqual(r.get("state"), "timeout")
+        self.assertFalse(r["available"])
+        self.assertIn("可能已安装", r["reason"])
+
+    def test_missing_tool_state(self):
+        import media_tools
+        ad = media_tools.ToolAdapter("whisper", ["--help"], None,
+                                     which=lambda n: None)
+        r = ad.probe()
+        self.assertEqual(r.get("state"), "missing")
+
+    def test_deep_mode_skips_fast_path(self):
+        """深度验证必须真跑命令（deep=True 不走轻量快路径）。"""
+        import media_tools
+        ad = media_tools.ToolAdapter("whisper", ["--help"], None,
+                                     which=lambda n: r"C://fake//whisper.exe",
+                                     deep=True)
+        called = []
+        ad._runner = lambda **kw: (called.append(kw) or
+                                   mock.Mock(returncode=0, stdout="", stderr=""))
+        ad.probe()
+        self.assertTrue(called, "deep 模式必须真跑探测命令")
+
+    def test_probe_deep_entry_exists(self):
+        import media_tools
+        self.assertTrue(hasattr(media_tools, "probe_deep"))
+
+
+
+class TestProbeRefreshWindow(unittest.TestCase):
+    """回归：一轮刷新只真探一次（用户 2026-11-19 实测端点耗时 4 秒）。
+
+    /api/tools/probe 会依次调 payload → audio_transcribe → video_transcribe，
+    三处都取工具状态；各自带 refresh=True 就是把同一份探测跑 3 遍。
+    修复用「刷新窗口」：一轮内共享同一份结果。
+
+    同时锁死「不得在持锁时调用探测」——非重入锁会死锁（实测端点直接超时）。
+    """
+
+    def setUp(self):
+        import media_tools
+        self.m = media_tools
+
+    def tearDown(self):
+        import media_tools
+        media_tools.end_refresh()
+        media_tools.reset_cache()
+
+    def test_refresh_window_shares_one_probe(self):
+        calls = []
+        orig = self.m._probe_now
+
+        def counting():
+            calls.append(1)
+            return orig()
+        self.m._probe_now = counting
+        try:
+            self.m.begin_refresh()
+            for _ in range(3):
+                self.m.probe_all(refresh=True)
+            self.assertEqual(len(calls), 1,
+                             "一轮刷新内只应真探一次，实测 %d 次" % len(calls))
+            # 新一轮 → 应再真探一次
+            self.m.end_refresh()
+            self.m.begin_refresh()
+            self.m.probe_all(refresh=True)
+            self.assertEqual(len(calls), 2, "新一轮刷新应再真探一次")
+        finally:
+            self.m._probe_now = orig
+
+    def test_probe_now_not_called_under_lock(self):
+        """_probe_now 绝不能在持有 _LOCK 时调用（非重入锁 → 死锁）。"""
+        src = (ROOT / "media_tools.py").read_text(encoding="utf-8")
+        fn = src[src.index("def probe_all"):src.index("def begin_refresh")]
+        # probe_all 的函数体里，with _LOCK 块之后才调 _probe_now
+        lock_idx = fn.index("with _LOCK:")
+        after = fn[lock_idx:]
+        block_end = after.index("if cached is not None:")
+        in_lock = after[:block_end]
+        self.assertNotIn("_probe_now()", in_lock,
+                         "_probe_now 不得在持锁期间调用（会死锁）")
+
+    def test_ytdlp_also_uses_light_path(self):
+        """yt-dlp 同为纯 Python 包，也走轻量路径（--version 要 1.2 秒）。"""
+        import media_tools
+        self.assertIn("yt-dlp", media_tools._LIGHT_CHECKS)
+        self.assertNotIn("ffmpeg", media_tools._LIGHT_CHECKS,
+                         "ffmpeg 是独立二进制，无 Python 包，不走轻量路径")
 
 
 if __name__ == "__main__":

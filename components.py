@@ -172,11 +172,13 @@ def _which(name: str) -> str:
 # --------------------------------------------------------------------------- #
 # 清单与状态
 # --------------------------------------------------------------------------- #
-def _probe_one(probe_name: str) -> dict:
+def _probe_one(probe_name: str, deep: bool = False) -> dict:
     """用统一的 ToolAdapter 探测，结果归一为 {available, version, reason, path}。
 
     argv / 版本正则 / 超时都从 media_tools.TOOL_SPECS 按名字取，绝不另写一套
     （避免与 S1 契约的探测口径分叉）；只注入我们自己的 which 以带上组件 PATH。
+
+    ``deep=True`` 跳过轻量快路径、真跑探测命令（安装流程末尾的深度验证用）。
     """
     spec = next((s for s in media_tools.TOOL_SPECS if s[0] == probe_name), None)
     if spec is None:
@@ -185,6 +187,7 @@ def _probe_one(probe_name: str) -> dict:
         spec[0], spec[1], spec[2],
         timeout=media_tools.PROBE_TIMEOUTS.get(probe_name, media_tools.DEFAULT_TIMEOUT),
         which=_which,
+        deep=deep,
     )
     r = adapter.probe()
     return {
@@ -192,13 +195,19 @@ def _probe_one(probe_name: str) -> dict:
         "version": r.get("version") or "",
         "reason": r.get("reason") or "",
         "path": r.get("path") or "",
+        # ok / missing / timeout / error：超时与「真没装」必须分开，
+        # 否则界面只显示「未安装」，用户无法区分（用户 2026-11-19 实测）。
+        "state": r.get("state") or ("ok" if r.get("available") else "missing"),
     }
 
 
 def list_components(refresh: bool = False) -> dict:
     """组件清单；installed 以真实探测为准，不缓存安装状态。"""
     if refresh:
-        media_tools.reset_cache()
+        # 只清缓存，**不关刷新窗口**（reset_cache 会关窗，会让同一轮里
+        # audio/video 的探测重新真跑一遍，用户 2026-11-19 实测端点耗时 4 秒）
+        with media_tools._LOCK:
+            media_tools._CACHE = None
     ensure_component_path()
     items = []
     for c in COMPONENTS:
@@ -211,6 +220,7 @@ def list_components(refresh: bool = False) -> dict:
             "version": st["version"],
             "path": st["path"],
             "reason": "" if st["available"] else (st["reason"] or "未安装"),
+            "state": st["state"],
         })
     with _LOCK:
         job = {
@@ -615,7 +625,9 @@ def _install_worker(component_id: str) -> None:
         if _cancelled():
             raise RuntimeError("cancelled")
         ensure_component_path()
-        st = _probe_one(comp["probe"])
+        # 安装流程末尾做**深度验证**（真跑探测命令）：此处必须确认命令真的
+        # 能跑，不能只凭轻量检查说「装好了」。
+        st = _probe_one(comp["probe"], deep=True)
         if not st["available"]:
             # 报错必须带诊断信息（用户 2026-11-19 反馈：只有「仍探测不到」
             # 无法定位）。此处明示：pip 用哪个 Python、探测查哪个目录、

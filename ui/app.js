@@ -1434,9 +1434,14 @@
       prog.appendChild(pct);
       info.appendChild(prog);
 
+      // 徽标区分三种状态：已安装 / 未安装 / 探测超时（工具可能已装但响应慢）
+      var compState = c.state || (c.installed ? "ok" : "missing");
+      var badgeText = c.installed ? "已安装"
+                     : (compState === "timeout" ? "探测超时" : "未安装");
       var badge = makeEl("span", "component-badge" + (c.installed ? "" : " is-off"),
-                         c.installed ? "已安装" : "未安装");
+                         badgeText);
       badge.setAttribute("data-role", "badge");
+      if (!c.installed && c.reason) badge.title = c.reason;
 
       var btn = makeEl("button", "btn component-toggle",
                        job.running && job.id === c.id ? "安装中…" : (c.installed ? "已启用" : "启用"));
