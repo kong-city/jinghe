@@ -93,6 +93,8 @@
     settingsStatus: $("settingsStatus"),
     settingsLogPath: $("settingsLogPath"),
     settingsFilePath: $("settingsFilePath"),
+    // S10：相关组件列表
+    componentList: $("componentList"),
     btnOpenLogSettings: $("btnOpenLogSettings"),
     btnOpenSettingsFile: $("btnOpenSettingsFile"),
     // S7d：精读 / 修订页 + 后端配置
@@ -345,7 +347,7 @@
     var meta = PAGE_META[name] || PAGE_META.home;
     if (el.pageTitle) el.pageTitle.textContent = meta.title;
     if (el.pageSub) el.pageSub.textContent = meta.sub;
-    if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); }
+    if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); loadComponents(); }
     if (name === "about") loadAbout();
     if (name === "refine" || name === "revise") refreshRefineCap();
   }
@@ -1362,6 +1364,145 @@
     });
   }
 
+  // ---------------- S10：设置页「相关组件」----------------
+  var componentState = null;
+  var componentPoll = null;
+  var componentSince = 0;
+
+  function loadComponents() {
+    if (!el.componentList) return;
+    api("/api/components?refresh=1", undefined, 15000).then(function (r) {
+      componentState = (r && r.ok) ? r : null;
+      renderComponents();
+      var job = (componentState && componentState.job) || {};
+      if (job.running) startComponentPolling();
+    }).catch(function (err) {
+      el.componentList.textContent = "组件状态读取失败：" + (err.message || err);
+    });
+  }
+
+  function makeEl(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function renderComponents() {
+    if (!el.componentList || !componentState) return;
+    var list = componentState.components || [];
+    var job = componentState.job || {};
+    el.componentList.textContent = "";
+    list.forEach(function (c) {
+      var row = makeEl("div", "component-row" + (c.installed ? "" : " is-missing"));
+      row.setAttribute("data-cid", c.id);
+
+      var info = makeEl("div", "component-info");
+      info.appendChild(makeEl("span", "component-name", c.name));
+      info.appendChild(makeEl("span", "component-desc", c.desc));
+      var msg = makeEl("div", "component-msg");
+      msg.setAttribute("data-role", "msg");
+      info.appendChild(msg);
+
+      // 绿色进度条：未安装且正在装此组件时显示
+      var prog = makeEl("div", "component-progress");
+      prog.setAttribute("data-role", "progress");
+      var track = makeEl("div", "component-progress-track");
+      var bar = makeEl("div", "component-progress-bar");
+      bar.setAttribute("data-role", "bar");
+      track.appendChild(bar);
+      var pct = makeEl("span", "component-progress-text", "0%");
+      pct.setAttribute("data-role", "pct");
+      prog.appendChild(track);
+      prog.appendChild(pct);
+      info.appendChild(prog);
+
+      var badge = makeEl("span", "component-badge" + (c.installed ? "" : " is-off"),
+                         c.installed ? "已安装" : "未安装");
+      badge.setAttribute("data-role", "badge");
+
+      var btn = makeEl("button", "btn component-toggle",
+                       job.running && job.id === c.id ? "安装中…" : (c.installed ? "已启用" : "启用"));
+      btn.type = "button";
+      btn.setAttribute("data-role", "toggle");
+      btn.setAttribute("data-cid", c.id);
+      if (c.installed || job.running) btn.disabled = true;
+
+      row.appendChild(info);
+      row.appendChild(badge);
+      row.appendChild(btn);
+      el.componentList.appendChild(row);
+    });
+    // 回填当前任务的进度显示
+    if (job.running && job.id) {
+      applyComponentProgress({ percent: job.percent || 0, message: job.message || "", state: job.state });
+    }
+  }
+
+  function rowFor(cid) {
+    if (!el.componentList) return null;
+    return el.componentList.querySelector('.component-row[data-cid="' + cid + '"]');
+  }
+
+  function applyComponentProgress(st) {
+    var row = rowFor(componentState && componentState.job && componentState.job.id);
+    if (!row) return;
+    var p = row.querySelector('[data-role="progress"]');
+    var bar = row.querySelector('[data-role="bar"]');
+    var pct = row.querySelector('[data-role="pct"]');
+    var msg = row.querySelector('[data-role="msg"]');
+    if (p && st.state === "running") p.classList.add("is-active");
+    if (bar) bar.style.width = Math.max(0, Math.min(100, st.percent || 0)).toFixed(1) + "%";
+    if (pct) pct.textContent = (st.percent || 0).toFixed(0) + "%";
+    if (msg) msg.textContent = st.message || "";
+  }
+
+  function startComponentPolling() {
+    if (componentPoll) return;
+    componentSince = 0;
+    componentPoll = setInterval(function () {
+      api("/api/components/status?since=" + componentSince, undefined, 10000)
+        .then(function (r) {
+          if (!r || !r.ok) return;
+          componentSince = r.next || componentSince;
+          applyComponentProgress(r);
+          if (!r.running) {
+            stopComponentPolling();
+            // 安装完成后重新探测，取消灰显、刷新徽标与按钮
+            loadComponents();
+            if (r.state === "done") showNotice("组件安装成功，已启用。");
+            else if (r.state === "failed") showError("组件安装失败：" + (r.error || "未知原因"));
+            else if (r.state === "cancelled") showNotice("已取消组件安装。");
+            loadTools();
+          }
+        })
+        .catch(function () { /* 轮询偶发失败下一次重试，不打断安装 */ });
+    }, 500);
+  }
+
+  function stopComponentPolling() {
+    if (componentPoll) { clearInterval(componentPoll); componentPoll = null; }
+  }
+
+  function enableComponent(cid) {
+    api("/api/components/install", { id: cid }, 15000).then(function (r) {
+      if (!r || !r.ok) { showError("启动安装失败：" + ((r && r.error) || "未知")); return; }
+      if (r.already_installed) { showNotice("该组件已安装。"); loadComponents(); return; }
+      componentSince = 0;
+      loadComponents();
+      startComponentPolling();
+    }).catch(function (err) { showError("启动安装失败：" + (err.message || err)); });
+  }
+
+  function bindComponentEvents() {
+    if (!el.componentList) return;
+    el.componentList.addEventListener("click", function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('[data-role="toggle"]') : null;
+      if (!btn || btn.disabled) return;
+      enableComponent(btn.getAttribute("data-cid"));
+    });
+  }
+
   // ---------------- S7d：精读 / 修订 ----------------
   var refinePolling = null;
   var refineSince = 0;
@@ -2173,6 +2314,7 @@
         });
       });
     }
+    bindComponentEvents();
     setNavCollapsed(lsGet(LS_NAV) === "1");
     initNavResize();
     activatePage("home");

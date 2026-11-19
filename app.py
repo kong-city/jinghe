@@ -54,6 +54,7 @@ import refine  # S7：精读提纯 / 修订增修（可插拔后端，独立后�
 import backend  # S7b：可插拔大模型后端适配层（Local ollama / Cloud 兼容端点）
 import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行中的程序并重启）
 import kb  # S9：阶段 4 知识库（独立后处理层，冻结内核 / SPEC 零改动）
+import components  # S10：设置页可选组件安装（ffmpeg / whisper / yt-dlp）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -2198,6 +2199,21 @@ class Handler(BaseHTTPRequestHandler):
                     since = 0
                 self._send_json(self._api_update_status(since))
                 return
+            if path == "/api/components":
+                # S10：设置页「相关组件」清单（探测结果 + 安装任务状态）
+                qs = parse_qs(parsed.query)
+                refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+                self._send_json(components.list_components(refresh=refresh))
+                return
+            if path == "/api/components/status":
+                # S10：安装进度轮询（since 增量事件，仿自更新的事件队列）
+                qs = parse_qs(parsed.query)
+                try:
+                    since = int((qs.get("since") or ["0"])[0])
+                except (TypeError, ValueError):
+                    since = 0
+                self._send_json(components.install_status(since))
+                return
             if path == "/favicon.ico":
                 self._send_bytes(b"", "image/x-icon", 204)
                 return
@@ -2516,6 +2532,11 @@ class Handler(BaseHTTPRequestHandler):
                     KB_DIR, str(data.get("id") or "").strip(),
                     allowed_roots=kb_roots,
                 ))
+            elif path == "/api/components/install":
+                # S10：启用组件——只接受内置 id，下载源由 components.py 固定，杜绝任意 URL
+                self._send_json(components.install(str(data.get("id") or "").strip()))
+            elif path == "/api/components/cancel":
+                self._send_json(components.cancel_install())
             else:
                 self._send_json({"ok": False, "error": "未知接口：%s" % path}, 404)
         except Exception as exc:  # 兜底，避免 500 页面，并落盘组件与环境状态
