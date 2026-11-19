@@ -75,29 +75,57 @@ def remote_latest() -> dict:
         return {"ok": False, "version": "", "error": type(exc).__name__}
 
 
+MAX_DIGIT = 9   # 每段上限 9，满则进位（用户 2026-11-19 裁决：0.7.9 → 0.8.0）
+
+
+def _carry(digits: list[int]) -> list[int]:
+    """三段十进制进位：任一段超过 9 则向高位进 1，本段归 0。"""
+    maj, minor, patch = digits
+    if patch > MAX_DIGIT:
+        patch, minor = 0, minor + 1
+    if minor > MAX_DIGIT:
+        minor, maj = 0, maj + 1
+    if maj > MAX_DIGIT:
+        raise SystemExit("主版本号超过 %d，无法继续进位" % MAX_DIGIT)
+    return [maj, minor, patch]
+
+
 def compute(kind: str, current: str) -> tuple[tuple[int, int, int], str]:
-    maj, minor, patch = as_tuple(current)
+    """按改动类型算目标版本号。
+
+    **进位规则（用户 2026-11-19 裁决）**：每段上限 9，满 9 进一位并归零，
+    即 0.7.9 --patch--> 0.8.0（而不是 0.7.10），0.9.9 --> 1.0.0。
+    """
+    digits = list(as_tuple(current))
     if kind == "patch":
-        patch += 1
+        digits[2] += 1
+        note = "patch +1"
     elif kind == "minor":
-        minor, patch = minor + 1, 0
+        digits[1] += 1
+        digits[2] = 0
+        note = "minor +1, patch 归零"
     elif kind == "major":
-        maj, minor, patch = maj + 1, 0, 0
+        digits[0] += 1
+        digits[1] = digits[2] = 0
+        note = "major +1, minor/patch 归零"
     else:
         raise SystemExit("未知升号类型：%s" % kind)
-    return (maj, minor, patch), kind
+    carried = _carry(digits)
+    if carried != digits:
+        note += "（满 %d 进位）" % MAX_DIGIT
+    return (carried[0], carried[1], carried[2]), note
 
 
 def ensure_above_remote(candidate: tuple[int, int, int], remote: dict) -> tuple[tuple, str]:
-    """若候选号仍 ≤ 远端，自动 patch +1 顶上去，确保严格大于。"""
+    """若候选号仍 ≤ 远端，自动 +1 并按进位规则顶上去，确保严格大于。"""
     if not remote.get("ok") or not remote.get("version"):
-        bumped = (candidate[0], candidate[1], candidate[2] + 1)
+        bumped = tuple(_carry([candidate[0], candidate[1], candidate[2] + 1]))
         return bumped, "无法联网核对远端，保守再 +1 patch（请人工确认）"
     r = as_tuple(remote["version"])
     note = ""
     while candidate <= r:
-        candidate = (candidate[0], candidate[1], candidate[2] + 1)
-        note = "候选号未超过远端 %s，自动 +1 patch" % remote["version"]
+        candidate = tuple(_carry([candidate[0], candidate[1], candidate[2] + 1]))
+        note = "候选号未超过远端 %s，自动 +1（满 %d 进位）" % (remote["version"], MAX_DIGIT)
     return candidate, note
 
 

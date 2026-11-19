@@ -5252,6 +5252,38 @@ class AppContractTest(unittest.TestCase):
         probe = ROOT / "tools" / "_cdp_nav_probe.py"
         self.assertTrue(probe.is_file(), "CDP 探测脚本应保留供实测")
 
+    # ------------------------------------------------------------------ #
+    # 67) 版本号进位规则：每段上限 9，满 9 进位归零（用户 2026-11-19 裁决）
+    # ------------------------------------------------------------------ #
+    def test_67_version_carry_rule(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "bump_version", ROOT / "tools" / "bump_version.py")
+        bv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bv)
+        # 核心用例：0.7.9 --patch--> 0.8.0（不是 0.7.10）
+        self.assertEqual(bv.compute("patch", "0.7.9")[0], (0, 8, 0))
+        self.assertEqual(bv.compute("patch", "0.7.8")[0], (0, 7, 9))
+        self.assertEqual(bv.compute("patch", "0.8.9")[0], (0, 9, 0))
+        self.assertEqual(bv.compute("patch", "0.9.9")[0], (1, 0, 0))
+        self.assertEqual(bv.compute("minor", "0.9.9")[0], (1, 0, 0))
+        self.assertEqual(bv.compute("major", "0.7.9")[0], (1, 0, 0))
+        # 撞号顶升也必须遵守进位
+        t, _ = bv.ensure_above_remote((0, 8, 9), {"ok": True, "version": "0.8.9"})
+        self.assertEqual(t, (0, 9, 0), "顶升也须遵守满 9 进位")
+        # 契约声明进位规则
+        pol = json.loads((ROOT / "version-policy.json").read_text(encoding="utf-8"))
+        self.assertEqual(pol["digit_rule"]["max_digit"], 9)
+        self.assertIn("0.7.9", " ".join(pol["digit_rule"]["examples"]))
+        # 当前版本每段必须 ≤ 9（不得再出现 0.8.10 这类号）
+        import re as _re
+        cur = _re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']',
+                         (ROOT / "extract.py").read_text(encoding="utf-8"),
+                         _re.M).group(1)
+        for seg in cur.split("."):
+            self.assertLessEqual(int(seg), 9,
+                                 "版本号每段须 ≤9，当前 %s 违反进位规则" % cur)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

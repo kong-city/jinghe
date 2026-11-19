@@ -129,22 +129,18 @@ def cmd_suggest(args) -> int:
         print("未知改动类型：%s（可选 %s）" % (
             kind, "/".join(r["id"] for r in policy["bump_rules"])))
         return 2
-    parts = [int(x) for x in re.findall(r"\d+", lv)[:3]]
-    while len(parts) < 3:
-        parts.append(0)
-    maj, minor, patch = parts
-    if kind == "patch":
-        patch += 1
-    elif kind == "minor":
-        minor += 1
-        patch = 0
-    else:
-        maj += 1
-        minor = patch = 0
+    # 算号单一真源：复用 bump_version.compute（含满 9 进位规则），
+    # 避免两套逻辑分叉（用户 2026-11-19 裁决：0.7.9 → 0.8.0）
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "bump_version", ROOT / "tools" / "bump_version.py")
+    bv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bv)
+    (maj, minor, patch), note = bv.compute(kind, lv)
     print("当前: %s" % lv)
     print("改动类型: %s" % kind)
     print("建议版本: %d.%d.%d" % (maj, minor, patch))
-    print("依据: %s" % rule["action"])
+    print("依据: %s（%s）" % (rule["action"], note))
     return 0
 
 
