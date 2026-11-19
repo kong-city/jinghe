@@ -855,13 +855,25 @@
   // 不再弹「选择文件夹」对话框、也不接受文件（后端只收目录）。
   // 想改输出目录可直接编辑输入框。
   function browseOutput() {
-    if (running || previewing) return;
+    // 反馈统一走顶部 toast：errorBar 位于页面底部（约 1000px 以下），
+    // 用户在输出卡片点按钮时看不见它，会误以为「点了没反应」。
+    if (running || previewing) {
+      showToast("任务进行中，完成后再打开输出文件夹", true);
+      return;
+    }
     var target = (el.outPath.value || "").trim();
-    if (!target) { showError("请先填写输出目录路径"); return; }
+    if (!target) {
+      showToast("请先设置输出目录（在上方输入框填写，或先完成一次提取）", true);
+      return;
+    }
     api("/api/open-folder", { path: target }, 10000).then(function (r) {
-      if (!r || !r.ok) showError("打开文件夹失败：" + ((r && r.error) || "未知"));
+      if (!r || !r.ok) {
+        showToast("打开文件夹失败：" + ((r && r.error) || "未知"), true);
+        return;
+      }
+      showToast("已打开输出文件夹", false);
     }).catch(function (err) {
-      showError("打开文件夹失败：" + (err.message || err));
+      showToast("打开文件夹失败：" + (err.message || err), true);
     });
   }
 
