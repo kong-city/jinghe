@@ -120,5 +120,68 @@ class TestComponentContractSource(unittest.TestCase):
         self.assertIn("手动点击", src)
 
 
+
+class TestPipInterpreter(unittest.TestCase):
+    """回归：冻结态必须用真 Python 跑 pip（用户 2026-11-19 pip 退出码 2）。"""
+
+    def setUp(self):
+        import components
+        self.c = components
+
+    def test_source_mode_uses_sys_executable(self):
+        with mock.patch.object(self.c.sys, "frozen", False, create=True):
+            self.assertEqual(self.c._python_for_pip(), self.c.sys.executable)
+
+    def test_frozen_mode_uses_path_python(self):
+        import shutil
+        real_py = shutil.which("python") or shutil.which("python.exe")
+        if not real_py:
+            self.skipTest("PATH 无 python")
+        with mock.patch.object(self.c.sys, "frozen", True, create=True), \
+             mock.patch.object(self.c.sys, "executable",
+                               r"C://fake//Jinghe.exe"):
+            got = self.c._python_for_pip()
+        # 必须返回 PATH 上的真 Python，绝不是 Jinghe.exe
+        self.assertNotIn("Jinghe.exe", got)
+        self.assertTrue(os.path.basename(got).lower().startswith("python"))
+
+    def test_frozen_mode_no_python_raises(self):
+        with mock.patch.object(self.c.sys, "frozen", True, create=True), \
+             mock.patch.object(self.c.sys, "executable",
+                               r"C://fake//Jinghe.exe"), \
+             mock.patch.object(self.c.shutil, "which", return_value=""):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.c._python_for_pip()
+        self.assertIn("Python", str(ctx.exception))
+
+    def test_pip_cmd_no_empty_proxy(self):
+        # 无代理时不得传 --proxy ""（旧代码永远生效不了的 bug）
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "", "https_proxy": "",
+                                          "HTTP_PROXY": "", "http_proxy": ""},
+                             clear=False), \
+             mock.patch.object(self.c, "_python_for_pip", return_value="python"):
+            cmd = self.c._pip_cmd_install("yt-dlp")
+        self.assertNotIn("--proxy", cmd, "无代理时不应传 --proxy")
+
+    def test_pip_cmd_with_proxy(self):
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy:1"},
+                             clear=False), \
+             mock.patch.object(self.c, "_python_for_pip", return_value="python"):
+            cmd = self.c._pip_cmd_install("yt-dlp")
+        self.assertIn("--proxy", cmd)
+        self.assertIn("http://proxy:1", cmd)
+
+    def test_scripts_dir_uses_real_python(self):
+        # 冻结态 Scripts 目录应来自真 Python，不是 exe 临时解压目录
+        with mock.patch.object(self.c.sys, "frozen", True, create=True), \
+             mock.patch.object(self.c.sys, "executable",
+                               r"C://fake//Jinghe.exe"), \
+             mock.patch.object(self.c, "_python_for_pip",
+                               return_value=r"C://Python313//python.exe"):
+            d = self.c._scripts_dir()
+        self.assertIn("Python313", str(d))
+        self.assertTrue(str(d).lower().endswith("scripts"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

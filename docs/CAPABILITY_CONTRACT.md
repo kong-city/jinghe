@@ -387,3 +387,9 @@
 - **v1.0.2（2026-11-19 · 一键升号工具，软件升号 v0.8.0）**：用户裁决「本地每次改动都要升版本号，防止与远端同号导致无法上传」。新增 `tools/bump_version.py`：按 `version-policy.json` 规则算号，**联网核对 GitHub latest，候选号 ≤ 远端则自动 patch +1 顶到严格大于**（数学上杜绝撞号）；一键同步 `extract.py` / `CHANGELOG.md` / `使用说明.md` 三个当前版本派生点；离线保守 +1 并提示人工确认；`--dry-run` 可预览。version-policy.json 增 `bump_tool` 声明。新增 test_62 锁住算号/防撞号/派生点/离线兜底，bump 工具纳入门禁语法校验。
   - **度的说明**：合理的保证是「每个待上传版本必须升号」（由 `for-upload` 硬门禁 + 本工具实现），而非「每敲一次代码就升号」（会导致版本号爆炸且无意义）。实测：当前本地 0.7.0 与远端 v0.7.0 撞号 → for-upload BLOCK；用工具 minor 升到 **0.8.0** 后三派生点自动同步、for-upload 放行。
   - 测试基线 114 → **115 用例**（62+28+16+9），门禁 9/9（识别 v0.8.0）全绿；SPEC.md 与冻结主流水线零改动。本地领先远端 3 提交，未上传。
+
+- **v1.0.3（2026-11-19 · 修复冻结态组件安装 pip 退出码 2，软件升号 v0.8.1）**：用户实测「Whisper 点击启用报 pip 安装失败（退出码 2）」。
+  - **根因**：PyInstaller 打包后 `sys.executable` 指向 `Jinghe.exe` 本身，exe 不内置 pip，`Jinghe.exe -m pip install ...` 被当成程序参数 → 退出码 2。源码模式用 python.exe 故从不复现，只在冻结态暴露。
+  - **修复三处**：① 新增 `_python_for_pip()`：源码态用 `sys.executable`，冻结态改用 PATH 上真实 Python（找不到则诚实报错，不假装成功）；② 新增 `_pip_cmd_install()` 显式判断代理值——旧代码 `if not cmd[-1]: cmd=cmd[:-2]` 永远为 False（末项是常量），无代理时仍传 `--proxy ""`；③ `_scripts_dir()` 冻结态改用真 Python 的 Scripts 目录（否则 pip 装完 whisper.exe 仍探测不到）；④ pip 失败时回显真实 ERROR 行，而非光秃秃的「退出码 2」。
+  - 回归 `test_components.py` 新增 6 用例（源码/冻结解释器选择、找不到 Python 报错、空代理、有代理、Scripts 目录），9 → **15 用例**。冻结态 exe 实测版本/探测/无自动安装全绿。
+  - 全量 **121 用例**（62+28+16+15）+ 门禁 9/9；SPEC.md 与冻结主流水线零改动。按规则先升号 patch 0.8.0 → 0.8.1，未上传。

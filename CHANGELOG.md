@@ -4,6 +4,10 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [0.8.1] - 2026-11-19
+
+- 修复冻结态 exe 组件安装 pip 退出码 2：改用 PATH 真 Python + 修空代理参数 + 回显 pip 真实错误
+
 ## [0.8.0] - 2026-11-19
 
 - S10 手动下载护栏、双终端版本契约（含一键升号工具）、C 方案窗口锁定；新增 test_components.py/version_check.py/bump_version.py，测试基线 114 用例

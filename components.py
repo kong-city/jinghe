@@ -103,8 +103,18 @@ _JOB = {
 # PATH 增强：让 pip 装出来的 CLI / 解压出的 ffmpeg 能被 shutil.which 找到
 # --------------------------------------------------------------------------- #
 def _scripts_dir() -> Path:
-    """当前 Python 的 Scripts 目录（pip 装 CLI 落这里）。"""
-    return Path(sys.prefix) / "Scripts"
+    """真实 Python 的 Scripts 目录（pip 装 CLI 落这里）。
+
+    冻结态 ``sys.prefix`` 指向 exe 的临时解压目录，那里没有 pip 装的 CLI；
+    必须用 :func:`_python_for_pip` 找到的真 Python 反推其 Scripts 目录，
+    否则组件装完仍探测不到（whisper.exe 在真 Python 的 Scripts 下）。
+    """
+    try:
+        py = _python_for_pip()
+        return Path(py).resolve().parent / "Scripts"
+    except RuntimeError:
+        # 找不到真 Python 时回退到 sys.prefix（源码态即正确）
+        return Path(sys.prefix) / "Scripts"
 
 
 def ensure_component_path() -> None:
@@ -290,15 +300,52 @@ def _extract_ffmpeg(zip_path: Path) -> str:
     return "已解压 " + ", ".join(copied)
 
 
+def _python_for_pip() -> str:
+    """返回能真正执行 ``-m pip`` 的 Python 解释器路径。
+
+    **冻结态陷阱（用户 2026-11-19 实测踩到：pip 退出码 2）**：PyInstaller
+    打包后 ``sys.executable`` 指向 ``Jinghe.exe`` 本身，exe 不内置 pip，
+    ``Jinghe.exe -m pip install ...`` 会被当成程序参数 → 退出码 2。
+    因此冻结态必须改用 PATH 上的真实 Python；源码态才用 ``sys.executable``。
+    找不到 Python 时诚实报错，不假装安装成功。
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    # 冻结态：从 PATH 找真实 Python（含大小写变体，Windows 上 .EXE）
+    for name in ("python.exe", "python", "python3.exe", "python3"):
+        found = shutil.which(name)
+        if found and os.path.normcase(os.path.abspath(found)) != \
+                os.path.normcase(os.path.abspath(sys.executable)):
+            return found
+    raise RuntimeError(
+        "冻结模式下未在本机 PATH 找到 Python，无法通过 pip 安装组件。\n"
+        "请先在本机安装 Python 并确保 python 在 PATH 中，"
+        "或手动安装 whisper / yt-dlp 后重启软件。")
+
+
+def _pip_cmd_install(package: str) -> list[str]:
+    """组装 pip install 命令，正确处理「无代理」情形。
+
+    旧代码 ``if not cmd[-1]: cmd = cmd[:-2]`` 永远为 False（末项是
+    ``--disable-pip-version-check`` 常量），导致无代理时仍传 ``--proxy ""``，
+    pip 会报参数错误。这里改为显式判断代理值。
+    """
+    proxy = (os.environ.get("HTTPS_PROXY")
+             or os.environ.get("https_proxy")
+             or os.environ.get("HTTP_PROXY")
+             or os.environ.get("http_proxy") or "").strip()
+    cmd = [_python_for_pip(), "-m", "pip", "install", package,
+           "-i", PIP_INDEX, "--trusted-host", PIP_TRUSTED_HOST,
+           "--disable-pip-version-check"]
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    return cmd
+
+
 def _pip_install(package: str, component_id: str) -> str:
     """用内置镜像装 Python 包，解析 pip 输出映射为 5%~95% 的进度。必须持手动令牌。"""
     _require_opt_in(component_id)
-    cmd = [sys.executable, "-m", "pip", "install", package,
-           "-i", PIP_INDEX, "--trusted-host", PIP_TRUSTED_HOST,
-           "--proxy", (os.environ.get("HTTPS_PROXY") or "").strip(),
-           "--disable-pip-version-check"]
-    if not cmd[-1]:
-        cmd = cmd[:-2]
+    cmd = _pip_cmd_install(package)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
@@ -306,6 +353,7 @@ def _pip_install(package: str, component_id: str) -> str:
     )
     steps = ("Collecting", "Downloading", "Installing", "Successfully installed")
     reached = set()
+    errors: list[str] = []   # 收集 pip 的 ERROR 行，失败时回显真实原因
     assert proc.stdout is not None
     for line in proc.stdout:
         if _cancelled():
@@ -316,6 +364,9 @@ def _pip_install(package: str, component_id: str) -> str:
                 proc.kill()
             raise RuntimeError("cancelled")
         text = line.rstrip()
+        if "ERROR" in text or "error:" in text.lower():
+            errors.append(text[:200])
+            _emit("progress", text[:120], None)
         for i, kw in enumerate(steps):
             if kw in text and kw not in reached:
                 reached.add(kw)
@@ -326,7 +377,9 @@ def _pip_install(package: str, component_id: str) -> str:
                 _emit("progress", text[:120], None)
     rc = proc.wait()
     if rc != 0:
-        raise RuntimeError("pip 安装失败（退出码 %d）" % rc)
+        # 用户要能看到 pip 的真实报错，而不是只有「退出码 2」这种谜语
+        detail = errors[-1] if errors else "（pip 未输出 ERROR 行）"
+        raise RuntimeError("pip 安装失败（退出码 %d）：%s" % (rc, detail))
     return "安装完成"
 
 
