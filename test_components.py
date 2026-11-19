@@ -146,13 +146,39 @@ class TestPipInterpreter(unittest.TestCase):
         self.assertTrue(os.path.basename(got).lower().startswith("python"))
 
     def test_frozen_mode_no_python_raises(self):
+        # 屏蔽全部查找策略：which、PATH、CLI 反推、常见位置（glob）
         with mock.patch.object(self.c.sys, "frozen", True, create=True), \
              mock.patch.object(self.c.sys, "executable",
                                r"C://fake//Jinghe.exe"), \
-             mock.patch.object(self.c.shutil, "which", return_value=""):
+             mock.patch.object(self.c.shutil, "which", return_value=""), \
+             mock.patch.dict(os.environ, {"PATH": ""}), \
+             mock.patch.object(self.c.Path, "glob", return_value=[]), \
+             mock.patch.object(self.c, "_python_root_has_exe", return_value=""):
             with self.assertRaises(RuntimeError) as ctx:
                 self.c._python_for_pip()
-        self.assertIn("Python", str(ctx.exception))
+        msg = str(ctx.exception)
+        self.assertIn("Python", msg)
+        self.assertIn("640", msg), "报错应告知体积，避免用户困惑"
+        self.assertIn("pip install", msg), "报错应给出可操作指引"
+
+    def test_scripts_parent_fallback(self):
+        # 关键回归：PATH 只含 Scripts 目录（无 python.exe）时，从父目录反推。
+        # 这正是本机 workbuddy Python 布局，也是用户安装失败的真正原因。
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "Python313"
+            scripts = root / "Scripts"
+            scripts.mkdir(parents=True)
+            fake_exe = root / "python.exe"
+            fake_exe.write_bytes(b"")
+            with mock.patch.object(self.c.sys, "frozen", True, create=True), \
+                 mock.patch.object(self.c.sys, "executable",
+                                   r"C://fake//Jinghe.exe"), \
+                 mock.patch.object(self.c.shutil, "which",
+                                   side_effect=lambda n: str(scripts) if n == "whisper" else ""), \
+                 mock.patch.dict(os.environ, {"PATH": str(scripts)}):
+                got = self.c._python_for_pip()
+            self.assertEqual(got, str(fake_exe),
+                             "应从 Scripts 反推父目录的 python.exe")
 
     def test_pip_cmd_no_empty_proxy(self):
         # 无代理时不得传 --proxy ""（旧代码永远生效不了的 bug）

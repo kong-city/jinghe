@@ -413,3 +413,10 @@
   - **修复**：删掉折叠态居中覆盖；`.side-top` 固定 `padding-left:10px` + `justify-content:flex-start`（左内边距 10 + 侧栏 10 = 20px，与 `.nav-item` 图标左缘同一基准）。
   - **CDP 复测**：按钮 x 展开 20 → 折叠 20（位移 **0px**），图标 x 恒定 20，按钮与图标左缘偏差 **0px**（两态严丝合缝）。新增 `tools/_cdp_nav_probe.py` 供以后实测，test_66 锁定 CSS 契约。
   - 全量 **125 用例**（66+28+16+15）+ 门禁 9/9 + 视觉判分 26/26；按规则升号 0.8.8 → 0.8.9，未上传。
+
+- **v1.0.9（2026-11-19 · 修组件安装找不到 Python，软件升号 v0.8.10）**：用户点 Whisper 启用报「冻结模式下未在本机 PATH 找到 Python」。
+  - **体积答复**：Whisper 全套约 **644 MB**（torch 464 + llvmlite 116 + numpy 31 + numba 26 + whisper 本体仅 2 MB），必须联网下载，无法打包进 exe——这正是「本机可插拔工具」策略的原因。
+  - **根因**：本机 Python 装在 workbuddy 私有目录，用户 PATH **只含 `...\3.13.12\Scripts`（whisper.exe 所在）**，不含 `python.exe` 所在的父目录 → 旧实现 `shutil.which("python")` 必然失败。用户从桌面双击 exe 继承的就是这份 PATH。
+  - **修复**：`_python_for_pip()` 改多策略查找：① PATH 直接找 ② **从 PATH 里的 Scripts 反推父目录**（本机真实布局，关键）③ 从已装 CLI 反推 ④ 常见安装位置；全部失败才报错，且错误明示体积与三条可操作指引（勾 Add to PATH / 手动 pip install / 加 python.exe 目录到 PATH）。
+  - 新增 `test_scripts_parent_fallback` 回归（15→16 用例），`no_python_raises` 升级为屏蔽全部策略并断言提示含体积与指引。冻结态模拟实测：找到 `...\3.13.12\python.exe`、跑 pip 退出码 0。
+  - 全量 **126 用例**（66+28+16+16）+ 门禁 9/9；按规则升号 0.8.9 → 0.8.10，未上传。

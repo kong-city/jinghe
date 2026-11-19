@@ -300,27 +300,86 @@ def _extract_ffmpeg(zip_path: Path) -> str:
     return "已解压 " + ", ".join(copied)
 
 
+def _python_root_has_exe(root: Path) -> str:
+    """给定 Python 根目录，返回其中的 python.exe（存在才返回）。"""
+    for name in ("python.exe", "python"):
+        p = root / name
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            continue
+    return ""
+
+
 def _python_for_pip() -> str:
     """返回能真正执行 ``-m pip`` 的 Python 解释器路径。
 
     **冻结态陷阱（用户 2026-11-19 实测踩到：pip 退出码 2）**：PyInstaller
     打包后 ``sys.executable`` 指向 ``Jinghe.exe`` 本身，exe 不内置 pip，
     ``Jinghe.exe -m pip install ...`` 会被当成程序参数 → 退出码 2。
-    因此冻结态必须改用 PATH 上的真实 Python；源码态才用 ``sys.executable``。
-    找不到 Python 时诚实报错，不假装安装成功。
+    因此冻结态必须改用本机真实 Python；源码态才用 ``sys.executable``。
+
+    **第二个坑（同日实测）**：Windows 上用户 PATH 常只含 ``...\\Python3xx\\Scripts``
+    （whisper.exe 所在），**不含** ``python.exe`` 所在的父目录，导致
+    ``shutil.which("python")`` 失败。故增加「从 PATH 里的 Scripts 反推父目录」
+    策略——这是本机 workbuddy Python 的真实布局。查找顺序：
+      1. PATH 直接找 python.exe；
+      2. PATH 每个条目若以 Scripts 结尾，反推父目录找 python.exe；
+      3. 从已探测到的 whisper/yt-dlp 位置反推；
+      4. LOCALAPPDATA/Programs/Python 与 C:\\Python3xx 常见位置。
+    全部失败才诚实报错，并给出可操作指引。
     """
     if not getattr(sys, "frozen", False):
         return sys.executable
-    # 冻结态：从 PATH 找真实 Python（含大小写变体，Windows 上 .EXE）
+    exepath = os.path.normcase(os.path.abspath(sys.executable))
+
+    def valid(p: str) -> bool:
+        return bool(p) and os.path.normcase(os.path.abspath(p)) != exepath
+
+    # ① PATH 直接找
     for name in ("python.exe", "python", "python3.exe", "python3"):
         found = shutil.which(name)
-        if found and os.path.normcase(os.path.abspath(found)) != \
-                os.path.normcase(os.path.abspath(sys.executable)):
+        if valid(found):
             return found
+    # ② 从 PATH 里的 Scripts 反推父目录（本机 workbuddy Python 布局）
+    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry:
+            continue
+        try:
+            p = Path(entry)
+            if p.name.lower() == "scripts":
+                got = _python_root_has_exe(p.parent)
+                if valid(got):
+                    return got
+        except OSError:
+            continue
+    # ③ 从已装 CLI（whisper/yt-dlp）位置反推
+    for cli in ("whisper", "whisper.exe", "yt-dlp", "yt-dlp.exe"):
+        found = shutil.which(cli)
+        if found:
+            got = _python_root_has_exe(Path(found).resolve().parent.parent)
+            if valid(got):
+                return got
+    # ④ 常见安装位置
+    roots = [Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"]
+    roots += [Path("C:/Python3%d" % n) for n in range(8, 14)]
+    for base in roots:
+        try:
+            for child in sorted(base.glob("python3*"), reverse=True):
+                got = _python_root_has_exe(child)
+                if valid(got):
+                    return got
+        except OSError:
+            continue
     raise RuntimeError(
-        "冻结模式下未在本机 PATH 找到 Python，无法通过 pip 安装组件。\n"
-        "请先在本机安装 Python 并确保 python 在 PATH 中，"
-        "或手动安装 whisper / yt-dlp 后重启软件。")
+        "未在本机找到可用于 pip 的 Python 解释器。\n"
+        "Whisper 约 640 MB（含 torch 464 MB），需联网下载，无法打包进软件。\n"
+        "解决办法（选一）：\n"
+        "  1) 安装 Python 时勾选「Add Python to PATH」，重启软件后再点启用；\n"
+        "  2) 手动执行 pip install openai-whisper，重启软件即可识别；\n"
+        "  3) 若已装在本机，把 python.exe 所在目录加入 PATH。")
 
 
 def _pip_cmd_install(package: str) -> list[str]:
