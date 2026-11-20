@@ -2508,7 +2508,10 @@
       var path = (el.refineSource && el.refineSource.value || "").trim();
       if (!path) { showError("请先选择已转换的 md 文件"); return; }
       var model = (el.refineModel && el.refineModel.value || "").trim();
-      api("/api/refine/start", { path: path, model: model }, 15000).then(function (r) {
+      // v1.0.7：补传 outdir —— 此前唯二漏传，导致产物嵌进冻结盘
+      // （out/md/derived/，修订再套一层 derived/derived/）
+      var refineOut = (el.outPath && el.outPath.value || lastDoneOutdir || "").trim();
+      api("/api/refine/start", { path: path, model: model, outdir: refineOut }, 15000).then(function (r) {
         if (!r || !r.ok) { showError("精读启动失败：" + ((r && r.error) || "未知")); return; }
         el.btnStartRefine.disabled = true;
         startRefinePolling(false);
@@ -2518,7 +2521,8 @@
       var path = (el.reviseSource && el.reviseSource.value || "").trim();
       if (!path) { showError("请先选择精读产物 .refine.md"); return; }
       var instruction = (el.reviseInstruction && el.reviseInstruction.value || "").trim();
-      api("/api/revise/start", { path: path, instruction: instruction }, 15000).then(function (r) {
+      var reviseOut = (el.outPath && el.outPath.value || lastDoneOutdir || "").trim();
+      api("/api/revise/start", { path: path, instruction: instruction, outdir: reviseOut }, 15000).then(function (r) {
         if (!r || !r.ok) { showError("修订启动失败：" + ((r && r.error) || "未知")); return; }
         el.btnStartRevise.disabled = true;
         startRefinePolling(true);

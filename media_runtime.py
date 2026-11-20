@@ -40,12 +40,38 @@ def ensure_derived(outdir) -> Path:
     return path
 
 
-def frozen_snapshot(outdir) -> dict:
-    """记录冻结对账盘的当前形状，供运行前后比对。"""
+def _resolve_frozen_root(outdir) -> Path:
+    """把传入路径解析为**产物根**（含 md/ 与 INDEX.md 的那一层）。
+
+    v1.0.7 修复（旧实现是「真空通过」）：旧 frozen_snapshot 假定传入的
+    一定是产物根，若调用方误传 ``out/md``（冻结盘**内层**），它会去查
+    ``out/md/md/`` —— 不存在 → md_count=0、INDEX/MERGED 皆不存在，
+    快照恒为全空 → 运行前后一模一样 → **自检等于没做**。
+    现在识别「传入目录名就是 md 且其父目录下也有 md」这一特征，
+    上溯一级拿到真正的产物根；并把实际检查的目录记进快照，便于排查。
+    """
     root = Path(outdir)
+    try:
+        if root.name == "md" and (root.parent / "md").is_dir():
+            return root.parent
+    except OSError:
+        pass
+    return root
+
+
+def frozen_snapshot(outdir) -> dict:
+    """记录冻结对账盘的当前形状，供运行前后比对。
+
+    统计刻意**递归**并额外记录 md/ 下的一级条目数：新能力若把产物写进
+    冻结盘（例如精读产物落进 out/md/derived/），旧的一层 glob 完全看不到，
+    自检就会漏判。现在 md/ 下多出任何文件或子目录都会被捕获。
+    """
+    root = _resolve_frozen_root(outdir)
     md = root / "md"
     return {
-        "md_count": len(list(md.glob("*.md"))) if md.is_dir() else 0,
+        "root": str(root),
+        "md_count": len(list(md.rglob("*.md"))) if md.is_dir() else 0,
+        "md_entries": len(list(md.iterdir())) if md.is_dir() else 0,
         "index_exists": (root / "INDEX.md").is_file(),
         "merged_exists": (root / "MERGED.md").is_file(),
         "provenance_exists": (root / "provenance.json").is_file(),

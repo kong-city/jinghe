@@ -256,6 +256,17 @@ def _run_refine_inner(path: str, model: str, outdir: str, backend_obj, cap: dict
             _TASK["error"] = "提纯失败：%s" % type(exc).__name__
         _task_add("error", "提纯失败：%s" % type(exc).__name__, 1.0)
 
+    finally:
+        # v1.0.7 修复：**运行标志必须复位**。
+        # 旧实现只在外层 wrapper（_run_refine）里复位，若有调用方直接调
+        # _run_refine_inner（测试与内嵌调用都会这样），任务结束后
+        # _TASK["running"] 仍是 True → status() 永远显示「运行中」，
+        # 且后续所有精读/修订都被「已有精读任务在运行」挡住 —— 典型
+        # 「点了没反应」。这里在 inner 层也复位，形成双保险。
+        with _TASK_LOCK:
+            if _TASK is not None:
+                _TASK["running"] = False
+
 
 def _run_refine_extract(path: str, outdir: str, cap: dict) -> None:
     """S8 抽取式提纯：纯标准库、零依赖、输出原文原句。
@@ -498,7 +509,16 @@ def start_refine(path: str, model: str = DEFAULT_MODEL, outdir: str = "",
     if not chk["ok"]:
         return {"ok": False, "capability": cap["capability"],
                 "error": chk["error"], "source": chk}
-    out = Path(outdir) if outdir else Path(path).resolve().parent
+    # v1.0.7：不再退化到「源 md 的父目录」。
+    # 旧 fallback 会把 derived/ 建在用户源文件旁边（桌面 / 项目目录里
+    # 凭空多出 derived 子目录），且当源 md 位于 out/md 下时，产物会嵌进
+    # **冻结对账盘**（out/md/derived/），下一轮修订再套一层
+    # out/md/derived/derived/ —— 冻结盘被污染、INDEX.md 永不承认、永不清理。
+    # 现在缺输出目录就明确报错，与其它能力（word_enhance 等）口径一致：
+    # **绝不猜落点，绝不写到用户源目录旁边**。
+    if not outdir:
+        return {"ok": False, "error": "请先指定输出目录（本次提取的输出路径）"}
+    out = Path(outdir)
     with _TASK_LOCK:
         if _TASK is not None and _TASK["running"]:
             return {"ok": False, "error": "已有精读任务在运行，请等待或取消"}
@@ -533,6 +553,12 @@ def _run_revise_inner(path: str, model: str, outdir: str, backend_obj,
             _TASK["state"] = "failed"
             _TASK["error"] = "修订失败：%s" % type(exc).__name__
         _task_add("error", "修订失败：%s" % type(exc).__name__, 1.0)
+
+    finally:
+        # v1.0.7：同 _run_refine_inner —— 运行标志必须复位（双保险）
+        with _TASK_LOCK:
+            if _TASK is not None:
+                _TASK["running"] = False
 
 
 def _run_revise_extract(path: str, outdir: str, cap: dict) -> None:
@@ -727,7 +753,10 @@ def start_revise(path: str, model: str = DEFAULT_MODEL, outdir: str = "",
     chk = check_source(path)
     if not chk["ok"]:
         return {"ok": False, "capability": cap["capability"], "error": chk["error"]}
-    out = Path(outdir) if outdir else Path(path).resolve().parent
+    # v1.0.7：同 start_refine —— 缺输出目录明确报错，不退化到源文件旁
+    if not outdir:
+        return {"ok": False, "error": "请先指定输出目录（本次提取的输出路径）"}
+    out = Path(outdir)
     with _TASK_LOCK:
         if _TASK is not None and _TASK["running"]:
             return {"ok": False, "error": "已有精读/修订任务在运行"}

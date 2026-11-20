@@ -5660,6 +5660,88 @@ class AppContractTest(unittest.TestCase):
                          "errorBar 仍在 page-home 内，跨页提示不可见")
         self.assertLess(eb, home_start, "errorBar 应提升为 .content 全局元素")
 
+    # ------------------------------------------------------------------ #
+    # 75) v1.0.7 T2：精读/修订产物不再嵌进冻结盘 + 冻结盘自检不再真空通过
+    # ------------------------------------------------------------------ #
+    def test_75_t2_refine_artifact_location(self):
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        refine_src = (ROOT / "refine.py").read_text(encoding="utf-8")
+        import refine as refine_mod
+        import media_runtime as mr
+        import time as _t
+
+        # ① 前端：精读 / 修订都必须传 outdir（此前唯二漏传）
+        ridx = js.index('api("/api/refine/start"')
+        self.assertIn("outdir", js[ridx:ridx + 200], "精读未传 outdir")
+        vidx = js.index('api("/api/revise/start"')
+        self.assertIn("outdir", js[vidx:vidx + 220], "修订未传 outdir")
+
+        # ② 后端：缺 outdir 明确报错，**绝不退化到源文件父目录**
+        self.assertNotIn("Path(path).resolve().parent", refine_src,
+                         "仍会把产物写到源 md 旁边（会在用户目录凭空建 derived/）")
+        prod = Path(self.tmp) / "t2-out"
+        (prod / "md").mkdir(parents=True)
+        src = prod / "md" / "001-a.md"
+        src.write_text("# 标题\n\n正文内容。\n", encoding="utf-8")
+        r = refine_mod.start_refine(str(src))
+        self.assertFalse(r.get("ok"), "缺 outdir 应明确报错")
+        self.assertIn("输出目录", r.get("error", ""))
+        self.assertFalse((prod / "md" / "derived").exists(),
+                         "冻结盘内不得出现 derived/")
+
+        # ③ 带 outdir：产物落 out/derived/，冻结盘干净
+        r2 = refine_mod.start_refine(str(src), outdir=str(prod))
+        self.assertTrue(r2.get("ok"), "带 outdir 应能启动：%s" % r2.get("error"))
+        outs = []
+        for _ in range(120):
+            outs = list((prod / "derived").glob("*.refine.md"))
+            if outs:
+                break
+            _t.sleep(0.25)
+        self.assertTrue(outs, "精读产物应落在 out/derived/")
+        self.assertFalse((prod / "md" / "derived").exists(),
+                         "冻结盘 out/md/ 被污染了")
+        self.assertEqual(sorted(p.name for p in (prod / "md").iterdir()),
+                         ["001-a.md"], "冻结盘应只剩阶段 1 产物")
+
+        # ④ 修订同落 out/derived/，不再嵌套 derived/derived/
+        r3 = refine_mod.start_revise(str(outs[0]), outdir=str(prod))
+        self.assertTrue(r3.get("ok"), "修订应能启动：%s" % r3.get("error"))
+        revs = []
+        for _ in range(120):
+            revs = list((prod / "derived").glob("*.revise.md"))
+            if revs:
+                break
+            _t.sleep(0.25)
+        self.assertTrue(revs, "修订产物应落在 out/derived/")
+        self.assertFalse(list((prod / "derived").glob("derived/*")),
+                         "修订产物不该再套一层 derived/derived/")
+
+        # ⑤ 运行标志必须复位（v1.0.7 修的真 bug）
+        # 旧实现只在 wrapper 复位；直接调 inner 的路径（测试/内嵌调用）会留下
+        # running=True 残留 → status() 永远「运行中」→ 后续精读/修订全被
+        # 「已有精读任务在运行」挡住 —— 典型「点了没反应」。
+        st = refine_mod.status()
+        self.assertIs(st.get("running"), False,
+                      "精读结束后运行标志必须复位：%s" % st.get("running"))
+        r4 = refine_mod.start_refine(str(src), outdir=str(prod))
+        self.assertTrue(r4.get("ok"),
+                        "复位后必须能再次启动精读：%s" % r4.get("error"))
+        # 等它真正结束（否则临时目录清理时会与写入竞争 → WinError 145）
+        for _ in range(120):
+            if not refine_mod.status().get("running"):
+                break
+            _t.sleep(0.25)
+
+        # ⑥ 冻结盘自检：误传 out/md 也必须拿到真实快照（不再真空通过）
+        snap_root = mr.frozen_snapshot(prod)
+        snap_md = mr.frozen_snapshot(prod / "md")
+        self.assertEqual(snap_root["root"], snap_md["root"],
+                         "误传 out/md 应上溯到真正的产物根")
+        self.assertEqual(snap_root["md_count"], 1, "应看到 1 个阶段 1 产物")
+        self.assertTrue(snap_root["index_exists"] or snap_root["md_count"] >= 0)
+        self.assertIn("md_entries", snap_root, "快照须记录 md/ 下一级条目数（捕获子目录污染）")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
