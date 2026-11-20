@@ -680,43 +680,6 @@ button, input { font-family: inherit; }
   word-break: break-all;
 }
 
-/* ---------- 状态栏 ---------- */
-.statusbar {
-  flex: 0 0 auto;
-  /* v1.0.2：固定在底部；信息已全部取消，只留带底色边框的装饰栏 */
-  position: sticky;
-  bottom: 0;
-  z-index: 5;
-  height: 18px;
-  margin-top: auto;
-  border: 1px solid #E5E3DC;
-  border-radius: 6px;
-  background: var(--color-background-secondary, #F1EFE8);
-}
-
-.status-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.sep { color: #C9C6BC; }
-
-.prep {
-  cursor: help;
-  border-bottom: 1px dotted #C9C6BC;
-}
-
-.prep.warn { color: #854F0B; border-bottom-color: #D9B26A; }
-
-.state { white-space: nowrap; }
-.state.idle { color: #6B6A65; }
-.state.running { color: #185FA5; }
-.state.cancelled { color: #854F0B; }
-.state.failed { color: #A32D2D; }
-
 @import url("");
 
 @media (max-height: 760px) {

@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "description": "精核 UI 结构 + 视觉 rubric（2026-11-18 界面调整后的固化验收）",
   "pages": [
     {
@@ -186,14 +186,14 @@
           "text": "btnOpenSettingsFile"
         },
         {
-          "kind": "id_exists",
-          "name": "状态栏带 id 可按页显隐",
-          "id": "statusbar"
-        },
-        {
           "kind": "text_absent",
           "name": "独立 OCR 文案块已移除",
           "text": "id=\"ocrStatus\""
+        },
+        {
+          "kind": "text_absent",
+          "name": "底部状态栏饰条已彻底移除",
+          "text": "statusbar"
         }
       ],
       "vlm": {

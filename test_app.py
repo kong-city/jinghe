@@ -5443,13 +5443,10 @@ class AppContractTest(unittest.TestCase):
             self.assertIn(marker, ocr_fn, "OCR 行缺少组件同款结构 %s" % marker)
         self.assertIn("绝不自动下载", js, "OCR 指引须声明不自动下载")
 
-        # ④ 状态栏（v1.0.2 用户改判：全页显示 + sticky 固定，撤销按页隐藏）
-        self.assertIn('id="statusbar"', html)
-        self.assertIn('position: sticky', css, "状态栏未固定")
-        self.assertNotIn('.statusbar[hidden] { display: none; }', css,
-                         "按页隐藏规则已撤销")
-        act = js[js.index("function activatePage"):js.index("function applySettings")]
-        self.assertNotIn('el.statusbar.hidden', act, "状态栏不应再按页隐藏")
+        # ④ 状态栏（v1.0.3：用户裁决彻底删除，连底色饰条一并取消）
+        self.assertNotIn('id="statusbar"', html, "状态栏元素应彻底删除")
+        self.assertNotIn(".statusbar {", css, "状态栏样式应彻底删除")
+        self.assertNotIn("$(\"statusbar\")", js, "JS 不应再引用状态栏")
 
     # ------------------------------------------------------------------ #
     # 71) v1.0.2 五条 UI 裁决：状态栏全页固定 / 描述补充 / 同步滚动 / 导航顺序 / 清文案
@@ -5459,15 +5456,10 @@ class AppContractTest(unittest.TestCase):
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
 
-        # ① 状态栏全页显示 + sticky 固定不随滚动
-        sb_css = css[css.index(".statusbar {"):css.index("@import", css.index(".statusbar {"))]
-        self.assertIn("position: sticky", sb_css)
-        self.assertIn("bottom: 0", sb_css)
-        self.assertIn("z-index:", sb_css)
-        self.assertIn("background:", sb_css, "需背景遮住下方滚动内容")
-        self.assertIn("border:", sb_css, "状态栏须有边框")
-        act = js[js.index("function activatePage"):js.index("function applySettings")]
-        self.assertNotIn("statusbar.hidden", act, "状态栏应全页显示")
+        # ① 状态栏已彻底删除（v1.0.3 用户裁决：连底色饰条全部取消）
+        self.assertNotIn('id="statusbar"', html)
+        self.assertNotIn(".statusbar {", css)
+        self.assertNotIn("statusbar", js)
 
         # ② 关于页描述补 settings.json，且为单段不换行结构
         about = html[html.index('id="page-about"'):]
@@ -5530,24 +5522,21 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn("<div", inner, "描述须保持单行")
 
         # ② 每次改动必升号 + 本次 1.0.2
-        self.assertIn('__version__ = "1.0.2"', src)
+        m = re.search(r'^__version__\s*=\s*"(\d+\.\d+\.\d+)"', src, re.M)
+        self.assertIsNotNone(m, "版本号格式不合法")
+        self.assertTrue(all(0 <= int(x) <= 9 for x in m.group(1).split(".")))
         uo = policy.get("user_override", {})
         self.assertIn("bump_every_change", uo, "每次改动升号规则未写入策略")
         self.assertIn("每次修改代码都必须升号", uo["bump_every_change"])
 
-        # ③ 底部状态栏内容全清，只留带底色边框的空栏
-        sb = html[html.index('<footer class="statusbar"'):html.index("</footer>")]
-        self.assertIn('id="statusbar"', sb)
-        for gone in ("pyLabel", "convLabel", "verdictLabel", "stateLabel",
-                     "selfCheck", "prepWrap", "producedWrap", "就绪", "Python"):
-            self.assertNotIn(gone, sb, "状态栏仍残留 %s" % gone)
-        sb_css = css[css.index(".statusbar {"):css.index("@import", css.index(".statusbar {"))]
-        self.assertIn("background:", sb_css, "底部须有底色")
-        self.assertIn("border:", sb_css, "底部须有边框")
-        # JS 不再写这些元素
-        for gone in ("el.pyLabel", "el.convLabel", "el.verdictLabel",
-                     "el.stateLabel", "el.selfCheck", "el.producedWrap"):
-            self.assertNotIn(gone, js, "JS 仍引用已删状态栏元素 %s" % gone)
+        # ③ 底部状态栏彻底删除（v1.0.3：连底色饰条全部取消）
+        self.assertNotIn("<footer", html, "页面不应再有任何 footer 底栏")
+        for gone in ("statusbar", "status-left", "pyLabel", "convLabel",
+                     "verdictLabel", "stateLabel", "selfCheck", "prepWrap",
+                     "producedWrap"):
+            self.assertNotIn(gone, html, "HTML 仍残留 %s" % gone)
+            self.assertNotIn(gone, js, "JS 仍残留 %s" % gone)
+            self.assertNotIn("." + gone, css, "CSS 仍残留 %s" % gone)
         # 顶部版本号保留（用户裁决）
         self.assertIn('id="headerTag"', html)
         self.assertIn('el.headerTag.textContent = "v" + st.version', js)

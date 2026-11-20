@@ -39,7 +39,6 @@
     degradedEmpty: $("degradedEmpty"),
     degradedBadge: $("degradedBadge"),
     logBox: $("logBox"),
-    statusbar: $("statusbar"),
     btnSummarize: $("btnSummarize"),
     btnExportDocx: $("btnExportDocx"),
     btnWordEnhance: $("btnWordEnhance"),
