@@ -683,20 +683,15 @@ button, input { font-family: inherit; }
 /* ---------- 状态栏 ---------- */
 .statusbar {
   flex: 0 0 auto;
-  /* v1.0.2：固定在内容区底部，不随滚动轴移动（用户裁决） */
+  /* v1.0.2：固定在底部；信息已全部取消，只留带底色边框的装饰栏 */
   position: sticky;
   bottom: 0;
   z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 0 4px;
+  height: 18px;
   margin-top: auto;
-  border-top: 1px solid #E5E3DC;
-  background: var(--color-background-primary, #FAFAF8);
-  font-size: 12px;
-  color: #6B6A65;
+  border: 1px solid #E5E3DC;
+  border-radius: 6px;
+  background: var(--color-background-secondary, #F1EFE8);
 }
 
 .status-left {

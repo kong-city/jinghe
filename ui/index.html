@@ -545,7 +545,7 @@
 
       <section class="card">
         <div class="card-title">日志与数据</div>
-        <div class="card-sub">报错记录组件与环境状态，日志按天归档保留最近 7 天；设置仅存本机不上传。</div>
+        <div class="card-sub">报错记录组件与环境状态，日志按天归档保留最近 7 天；settings.json 仅存本机不上传。</div>
         <div class="about-item">
           <div class="about-log-row">
             <b class="mono" id="aboutLog">—</b>
@@ -567,19 +567,8 @@
     <!-- v0.4.9：轻量提示（检查更新无新版本时「当前是最新版本」，3 秒自动消失） -->
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-    <footer class="statusbar" id="statusbar">
-      <div class="status-left">
-        <span id="pyLabel" class="mono">Python —</span>
-        <span class="sep">·</span>
-        <span id="convLabel">转换器 待首次预览</span>
-        <span class="sep">·</span>
-        <span id="verdictLabel">验收 —</span>
-        <span id="selfCheckWrap" hidden><span class="sep">·</span><span id="selfCheck">空文件 0</span></span>
-        <span id="prepWrap" hidden><span class="sep">·</span><span id="prepNote" class="prep">需预处理 0</span></span>
-        <span id="producedWrap" hidden><span class="sep">·</span><span id="producedNote">已产出 0 / 0</span></span>
-      </div>
-      <div id="stateLabel" class="state idle">就绪</div>
-    </footer>
+    <!-- v1.0.2：底部状态栏信息全部取消，只留一条带底色边框的装饰栏 -->
+    <footer class="statusbar" id="statusbar" aria-hidden="true"></footer>
   </main>
 </div>
 <script defer src="/ui/app.js"></script>

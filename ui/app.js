@@ -39,17 +39,7 @@
     degradedEmpty: $("degradedEmpty"),
     degradedBadge: $("degradedBadge"),
     logBox: $("logBox"),
-    stateLabel: $("stateLabel"),
     statusbar: $("statusbar"),
-    pyLabel: $("pyLabel"),
-    convLabel: $("convLabel"),
-    verdictLabel: $("verdictLabel"),
-    selfCheckWrap: $("selfCheckWrap"),
-    selfCheck: $("selfCheck"),
-    prepWrap: $("prepWrap"),
-    prepNote: $("prepNote"),
-    producedWrap: $("producedWrap"),
-    producedNote: $("producedNote"),
     btnSummarize: $("btnSummarize"),
     btnExportDocx: $("btnExportDocx"),
     btnWordEnhance: $("btnWordEnhance"),
@@ -707,8 +697,7 @@
   function setState(name) {
     stateName = name;
     var map = { idle: "就绪", running: "运行中", cancelled: "已取消", failed: "失败" };
-    el.stateLabel.textContent = map[name] || "就绪";
-    el.stateLabel.className = "state " + (map[name] ? name : "idle");
+    // v1.0.2：状态栏信息已取消，状态机逻辑保留但不再写 DOM
   }
 
   function setProgress(ratio) {
@@ -1076,9 +1065,7 @@
     el.mFailed.textContent = "—";
     el.mDeferred.textContent = "—";
     el.mElapsed.textContent = "—";
-    el.selfCheckWrap.hidden = true;
-    el.prepWrap.hidden = true;
-    el.producedWrap.hidden = true;
+    // v1.0.2：状态栏信息已取消
     el.overviewHint.textContent = "正在运行…";
     el.degradedBody.textContent = "";
     el.degradedTable.hidden = true;
@@ -1205,19 +1192,8 @@
     "不支持 = 扩展名不在支持清单";
 
   function renderPrep(s) {
-    var legacy = Number(s.legacy || 0);
-    var unsupported = Number(s.unsupported || 0);
-    if (!legacy && !unsupported) {
-      el.prepWrap.hidden = true;
-      return;
-    }
-    var parts = [];
-    if (legacy) parts.push("需预处理 " + legacy);
-    if (unsupported) parts.push("不支持 " + unsupported);
-    el.prepNote.textContent = parts.join(" · ");
-    el.prepNote.title = PREP_TIP;
-    el.prepNote.classList.toggle("warn", legacy > 0);
-    el.prepWrap.hidden = false;
+    // v1.0.2：底部状态栏信息全部取消，此处不再写 DOM（保留签名供既有调用）
+    return;
   }
 
   function renderSummary(s, state) {
@@ -1237,16 +1213,11 @@
     el.mDeferred.textContent = cancelled ? "—" : String(s.deferred != null ? s.deferred : 0);
     el.mElapsed.textContent = (s.elapsed != null ? Number(s.elapsed).toFixed(1) : "0.0");
 
-    el.selfCheck.textContent = "空文件 " + (s.empty != null ? s.empty : 0);
-    el.selfCheckWrap.hidden = false;
     renderPrep(s);
 
     if (cancelled) {
-      el.producedNote.textContent = "已产出 " + produced + (cand ? " / " + cand : "");
-      el.producedWrap.hidden = false;
       el.overviewHint.textContent = "任务已取消，已产出 " + produced + " 项，产物不完整；细节见「运行日志」。";
     } else {
-      el.producedWrap.hidden = true;
       el.overviewHint.textContent = failed > 0
         ? "候选 " + cand + " 项 · 成功 " + (s.success || 0) + " / 未成功 " + failed +
           "，逐条处置见「降级明细」。"
@@ -1254,8 +1225,6 @@
           (s.no_heading ? "；其中 " + s.no_heading + " 项无标题层级。" : "。");
     }
 
-    if (s.converter) el.convLabel.textContent = "转换器 " + s.converter;
-    el.verdictLabel.textContent = "验收 " + (s.verdict || "—");
 
     var list = Array.isArray(s.degraded) ? s.degraded : [];
     el.degradedBody.textContent = "";
@@ -2508,9 +2477,6 @@
     el.inputPath.addEventListener("keydown", function (e) {
       if (e.key === "Enter") { e.preventDefault(); doPreview(); }
     });
-    el.prepNote.addEventListener("click", function () {
-      showNotice(PREP_TIP);
-    });
     el.inputPath.addEventListener("input", function () {
       el.inputMeta.textContent = "未选择输入";
       el.inputMeta.classList.remove("filled");
@@ -2662,8 +2628,6 @@
 
     api("/api/state", undefined, 10000).then(function (st) {
       if (st.python) {
-        var v = (st.version && st.version !== "unknown") ? "精核 " + st.version + " · " : "";
-        el.pyLabel.textContent = v + "Python " + st.python;
       }
       // 窗口标题 / 页头 / 侧栏版本标签：v0.4.0 起版本号唯一来源是后端 /api/state，
       // 必须在启动时注入。loadAbout() 只在切到「关于」页时才跑，不能让它负责
@@ -2675,7 +2639,6 @@
       if (st.log_file) {
         logFile = st.log_file;
       }
-      if (st.converter) el.convLabel.textContent = "转换器 " + st.converter;
       if (Array.isArray(st.inputs) && st.inputs.length > 1) {
         sel.inputs = st.inputs.slice();
         el.inputPath.value = st.inputs[0];

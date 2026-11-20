@@ -5405,8 +5405,13 @@ class AppContractTest(unittest.TestCase):
         src = (ROOT / "extract.py").read_text(encoding="utf-8")
         policy = json.loads((ROOT / "version-policy.json").read_text(encoding="utf-8"))
 
-        # ① patch 制版本号：1.0.1（用户 2026-11-20 裁决）
-        self.assertIn('__version__ = "1.0.1"', src)
+        # ① patch 制版本号：不锁死具体号（每次改动都会升），只校验形制与策略
+        m = re.search(r'^__version__\s*=\s*"(\d+\.\d+\.\d+)"', src, re.M)
+        self.assertIsNotNone(m, "版本号格式不合法")
+        parts = [int(x) for x in m.group(1).split(".")]
+        self.assertEqual(len(parts), 3)
+        self.assertTrue(all(0 <= x <= 9 for x in parts), "每段须 0-9（满 9 进位）")
+        self.assertTrue((parts[0], parts[1]) >= (1, 0), "版本不应低于 1.0.x")
         self.assertIn("user_override", policy, "patch 制裁决未写入版本策略")
         self.assertIn("1.0.0 -> 1.0.1", json.dumps(policy, ensure_ascii=False))
 
@@ -5455,11 +5460,12 @@ class AppContractTest(unittest.TestCase):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
 
         # ① 状态栏全页显示 + sticky 固定不随滚动
-        sb_css = css[css.index(".statusbar {"):css.index(".status-left")]
+        sb_css = css[css.index(".statusbar {"):css.index("@import", css.index(".statusbar {"))]
         self.assertIn("position: sticky", sb_css)
         self.assertIn("bottom: 0", sb_css)
         self.assertIn("z-index:", sb_css)
         self.assertIn("background:", sb_css, "需背景遮住下方滚动内容")
+        self.assertIn("border:", sb_css, "状态栏须有边框")
         act = js[js.index("function activatePage"):js.index("function applySettings")]
         self.assertNotIn("statusbar.hidden", act, "状态栏应全页显示")
 
@@ -5471,7 +5477,7 @@ class AppContractTest(unittest.TestCase):
         sub_end = about.index("</div>", sub_start)
         card_sub = about[sub_start:sub_end]
         self.assertIn("报错记录组件与环境状态", card_sub)
-        self.assertIn("设置仅存本机", card_sub)
+        self.assertIn("settings.json 仅存本机", card_sub)
         self.assertIn("保留最近 7 天", card_sub)
         inner = card_sub.split(">", 1)[1]
         self.assertNotIn("<div", inner, "描述应为单段，尽量不换行")
@@ -5500,6 +5506,51 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn("下列组件用于音视频转写与链接下载", html)
         self.assertNotIn("不点就永远不下载", html)
         self.assertIn('id="componentList"', html, "组件列表本身保留")
+
+    # ------------------------------------------------------------------ #
+    # 72) v1.0.2 三条裁决：描述含 settings.json / 每次升号 / 状态栏清空留边框
+    # ------------------------------------------------------------------ #
+    def test_72_statusbar_emptied_and_version_policy(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        src = (ROOT / "extract.py").read_text(encoding="utf-8")
+        policy = json.loads((ROOT / "version-policy.json").read_text(encoding="utf-8"))
+
+        # ① 描述明确含 settings.json 字样，且在日志描述之后（同一句）
+        about = html[html.index('id="page-about"'):]
+        ci = about.index("日志与数据")
+        sub_start = about.index('<div class="card-sub">', ci)
+        sub_end = about.index("</div>", sub_start)
+        card_sub = about[sub_start:sub_end]
+        self.assertIn("settings.json", card_sub)
+        self.assertLess(card_sub.index("日志"), card_sub.index("settings.json"),
+                        "settings.json 描述须在日志描述之后")
+        inner = card_sub.split(">", 1)[1]
+        self.assertNotIn("<div", inner, "描述须保持单行")
+
+        # ② 每次改动必升号 + 本次 1.0.2
+        self.assertIn('__version__ = "1.0.2"', src)
+        uo = policy.get("user_override", {})
+        self.assertIn("bump_every_change", uo, "每次改动升号规则未写入策略")
+        self.assertIn("每次修改代码都必须升号", uo["bump_every_change"])
+
+        # ③ 底部状态栏内容全清，只留带底色边框的空栏
+        sb = html[html.index('<footer class="statusbar"'):html.index("</footer>")]
+        self.assertIn('id="statusbar"', sb)
+        for gone in ("pyLabel", "convLabel", "verdictLabel", "stateLabel",
+                     "selfCheck", "prepWrap", "producedWrap", "就绪", "Python"):
+            self.assertNotIn(gone, sb, "状态栏仍残留 %s" % gone)
+        sb_css = css[css.index(".statusbar {"):css.index("@import", css.index(".statusbar {"))]
+        self.assertIn("background:", sb_css, "底部须有底色")
+        self.assertIn("border:", sb_css, "底部须有边框")
+        # JS 不再写这些元素
+        for gone in ("el.pyLabel", "el.convLabel", "el.verdictLabel",
+                     "el.stateLabel", "el.selfCheck", "el.producedWrap"):
+            self.assertNotIn(gone, js, "JS 仍引用已删状态栏元素 %s" % gone)
+        # 顶部版本号保留（用户裁决）
+        self.assertIn('id="headerTag"', html)
+        self.assertIn('el.headerTag.textContent = "v" + st.version', js)
 
 
 def print_summary(result=None) -> None:
