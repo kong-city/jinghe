@@ -40,6 +40,7 @@
     degradedBadge: $("degradedBadge"),
     logBox: $("logBox"),
     stateLabel: $("stateLabel"),
+    statusbar: $("statusbar"),
     pyLabel: $("pyLabel"),
     convLabel: $("convLabel"),
     verdictLabel: $("verdictLabel"),
@@ -51,7 +52,6 @@
     producedNote: $("producedNote"),
     btnSummarize: $("btnSummarize"),
     btnExportDocx: $("btnExportDocx"),
-    btnTranscribe: $("btnTranscribe"),
     btnWordEnhance: $("btnWordEnhance"),
     btnAudioTranscribe: $("btnAudioTranscribe"),
     btnAudioCancel: $("btnAudioCancel"),
@@ -65,7 +65,14 @@
     btnLinkCancel: $("btnLinkCancel"),
     linkStatus: $("linkStatus"),
     linkCap: $("linkCap"),
-    btnKnowledgeBase: $("btnKnowledgeBase"),
+    // v1.1.0：知识库页（S9 后端端点已实现，此前首页按钮仅是「规划中」占位）
+    btnKbIngest: $("btnKbIngest"),
+    btnKbRefresh: $("btnKbRefresh"),
+    kbStatus: $("kbStatus"),
+    kbStats: $("kbStats"),
+    kbQuery: $("kbQuery"),
+    btnKbQuery: $("btnKbQuery"),
+    kbResults: $("kbResults"),
     toolStatus: $("toolStatus"),
     // 左侧导航与页面
     appShell: $("appShell"),
@@ -77,6 +84,8 @@
     headerTag: $("headerTag"),
     pages: {
       home: $("page-home"),
+      process: $("page-process"),
+      kb: $("page-kb"),
       refine: $("page-refine"),
       revise: $("page-revise"),
       settings: $("page-settings"),
@@ -93,12 +102,8 @@
     btnSaveSettings: $("btnSaveSettings"),
     btnResetSettings: $("btnResetSettings"),
     settingsStatus: $("settingsStatus"),
-    settingsLogPath: $("settingsLogPath"),
-    settingsFilePath: $("settingsFilePath"),
     // S10：相关组件列表
     componentList: $("componentList"),
-    btnOpenLogSettings: $("btnOpenLogSettings"),
-    btnOpenSettingsFile: $("btnOpenSettingsFile"),
     // S7d：精读 / 修订页 + 后端配置
     refineCap: $("refineCap"),
     refineSource: $("refineSource"),
@@ -144,7 +149,9 @@
     aboutPython: $("aboutPython"),
     aboutPlatform: $("aboutPlatform"),
     aboutLog: $("aboutLog"),
-    btnOpenAboutLog: $("btnOpenAboutLog")
+    btnOpenAboutLog: $("btnOpenAboutLog"),
+    aboutSettingsFile: $("aboutSettingsFile"),
+    btnOpenAboutSettings: $("btnOpenAboutSettings")
   };
 
   // 后端 app.log 路径（来自 /api/state.log_file）；启动即可用，按钮常亮
@@ -286,7 +293,9 @@
   }
 
   var PAGE_META = {
-    home: { title: "精核 · 文件提取", sub: "阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪" },
+    home: { title: "精核 · 文件提取", sub: "选文件 → 预览分流 → 开始提取 → 查看结果" },
+    process: { title: "加工 · 后处理工具", sub: "文档 / 音视频 / 链接，基于已提取产物进一步加工（落 out/derived/）" },
+    kb: { title: "知识库 · 本机沉淀", sub: "把产物入库为可检索条目，全部保存在本机，不联网不外传" },
     refine: { title: "精读 · 提纯核心", sub: "对已转换 md 提取核心知识点（模型由本机可插拔后端提供）" },
     revise: { title: "修订 · 补写与修改", sub: "补写缺失 + 修改核心，变更内容以颜色/标记区分" },
     settings: { title: "设置", sub: "只保存在本机，改动即时生效" },
@@ -362,9 +371,15 @@
     var meta = PAGE_META[name] || PAGE_META.home;
     if (el.pageTitle) el.pageTitle.textContent = meta.title;
     if (el.pageSub) el.pageSub.textContent = meta.sub;
+    // v1.0.1：底部状态栏只在首页与关于显示，其余页面隐藏
+    if (el.statusbar) el.statusbar.hidden = !(name === "home" || name === "about");
     if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); loadComponents(); }
     if (name === "about") loadAbout();
     if (name === "refine" || name === "revise") refreshRefineCap();
+    // v1.1.0：进入加工页时刷新一次工具能力（按钮「未启用」判定依赖它）
+    if (name === "process") loadTools();
+    // v1.1.0：进入知识库页时刷新真实状态（S9 端点早已实现）
+    if (name === "kb") loadKbStatus();
   }
 
   function applySettings(cfg) {
@@ -413,8 +428,6 @@
       if (el.setDefaultOutdir && !el.setDefaultOutdir.value.trim() && settings.default_desktop) {
         el.setDefaultOutdir.value = settings.default_desktop;
       }
-      if (el.settingsLogPath) el.settingsLogPath.textContent = logFile || "—";
-      if (el.settingsFilePath) el.settingsFilePath.textContent = r.settings_file || "—";
     }).catch(function () { /* 设置读不到时保持现状，不打断使用 */ });
   }
 
@@ -464,6 +477,12 @@
       if (el.aboutPython) el.aboutPython.textContent = st.python || "—";
       if (el.aboutPlatform) el.aboutPlatform.textContent = st.platform || "—";
       if (el.aboutLog) el.aboutLog.textContent = st.log_file || "—";
+      // v1.0.1：设置文件路径从设置页迁来，与日志行并排显示
+      api("/api/settings", undefined, 10000).then(function (sr) {
+        if (el.aboutSettingsFile && sr && sr.settings_file) {
+          el.aboutSettingsFile.textContent = sr.settings_file;
+        }
+      }).catch(function () {});
       if (el.headerTag) el.headerTag.textContent = "v" + ver;
     }).catch(function () { /* 读不到就保持占位符 */ });
   }
@@ -1439,18 +1458,18 @@
 
   // ---------------- S10：设置页「相关组件」（v0.10 支持真并发）----------------
   var componentState = null;
+  // v1.0.1：扫描件 OCR（外部工具链，软件绝不自动下载）
+  var ocrState = null;
   var componentPoll = null;
   var componentJobs = {};   // cid -> {next, state, percent, message}
 
   function loadComponents() {
     if (!el.componentList) return;
     // 扫描件 OCR 能力状态（可选增强，仅探测本机工具链，不下载）
+    // v1.0.1：改为与其他组件同排列——结果存入 ocrState，由 renderComponents 渲染成一行
     api("/api/pdf/ocr/status", undefined, 10000).then(function (o) {
-      var n = document.getElementById("ocrStatus");
-      if (n && o) {
-        n.textContent = "扫描件 OCR（图片页文字识别）：" +
-          (o.available ? "已就绪，提取时自动识别图片页" : ("未启用——" + (o.hint || o.reason || "未检测到工具链")));
-      }
+      ocrState = (o && o.ok) ? o : null;
+      renderComponents();
     }).catch(function () {});
     api("/api/components?refresh=1", undefined, 15000).then(function (r) {
       componentState = (r && r.ok) ? r : null;
@@ -1530,6 +1549,44 @@
       row.appendChild(btn);
       el.componentList.appendChild(row);
     });
+
+    // v1.0.1：扫描件 OCR 与其他组件同排列（三列结构一致）。
+    // 它是外部工具链（tesseract + poppler），软件红线「绝不自动下载」，
+    // 所以按钮不触发安装，而是弹出清晰的安装指引——诚实，不假装能装。
+    if (ocrState) {
+      var ocrRow = makeEl("div", "component-row" + (ocrState.available ? "" : " is-missing"));
+      ocrRow.setAttribute("data-cid", "ocr");
+      var oi = makeEl("div", "component-info");
+      oi.appendChild(makeEl("span", "component-name", "扫描件 OCR"));
+      oi.appendChild(makeEl("span", "component-desc",
+        ocrState.available ? "本机 tesseract + poppler 已就绪，提取时自动识别扫描件图片页"
+                           : ("未启用——" + (ocrState.hint || ocrState.reason || "未检测到工具链"))));
+      // 与真实组件一致：进度条占位（OCR 无下载进度，恒 0%）
+      var op = makeEl("div", "component-progress");
+      op.setAttribute("data-role", "progress");
+      var ot = makeEl("div", "component-progress-track");
+      ot.appendChild(makeEl("div", "component-progress-bar"));
+      op.appendChild(ot);
+      op.appendChild(makeEl("span", "component-progress-text", "0%"));
+      oi.appendChild(op);
+      var ob = makeEl("span", "component-badge" + (ocrState.available ? "" : " is-off"),
+                      ocrState.available ? "已启用" : "未安装");
+      ob.setAttribute("data-role", "badge");
+      if (!ocrState.available && ocrState.reason) ob.title = ocrState.reason;
+      var obtn = makeEl("button", "btn component-toggle",
+                        ocrState.available ? "已启用" : "查看安装指引");
+      obtn.type = "button";
+      obtn.setAttribute("data-role", "toggle");
+      obtn.setAttribute("data-cid", "ocr");
+      if (ocrState.available) obtn.disabled = true;
+      else obtn.addEventListener("click", function () {
+        showNotice("扫描件 OCR 需本机安装 tesseract 与 poppler：软件绝不自动下载，请自行安装后重启软件。");
+      });
+      ocrRow.appendChild(oi);
+      ocrRow.appendChild(ob);
+      ocrRow.appendChild(obtn);
+      el.componentList.appendChild(ocrRow);
+    }
   }
 
   function rowFor(cid) {
@@ -1888,15 +1945,12 @@
     var outReady = !!(lastDoneOutdir || (el.outPath && el.outPath.value || "").trim());
     el.btnExportDocx.disabled = !(exportOn && outReady && !running && !previewing);
     el.btnExportDocx.textContent = exportOn ? "导出 Word" : "导出 Word（未启用）";
-    el.btnTranscribe.disabled = !on || !mediaOn;
-    el.btnTranscribe.textContent = mediaOn ? "音视频转写" : "音视频转写（未启用）";
     var wi = (toolState && toolState.word_input) || {};
     var wordOn = !!wi.enabled;
     el.btnWordEnhance.disabled = !(!running && !previewing && wordOn &&
                                    (hasWordInput() || on));
     el.btnWordEnhance.textContent = wordOn ? "Word 输入增强" : "Word 输入增强（未启用）";
     // S3：真实能力走 /api/tools/probe 顶层 audio_transcribe；缺工具恒禁用并显示「未启用」。
-    // 老的音视频转写占位按钮（btnTranscribe）仍按 S1 的诚实降级判定，原样保留。
     var at = ((toolState || {}).audio_transcribe) || {};
     var audioOn = !!at.enabled;
     var audioOut = !!(lastDoneOutdir || (el.outPath && el.outPath.value || "").trim());
@@ -1948,14 +2002,89 @@
     callFeature("/api/summarize", { outdir: outdir }, el.btnSummarize, "提炼中…");
   }
 
-  function doTranscribe() {
-    var inputs = currentInputs();
-    if (!inputs.length) {
-      var v = el.inputPath.value.trim();
-      if (v) inputs = [v];
-    }
-    if (!inputs.length) { showError("请先选择音视频文件"); return; }
-    callFeature("/api/transcribe", { inputs: inputs }, el.btnTranscribe, "转写中…");
+  // ------------------------------------------------------------------ //
+  // v1.1.0 知识库：S9 后端 /api/kb/status|ingest|query|open-source 早已实现，
+  // 此前首页按钮只弹「规划中」。这里接上真实端点（GET 务必传 undefined）。
+  // ------------------------------------------------------------------ //
+  function loadKbStatus() {
+    if (!el.kbStats) return;
+    api("/api/kb/status", undefined, 10000).then(function (r) {
+      if (!r || !r.ok) { el.kbStats.textContent = "知识库状态读取失败"; return; }
+      if (!r.initialized) {
+        el.kbStats.textContent = "尚未初始化：入库一次产物后即可检索";
+      } else {
+        el.kbStats.textContent = "已入库 " + r.entries + " 条 · " +
+          (r.fts ? "全文检索已启用" : "基础检索") +
+          (r.created_at ? " · 建于 " + new Date(r.created_at * 1000).toLocaleString() : "");
+      }
+      if (el.btnKbQuery) el.btnKbQuery.disabled = !r.initialized;
+    }).catch(function () { el.kbStats.textContent = "知识库状态读取失败"; });
+  }
+
+  function doKbIngest() {
+    var dir = (lastDoneOutdir || (el.outPath && el.outPath.value) || "").trim();
+    if (!dir) { showError("请先完成一次提取，或填写输出目录"); return; }
+    var btn = el.btnKbIngest;
+    if (btn) { btn.disabled = true; btn.textContent = "入库中…"; }
+    if (el.kbStatus) el.kbStatus.textContent = "正在入库…";
+    api("/api/kb/ingest", { dir: dir }, 120000).then(function (r) {
+      if (el.kbStatus) el.kbStatus.textContent = "";
+      if (!r || !r.ok) { showError("入库失败：" + ((r && r.error) || "未知错误")); return; }
+      showNotice("入库完成：扫描 " + r.files + " 个 md，新增 " + r.added +
+                 " 条，重复 " + (r.duplicate || 0) + " 条" +
+                 (r.skipped_ai ? "，跳过 AI 补写 " + r.skipped_ai + " 条" : ""));
+      loadKbStatus();
+    }).catch(function (err) {
+      if (el.kbStatus) el.kbStatus.textContent = "";
+      showError("入库失败：" + (err.message || err));
+    }).finally(function () {
+      if (btn) { btn.textContent = "入库当前产物"; btn.disabled = false; }
+    });
+  }
+
+  function doKbQuery() {
+    var q = (el.kbQuery && el.kbQuery.value || "").trim();
+    if (!q) { showError("请输入检索关键词"); return; }
+    if (!el.kbResults) return;
+    el.kbResults.textContent = "检索中…";
+    api("/api/kb/query", { q: q }, 30000).then(function (r) {
+      if (!r || !r.ok) { el.kbResults.textContent = "检索失败：" + ((r && r.error) || "未知错误"); return; }
+      if (!r.results || !r.results.length) { el.kbResults.textContent = "没有匹配的知识条目。"; return; }
+      el.kbResults.textContent = "";
+      el.kbResults.dataset.results = JSON.stringify(r.results);
+      var head = document.createElement("div");
+      head.textContent = "找到 " + r.count + " 条（模式：" + (r.mode || "—") + "）：";
+      el.kbResults.appendChild(head);
+      r.results.forEach(function (item) {
+        var row = document.createElement("div");
+        row.className = "kb-hit";
+        row.appendChild(document.createTextNode(
+          "[" + item.block + "] " + (item.locator || item.doc_id) +
+          " — " + (item.snippet || "").replace(/\s+/g, " ") + " "));
+        // S9：回跳原文位置（后端只解析坐标、不执行打开；路径围栏）
+        var jump = document.createElement("button");
+        jump.className = "link-btn";
+        jump.type = "button";
+        jump.textContent = "回跳原文";
+        jump.addEventListener("click", function () {
+          api("/api/kb/open-source", { id: item.id }, 10000).then(function (j) {
+            if (!j || !j.ok) { showError("回跳失败：" + ((j && j.error) || "未知错误")); return; }
+            showNotice("原文位置：" + (j.locator || j.source_file || "已定位"));
+          }).catch(function (err) { showError("回跳失败：" + (err.message || err)); });
+        });
+        row.appendChild(jump);
+        el.kbResults.appendChild(row);
+      });
+    }).catch(function (err) { el.kbResults.textContent = "检索失败：" + (err.message || err); });
+  }
+
+  function bindKbEvents() {
+    if (el.btnKbRefresh) el.btnKbRefresh.addEventListener("click", loadKbStatus);
+    if (el.btnKbIngest) el.btnKbIngest.addEventListener("click", doKbIngest);
+    if (el.btnKbQuery) el.btnKbQuery.addEventListener("click", doKbQuery);
+    if (el.kbQuery) el.kbQuery.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); doKbQuery(); }
+    });
   }
 
   // S2a：逐条回显成功 / 失败原因，绝不把「部分成功」说成「全部完成」。
@@ -2290,9 +2419,9 @@
     el.btnOpenMerged.addEventListener("click", function () { openMerged(); });
     el.btnBrowseOut.addEventListener("click", browseOutput);
     el.btnPickFiles.addEventListener("click", pickFiles);
+    bindKbEvents();
     el.btnSummarize.addEventListener("click", doSummarize);
     el.btnExportDocx.addEventListener("click", doWordExport);
-    el.btnTranscribe.addEventListener("click", doTranscribe);
     el.btnWordEnhance.addEventListener("click", doWordEnhance);
     el.btnAudioTranscribe.addEventListener("click", doAudioTranscribe);
     el.btnAudioCancel.addEventListener("click", doAudioCancel);
@@ -2303,10 +2432,7 @@
     if (el.btnLinkRun) el.btnLinkRun.addEventListener("click", doLinkRun);
     if (el.btnLinkInspect) el.btnLinkInspect.addEventListener("click", doLinkInspect);
     if (el.btnLinkCancel) el.btnLinkCancel.addEventListener("click", doLinkCancel);
-    el.btnKnowledgeBase.addEventListener("click", function () {
-      showNotice("阶段 4 知识库 / 自动化规划中，敬请期待。");
-    });
-    el.btnToggleFiles.addEventListener("click", function () {
+    if (el.btnToggleFiles) el.btnToggleFiles.addEventListener("click", function () {
       var willHide = !el.fileList.hidden;
       el.fileList.hidden = willHide;
       el.btnToggleFiles.textContent = willHide ? "展开" : "收起";
@@ -2409,9 +2535,6 @@
         }, "已恢复默认");
       });
     }
-    if (el.btnOpenLogSettings) {
-      el.btnOpenLogSettings.addEventListener("click", function () { openLogFile(); });
-    }
     if (el.btnOpenAboutLog) {
       el.btnOpenAboutLog.addEventListener("click", function () { openLogFile(); });
     }
@@ -2424,8 +2547,8 @@
     if (el.btnUpdateCancel) {
       el.btnUpdateCancel.addEventListener("click", function () { cancelUpdate(); });
     }
-    if (el.btnOpenSettingsFile) {
-      el.btnOpenSettingsFile.addEventListener("click", function () {
+    if (el.btnOpenAboutSettings) {
+      el.btnOpenAboutSettings.addEventListener("click", function () {
         api("/api/settings", undefined, 10000).then(function (r) {
           if (!r || !r.settings_file) { showNotice("设置文件路径尚未就绪。"); return; }
           api("/api/open", { path: r.settings_file }, 10000)

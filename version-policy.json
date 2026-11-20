@@ -10,7 +10,11 @@
     "path": "tools/bump_version.py",
     "usage": "python tools/bump_version.py patch|minor|major --reason '说明'",
     "why": "本地每次改动都必须升号，靠人记着手动改必然遗漏。工具一键升号并自动同步三个派生点，且联网确保新号严格大于 GitHub latest，从数学上杜绝撞号导致上传被拒。",
-    "derived_files": ["extract.py", "CHANGELOG.md", "使用说明.md"],
+    "derived_files": [
+      "extract.py",
+      "CHANGELOG.md",
+      "使用说明.md"
+    ],
     "anti_collision": "若按规则算出的候选号仍 <= 远端 latest，自动 patch +1 顶到严格大于；离线则保守 +1 并提示人工确认"
   },
   "release_source": {
@@ -21,7 +25,11 @@
   "digit_rule": {
     "max_digit": 9,
     "carry": "每段上限 9，满 9 自动向高位进 1 并把本段归 0",
-    "examples": ["0.7.9 --patch--> 0.8.0", "0.8.9 --patch--> 0.9.0", "0.9.9 --patch--> 1.0.0"],
+    "examples": [
+      "0.7.9 --patch--> 0.8.0",
+      "0.8.9 --patch--> 0.9.0",
+      "0.9.9 --patch--> 1.0.0"
+    ],
     "note": "用户 2026-11-19 裁决。因此不会出现 0.7.10 这类号，版本号每段恒为 0-9。"
   },
   "bump_rules": [
@@ -66,7 +74,16 @@
   },
   "terminals": {
     "count": 2,
-    "roles": ["本地终端", "另一终端（GitHub 连接器）"],
+    "roles": [
+      "本地终端",
+      "另一终端（GitHub 连接器）"
+    ],
     "sync_signal": "版本号递增（优先） + commit 差距（辅助）"
+  },
+  "user_override": {
+    "rule": "用户 2026-11-20 裁决：版本迭代一律走 patch 制（1.0.0 -> 1.0.1 -> 1.0.2 …），不因新增导航/页面而升 minor。",
+    "reason": "用户希望版本号按补丁号逐 1 递增，避免 minor 号膨胀。",
+    "priority": "高于 bump_rules 的 minor 判定；除非用户明确说「升大版本」，一律 patch。",
+    "example": "1.0.0 -> 1.0.1（导航重构）；1.0.1 -> 1.0.2（后续改动）"
   }
 }

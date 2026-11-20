@@ -693,6 +693,9 @@ button, input { font-family: inherit; }
   color: #6B6A65;
 }
 
+/* v1.0.1：状态栏按页隐藏（display:flex 会覆盖 [hidden] 的 UA 默认样式） */
+.statusbar[hidden] { display: none; }
+
 .status-left {
   display: flex;
   align-items: center;
@@ -1147,3 +1150,11 @@ select.text-input {
   /* 侧栏宽度拖拽反馈依赖过渡，关掉后仍是即时的，不影响功能 */
   .sidebar { transition: none; }
 }
+
+/* v1.1.0 知识库检索结果条目：来源与「回跳原文」按钮同一行 */
+.kb-hit {
+  padding: 8px 0;
+  border-bottom: 1px solid #F1EFE8;
+  line-height: 1.6;
+}
+.kb-hit:last-child { border-bottom: none; }

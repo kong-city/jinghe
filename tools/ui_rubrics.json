@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "description": "精核 UI 结构 + 视觉 rubric（2026-11-18 界面调整后的固化验收）",
   "pages": [
     {
@@ -13,8 +13,8 @@
         },
         {
           "kind": "text_contains",
-          "name": "系统日志卡片存在",
-          "text": "系统日志"
+          "name": "日志与数据卡片存在",
+          "text": "日志与数据"
         },
         {
           "kind": "text_contains",
@@ -44,13 +44,23 @@
         },
         {
           "kind": "id_exists",
-          "name": "系统日志打开按钮存在",
+          "name": "日志打开按钮存在",
           "id": "btnOpenAboutLog"
         },
         {
           "kind": "id_exists",
-          "name": "系统日志路径元素存在",
+          "name": "日志路径元素存在",
           "id": "aboutLog"
+        },
+        {
+          "kind": "id_exists",
+          "name": "设置文件行已迁入关于页",
+          "id": "aboutSettingsFile"
+        },
+        {
+          "kind": "id_exists",
+          "name": "设置文件打开按钮存在",
+          "id": "btnOpenAboutSettings"
         },
         {
           "kind": "text_contains",
@@ -93,28 +103,23 @@
         },
         {
           "kind": "id_exists",
-          "name": "链接提取卡片存在",
-          "id": "linkCard"
+          "name": "开始提取按钮存在",
+          "id": "btnRun"
         },
         {
           "kind": "id_exists",
-          "name": "链接输入区存在",
-          "id": "linkUrls"
+          "name": "仅预览分流按钮存在",
+          "id": "btnPreview"
         },
         {
           "kind": "id_exists",
-          "name": "链接运行按钮存在",
-          "id": "btnLinkRun"
+          "name": "已识别清单存在",
+          "id": "fileListWrap"
         },
         {
-          "kind": "text_contains",
-          "name": "SSRF 防护说明存在",
-          "text": "内网 / 保留地址一律拒绝"
-        },
-        {
-          "kind": "text_contains",
-          "name": "cookie 只读说明存在",
-          "text": "只读引用"
+          "kind": "text_absent",
+          "name": "僵尸占位按钮已清除",
+          "text": "btnTranscribe"
         }
       ],
       "vlm": {
@@ -164,6 +169,31 @@
           "kind": "text_contains",
           "name": "底部品牌为精核",
           "text": ">精核<"
+        },
+        {
+          "kind": "text_contains",
+          "name": "加工导航项存在",
+          "text": "data-page=\"process\""
+        },
+        {
+          "kind": "text_contains",
+          "name": "知识库导航项存在",
+          "text": "data-page=\"kb\""
+        },
+        {
+          "kind": "text_absent",
+          "name": "设置页日志卡片已移除",
+          "text": "btnOpenSettingsFile"
+        },
+        {
+          "kind": "id_exists",
+          "name": "状态栏带 id 可按页显隐",
+          "id": "statusbar"
+        },
+        {
+          "kind": "text_absent",
+          "name": "独立 OCR 文案块已移除",
+          "text": "id=\"ocrStatus\""
         }
       ],
       "vlm": {
@@ -174,6 +204,98 @@
           "各导航图标线条清晰、无重叠"
         ]
       }
+    },
+    {
+      "name": "process",
+      "hash": "",
+      "structure": [
+        {
+          "kind": "id_exists",
+          "name": "加工页容器存在",
+          "id": "page-process"
+        },
+        {
+          "kind": "id_exists",
+          "name": "核心提炼按钮存在",
+          "id": "btnSummarize"
+        },
+        {
+          "kind": "id_exists",
+          "name": "导出 Word 按钮存在",
+          "id": "btnExportDocx"
+        },
+        {
+          "kind": "id_exists",
+          "name": "音频转写按钮存在",
+          "id": "btnAudioTranscribe"
+        },
+        {
+          "kind": "id_exists",
+          "name": "视频提取按钮存在",
+          "id": "btnVideoTranscribe"
+        },
+        {
+          "kind": "id_exists",
+          "name": "链接提取卡片已迁入",
+          "id": "linkCard"
+        },
+        {
+          "kind": "text_absent",
+          "name": "无僵尸占位按钮",
+          "text": "btnTranscribe"
+        },
+        {
+          "kind": "text_absent",
+          "name": "无规划中占位",
+          "text": "is-soon"
+        }
+      ]
+    },
+    {
+      "name": "kb",
+      "hash": "",
+      "structure": [
+        {
+          "kind": "id_exists",
+          "name": "知识库页容器存在",
+          "id": "page-kb"
+        },
+        {
+          "kind": "id_exists",
+          "name": "入库按钮存在",
+          "id": "btnKbIngest"
+        },
+        {
+          "kind": "id_exists",
+          "name": "刷新状态按钮存在",
+          "id": "btnKbRefresh"
+        },
+        {
+          "kind": "id_exists",
+          "name": "检索输入框存在",
+          "id": "kbQuery"
+        },
+        {
+          "kind": "id_exists",
+          "name": "检索按钮存在",
+          "id": "btnKbQuery"
+        },
+        {
+          "kind": "id_exists",
+          "name": "结果区存在",
+          "id": "kbResults"
+        },
+        {
+          "kind": "text_contains",
+          "name": "本机存储说明存在",
+          "text": "不联网、不外传"
+        },
+        {
+          "kind": "text_absent",
+          "name": "规划中占位已清除",
+          "text": "规划中，敬请期待"
+        }
+      ]
     }
   ]
 }

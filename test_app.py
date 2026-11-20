@@ -1295,13 +1295,13 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("/api/update", js, "前端未调用一键更新接口")
         self.assertIn("/api/update", src, "后端缺少一键更新路由")
 
-        # ③ 首页「输出与选项」移除打开日志按钮，功能迁到关于页系统日志区
+        # ③ 首页「输出与选项」移除打开日志按钮，功能迁到关于页「日志与数据」区
         self.assertNotIn('id="btnOpenLog"', html,
                          "首页仍保留打开日志文件按钮（应移到关于页）")
         self.assertNotIn("btnOpenLog:", js, "app.js 仍注册已删除的首页日志按钮")
         self.assertIn('id="btnOpenAboutLog"', html, "关于页系统日志缺少打开按钮")
         # v0.6.1 界面调整：整条「生成指定文件 / 仅报错 / 状态 / 导出路径」
-        # 导出栏已移除；「日志文件」更名为「系统日志」，打开按钮并入日志项同行
+        # 导出栏已移除；日志与设置文件统一为「日志与数据」，两行同格式并排
         self.assertNotIn('id="btnExportLog"', html, "关于页仍保留生成指定文件按钮")
         self.assertNotIn('id="chkErrorsOnly"', html, "关于页仍保留仅报错选项")
         self.assertNotIn('id="logExportStatus"', html, "关于页仍保留日志状态栏")
@@ -1310,18 +1310,24 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn('"已打开日志文件"', js, "app.js 仍保留已移除的打开成功提示")
         self.assertIn('<div class="card-title">系统信息</div>', html,
                       "运行日志卡片未更名为系统信息")
-        self.assertIn('<div class="card-title">系统日志</div>', html,
+        self.assertIn('<div class="card-title">日志与数据</div>', html,
                       "系统日志未独立成同级卡片")
         self.assertNotIn('<div class="card-title">运行日志</div>', html,
                          "旧的「运行日志」卡片标题仍在")
         # 系统日志卡片必须紧排在系统信息卡片下面，且日志控件已从系统信息中移出
         info_head = html.index('<div class="card-title">系统信息</div>')
-        log_head = html.index('<div class="card-title">系统日志</div>')
+        log_head = html.index('<div class="card-title">日志与数据</div>')
         self.assertLess(info_head, log_head, "系统日志卡片未排在系统信息下面")
         info_end = html.index("</section>", info_head)
         self.assertNotIn("aboutLog", html[info_head:info_end],
                          "系统日志控件仍在系统信息卡片内")
         self.assertIn('class="about-log-row"', html, "系统日志项缺少同行布局")
+        # v1.0.1 用户裁决：设置页「日志与数据」移除，设置文件入口并入关于页
+        self.assertIn('id="aboutSettingsFile"', html, "关于页缺设置文件路径行")
+        self.assertIn('id="btnOpenAboutSettings"', html, "关于页缺打开设置文件按钮")
+        self.assertNotIn('id="btnOpenSettingsFile"', html, "设置页旧按钮未清")
+        self.assertEqual(html.count('<div class="card-title">日志与数据</div>'), 1,
+                         "「日志与数据」卡片应只出现在关于页")
 
         # ④ 检查更新接口：离线也要诚实降级，但下载链接始终可用
         status, upd = srv.get_json("/api/check-update")
@@ -1897,7 +1903,9 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('id="toolStatus"', html)
         self.assertIn("/api/tools/probe", js)
         self.assertIn("未启用", js)
-        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js)
+        self.assertNotIn("btnTranscribe", js, "S1 占位按钮须随 v1.1.0 加工页重构清除")
+        self.assertIn('path == "/api/transcribe"', app_src,
+                      "S1 空心占位后端仍在（前端按钮已清，占位语义由后端守护）")
         for name in ("format_registry.py", "media_tools.py", "media_runtime.py"):
             self.assertIn(name, gate, "门禁未编译新模块 %s" % name)
 
@@ -2200,8 +2208,9 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("/api/word/enhance", js)
         self.assertIn("doWordEnhance", js)
         self.assertIn("wi.enabled", js)
-        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
-                      "S1 的音视频诚实降级判定被改写")
+        self.assertNotIn("btnTranscribe", js, "S1 占位按钮须随 v1.1.0 加工页重构清除")
+        self.assertIn('path == "/api/transcribe"', app_src,
+                      "S1 空心占位后端仍在（前端按钮已清，占位语义由后端守护）")
         self.assertIn('path == "/api/word/enhance"', app_src)
         self.assertIn('path == "/api/word/inspect"', app_src)
         self.assertIn("_api_transcribe", app_src)
@@ -2431,8 +2440,9 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("word_export", js)
         self.assertIn('path == "/api/word/export"', app_src)
         self.assertIn('data["word_export"]', app_src)
-        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
-                      "S1 的音视频诚实降级判定被改写")
+        self.assertNotIn("btnTranscribe", js, "S1 占位按钮须随 v1.1.0 加工页重构清除")
+        self.assertIn('path == "/api/transcribe"', app_src,
+                      "S1 空心占位后端仍在（前端按钮已清，占位语义由后端守护）")
         self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
                       "S3 空心占位被提前填充或改写")
         self.assertIn("word_export.py", gate)
@@ -2772,8 +2782,9 @@ class AppContractTest(unittest.TestCase):
             self.assertIn(needle, js)
         self.assertIn('path == "/api/audio/transcribe"', app_src)
         self.assertIn('data["audio_transcribe"]', app_src)
-        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
-                      "S1 音视频诚实降级判定被改写")
+        self.assertNotIn("btnTranscribe", js, "S1 占位按钮须随 v1.1.0 加工页重构清除")
+        self.assertIn('path == "/api/transcribe"', app_src,
+                      "S1 空心占位后端仍在（前端按钮已清，占位语义由后端守护）")
         self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
                       "S1 空心占位被提前填充或改写")
         self.assertIn("audio_transcribe.py", gate)
@@ -3160,8 +3171,9 @@ class AppContractTest(unittest.TestCase):
             self.assertIn(needle, app_src)
         self.assertIn("video_transcribe.py", gate)
         self.assertIn("'video_transcribe'", spec)
-        self.assertIn("el.btnTranscribe.disabled = !on || !mediaOn", js,
-                      "S1 的音视频诚实降级判定被改写")
+        self.assertNotIn("btnTranscribe", js, "S1 占位按钮须随 v1.1.0 加工页重构清除")
+        self.assertIn('path == "/api/transcribe"', app_src,
+                      "S1 空心占位后端仍在（前端按钮已清，占位语义由后端守护）")
         self.assertIn("阶段 3 音视频转写需专用转写器", app_src,
                       "S1 空心占位被提前填充或改写")
         self.assertIn("v0.6", contract)
@@ -5316,6 +5328,115 @@ class AppContractTest(unittest.TestCase):
         self.assertTrue(str(_app.DEFAULT_OUTDIR).lower().startswith(
             tempfile.gettempdir().lower()))
         self.assertEqual(_app.DEFAULT_OUTDIR.name, "jinghe-out")
+
+    # ------------------------------------------------------------------ #
+    # 69) v1.1.0 导航重构：加工页 / 知识库页 + 首页主干化
+    # ------------------------------------------------------------------ #
+    def test_69_nav_process_and_knowledge_pages(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+
+        # ① 七个导航项 + 页面容器齐全
+        expected = ("home", "process", "kb", "refine", "revise", "settings", "about")
+        for name in expected:
+            self.assertIn('data-page="%s"' % name, html,
+                          "导航栏缺少 %s 入口" % name)
+            self.assertIn('id="page-%s"' % name, html, "缺少页面容器 %s" % name)
+            self.assertIn("%s: $(" % name, js, "el.pages 映射缺 %s" % name)
+            self.assertIn("%s: { title:" % name, js, "PAGE_META 缺 %s" % name)
+
+        # ② 首页回归主干：后处理与链接卡片已迁出
+        home = html[html.index('id="page-home"'):html.index('id="page-process"')]
+        self.assertNotIn("btnSummarize", home, "首页应只留提取主干")
+        self.assertNotIn("btnLinkRun", home, "链接提取已迁至加工页")
+        self.assertIn("btnRun", home, "首页须保留「开始提取」")
+        self.assertIn("btnPreview", home, "首页须保留「仅预览分流」")
+
+        # ③ 加工页：三组功能分区 + 僵尸按钮已清
+        proc = html[html.index('id="page-process"'):html.index('id="page-kb"')]
+        for fid in ("btnSummarize", "btnExportDocx", "btnWordEnhance",
+                    "btnAudioTranscribe", "btnVideoTranscribe",
+                    "btnLinkRun", "btnLinkInspect"):
+            self.assertIn('id="%s"' % fid, proc, "加工页缺少 %s" % fid)
+        self.assertNotIn("btnTranscribe", proc, "僵尸占位按钮须从界面清除")
+        self.assertNotIn("规划中", proc, "加工页不得再有「规划中」占位")
+
+        # ④ 知识库：接上真实 S9 端点（不再是「规划中」弹窗）
+        kb = html[html.index('id="page-kb"'):html.index('id="page-refine"')]
+        for fid in ("btnKbIngest", "btnKbRefresh", "kbQuery", "btnKbQuery"):
+            self.assertIn('id="%s"' % fid, kb, "知识库页缺少 %s" % fid)
+        for fn in ("loadKbStatus", "doKbIngest", "doKbQuery", "bindKbEvents"):
+            self.assertIn("function %s" % fn, js, "知识库逻辑缺 %s" % fn)
+        for ep in ("/api/kb/status", "/api/kb/ingest", "/api/kb/query",
+                   "/api/kb/open-source"):
+            self.assertIn('"%s"' % ep, js, "前端未调用 %s" % ep)
+            self.assertIn(ep.replace("/api/", 'path == "/api/'), app_src,
+                          "后端缺 %s" % ep)
+        self.assertNotIn("规划中，敬请期待", js,
+                         "知识库不得再只弹「规划中」占位提示")
+        # GET 端点必须传 undefined（历史踩坑：靠 body===undefined 判 GET/POST）
+        kb_fn = js[js.index("function loadKbStatus"):js.index("function doKbIngest")]
+        self.assertIn('api("/api/kb/status", undefined', kb_fn,
+                      "kb/status 是 GET，务必传 undefined")
+
+        # ⑤ 切页时按页加载（加工页刷工具状态、知识库页刷状态）
+        act = js[js.index("function activatePage"):js.index("function applySettings")]
+        self.assertIn('name === "process") loadTools()', act)
+        self.assertIn('name === "kb") loadKbStatus()', act)
+
+        # ⑥ 后端空心占位仍诚实保留（红线由后端守护，前端按钮已清）
+        self.assertIn('path == "/api/transcribe"', app_src)
+        self.assertIn("阶段 3 音视频转写需专用转写器", app_src)
+
+    # ------------------------------------------------------------------ #
+    # 70) v1.0.1 四条 UI 裁决：patch 版本号 / 日志与数据合并 / OCR 组件行 / 状态栏按页
+    # ------------------------------------------------------------------ #
+    def test_70_ui_refinements(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+        src = (ROOT / "extract.py").read_text(encoding="utf-8")
+        policy = json.loads((ROOT / "version-policy.json").read_text(encoding="utf-8"))
+
+        # ① patch 制版本号：1.0.1（用户 2026-11-20 裁决）
+        self.assertIn('__version__ = "1.0.1"', src)
+        self.assertIn("user_override", policy, "patch 制裁决未写入版本策略")
+        self.assertIn("1.0.0 -> 1.0.1", json.dumps(policy, ensure_ascii=False))
+
+        # ② 设置页「日志与数据」移除，设置文件入口并入关于页、与日志同格式
+        settings_page = html[html.index('id="page-settings"'):html.index('id="page-about"')]
+        self.assertNotIn("日志与数据", settings_page, "设置页仍有日志与数据卡片")
+        self.assertNotIn("btnOpenSettingsFile", settings_page)
+        about_page = html[html.index('id="page-about"'):]
+        self.assertIn('<div class="card-title">日志与数据</div>', about_page)
+        self.assertEqual(about_page.count('class="about-log-row"'), 2,
+                         "关于页应有日志 + 设置文件两行同格式")
+        self.assertIn('id="aboutSettingsFile"', about_page)
+        self.assertIn('id="btnOpenAboutSettings"', about_page)
+        self.assertIn('id="aboutLog"', about_page)
+        # JS 侧：旧引用清除、新引用接上
+        self.assertNotIn("settingsLogPath", js)
+        self.assertNotIn("btnOpenLogSettings", js)
+        self.assertIn('aboutSettingsFile: $("aboutSettingsFile")', js)
+        self.assertIn('btnOpenAboutSettings: $("btnOpenAboutSettings")', js)
+
+        # ③ OCR 与其他组件同排列：三列结构、有按钮、不自动下载
+        self.assertNotIn('id="ocrStatus"', html, "独立 OCR 文案块未清")
+        self.assertIn("var ocrState = null;", js)
+        self.assertIn('data-cid", "ocr"', js)
+        self.assertIn('"查看安装指引"', js, "OCR 未启用时应显示指引按钮")
+        ocr_fn = js[js.index("if (ocrState) {"):js.index("el.componentList.appendChild(ocrRow);")]
+        for marker in ("component-row", "component-info", "component-badge",
+                       "component-toggle", "component-progress"):
+            self.assertIn(marker, ocr_fn, "OCR 行缺少组件同款结构 %s" % marker)
+        self.assertIn("绝不自动下载", js, "OCR 指引须声明不自动下载")
+
+        # ④ 状态栏只在首页与关于显示（CSS 必须覆盖 display:flex）
+        self.assertIn('id="statusbar"', html)
+        self.assertIn('.statusbar[hidden] { display: none; }', css)
+        act = js[js.index("function activatePage"):js.index("function applySettings")]
+        self.assertIn('el.statusbar.hidden = !(name === "home" || name === "about")', act)
 
 
 def print_summary(result=None) -> None:
