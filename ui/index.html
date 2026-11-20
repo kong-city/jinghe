@@ -96,6 +96,11 @@
       <div class="header-tag" id="headerTag">—</div>
     </header>
 
+    <!-- v1.0.6：提示条提升为 .content 全局元素（此前在 page-home 内部，
+         加工/精读/修订/知识库 4 页的 showError/showNotice 全写进隐藏元素，
+         失败时界面毫无反应）。放在页头下方，任何页切换后都可见。 -->
+    <div id="errorBar" class="bar bar-error" role="status" aria-live="polite" hidden></div>
+
     <!-- ==================== 首页 ==================== -->
     <section class="page" id="page-home">
       <section class="cards">
@@ -154,8 +159,6 @@
           <div id="fileListEmpty" class="file-empty">把文件拖到左侧输入框，或点击「打开」选择；识别后清单显示在这里，勾选后点「预览分流」。</div>
         </div>
       </section>
-
-      <div id="errorBar" class="bar bar-error" hidden></div>
 
       <div class="actions">
         <button id="btnRun" class="btn btn-primary" type="button">开始提取</button>

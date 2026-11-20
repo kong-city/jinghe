@@ -5576,6 +5576,90 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("patch_open=True", seg,
                       "调 open-folder 的用例必须用 patch_open=True")
 
+    # ------------------------------------------------------------------ #
+    # 74) v1.0.6 T1：三个 P0 断点修复（知识库默认可用 / 扫描到位 / 跨页提示可见）
+    # ------------------------------------------------------------------ #
+    def test_74_t1_three_p0_breaks_fixed(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        import kb
+        import app as app_mod
+
+        # ── E：知识库路径围栏放行「软件自己会写产物的合法根」 ──
+        self.assertIn("def _kb_allowed_roots(", app_src,
+                      "缺少合法根目录收集器")
+        self.assertNotIn("kb_roots = [str(KB_DIR), os.getcwd()]", app_src,
+                         "旧围栏（只放行 cwd）仍在，知识库默认必然失败")
+        roots = app_mod._kb_allowed_roots()
+        for must in (str(app_mod.KB_DIR), str(app_mod.DEFAULT_OUTDIR),
+                     str(app_mod.DEFAULT_DESKTOP)):
+            self.assertIn(must, roots, "合法根缺少 %s" % must)
+        self.assertNotIn(str(Path(tempfile.gettempdir()).parent), roots,
+                         "围栏不得放开到临时目录的父级")
+
+        # 真实行为：**软件写过产物的目录**必须能入库（不靠 cwd 巧合）
+        import tempfile as _tf
+        prod = Path(self.tmp) / "kb-prod"
+        (prod / "md").mkdir(parents=True)
+        # 模拟一次写产物（后端据此认定合法根）
+        app_mod._note_outdir(str(prod))
+        (prod / "md" / "001-a.md").write_text(
+            "<!-- src: doc_t1aaaa | file: a.txt | sha256: ff | mtime: 1 | size: 2 | kind: text -->\n\n"
+            "<!-- anchor: doc_t1aaaa | block: 1 | line: 1..3 -->\n\n入库正文\n",
+            encoding="utf-8")
+        kbdir = Path(self.tmp) / "kbdata"
+        r = kb.ingest_dir(kbdir, str(prod), include_ai=False,
+                          allowed_roots=[str(prod)])
+        self.assertTrue(r.get("ok"), "默认产物目录应可入库：%s" % r.get("error"))
+        self.assertEqual(r.get("added"), 1, "应入库 1 条")
+
+        # ── F：递归扫描，derived/ 与根级产物都要进来 ──
+        (prod / "derived").mkdir()
+        (prod / "derived" / "doc_b.md").write_text(
+            "<!-- src: doc_t1bbbb | file: b.mp3 | sha256: aa | mtime: 1 | size: 2 | kind: audio -->\n\n"
+            "<!-- anchor: doc_t1bbbb | block: 1 | time: 00:00:00 -->\n\n音视频正文\n",
+            encoding="utf-8")
+        (prod / "MERGED.md").write_text("# 汇总\n\n内容\n", encoding="utf-8")
+        (prod / "INDEX.md").write_text("# 对账\n\n清单\n", encoding="utf-8")
+        r2 = kb.ingest_dir(kbdir, str(prod), include_ai=False,
+                           allowed_roots=[str(prod)])
+        names = sorted(Path(d["file"]).name for d in r2["details"])
+        self.assertIn("doc_b.md", names, "derived/ 产物未被扫描")
+        self.assertIn("001-a.md", names, "md/ 产物未被扫描")
+        self.assertNotIn("MERGED.md", names, "汇总文件应排除（内容重复）")
+        self.assertNotIn("INDEX.md", names, "对账文件应排除")
+        q = kb.query(kbdir, "音视频")
+        self.assertTrue(q.get("results"), "音视频产物应可检索")
+
+        # 无 src 注释的文件必须**如实报失败**，不谎报成功
+        (prod / "SUMMARY.md").write_text("# 摘要\n\n无 src\n", encoding="utf-8")
+        r3 = kb.ingest_dir(kbdir, str(prod), include_ai=False,
+                           allowed_roots=[str(prod)])
+        bad = [d for d in r3["details"] if Path(d["file"]).name == "SUMMARY.md"]
+        self.assertTrue(bad, "SUMMARY.md 应出现在明细里")
+        self.assertFalse(bad[0].get("ok"), "无 src 注释的文件不得报成功")
+        self.assertIn("src", bad[0].get("error", ""))
+
+        # 安全边界：**没被软件写过**的目录必须被拒（围栏不得形同虚设）
+        stray = Path(self.tmp) / "never-written"
+        (stray / "md").mkdir(parents=True)
+        (stray / "md" / "001-x.md").write_text(
+            "<!-- src: doc_stray | file: x | sha256: ff -->\n\n"
+            "<!-- anchor: doc_stray | block: 1 -->\n\n不该被读\n", encoding="utf-8")
+        r4 = kb.ingest_dir(kbdir, str(stray), include_ai=False,
+                           allowed_roots=app_mod._kb_allowed_roots())
+        self.assertFalse(r4.get("ok"),
+                         "未被软件写过的目录不得入库（围栏形同虚设）")
+
+        # ── G：提示条必须在 page-home 之外（否则其它页看不见） ──
+        self.assertIn('id="errorBar"', html)
+        eb = html.index('id="errorBar"')
+        home_start = html.index('id="page-home"')
+        home_end = html.index('id="page-process"')
+        self.assertFalse(home_start < eb < home_end,
+                         "errorBar 仍在 page-home 内，跨页提示不可见")
+        self.assertLess(eb, home_start, "errorBar 应提升为 .content 全局元素")
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""

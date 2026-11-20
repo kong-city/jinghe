@@ -322,6 +322,18 @@ def ingest_md(kb_dir, md_path, *, include_ai=False, allowed_roots=None) -> dict:
                 )
             added += 1
         conn.commit()
+        if added == 0 and dup == 0 and skipped_ai == 0:
+            # 诚实降级：该 md 没有 src 注释 / 块锚点，解析不出任何条目。
+            # 如实说明原因，**不谎报入库成功**（否则用户以为收进去了）。
+            return {
+                "ok": False,
+                "error": "未找到 src 来源注释或块锚点，无法入库",
+                "file": str(p),
+                "doc_id": parsed["doc_id"],
+                "added": 0,
+                "duplicate": 0,
+                "skipped_ai": 0,
+            }
         return {
             "ok": True,
             "file": str(p),
@@ -346,12 +358,20 @@ def ingest_dir(kb_dir, product_dir, *, include_ai=False, allowed_roots=None) -> 
     if not d.is_dir():
         return {"ok": False, "error": "产物目录不存在", "dir": str(d)}
 
+    # v1.0.6 修复（用户 2026-11-20 复盘实测：3 个 md 只扫到 1 个）：
+    # 旧实现只扫 md/ 一层（glob 非递归），导致 out/derived/ 下的音视频/
+    # Word/链接产物与根级 SUMMARY.md 全部漏掉——知识库只能装阶段 1。
+    # 现改为递归扫描，并排除**汇总/对账文件**（内容与 md/ 重复，入库会重复命中）。
+    _SKIP_NAMES = {"INDEX.md", "MERGED.md"}
+    _SKIP_DIRS = {".git", ".svn", "__pycache__", "node_modules", ".ipynb_checkpoints"}
     mds = []
-    md_dir = d / "md"
-    if md_dir.is_dir():
-        mds.extend(sorted(md_dir.glob("*.md")))
-    else:
-        mds.extend(sorted(d.glob("*.md")))
+    for p in sorted(d.rglob("*.md")):
+        if p.name in _SKIP_NAMES:
+            continue
+        if any(part in _SKIP_DIRS for part in p.parts):
+            continue
+        if p.is_file():
+            mds.append(p)
     results = []
     for m in mds:
         r = ingest_md(kb_dir, m, include_ai=include_ai, allowed_roots=allowed_roots)

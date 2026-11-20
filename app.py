@@ -916,6 +916,60 @@ _LAST_INPUT = ""
 _LAST_INPUTS: list[str] = []
 _LAST_OUTDIR = ""
 
+# v1.0.6：软件**实际写过产物**的目录集合 = 知识库路径围栏的语义真源。
+# S9 设计文档写的是「只接受知识库数据目录与**产物目录**下的路径」——
+# 「产物目录」= 软件往里写过东西的目录，而不是用户随手填的任意路径。
+# 这里在每个写产物的端点记录 outdir，使合法根自动等于「软件写过产物的目录」。
+_WRITTEN_OUTDIRS: set[str] = set()
+
+
+def _note_outdir(raw: str) -> str:
+    """记录本次写产物的目录（合法根来源），返回规范化路径；失败返回空串。"""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    try:
+        p = str(Path(s).expanduser().resolve())
+    except (OSError, ValueError):
+        return ""
+    _WRITTEN_OUTDIRS.add(p)
+    return p
+
+
+def _kb_allowed_roots() -> list[str]:
+    """知识库入库 / 回跳原文的**路径围栏**：只放行「软件自己会写产物的地方」。
+
+    v1.0.6 修复（用户 2026-11-20 复盘实测：默认配置下入库 100% 失败）：
+    旧实现写死 ``[KB_DIR, os.getcwd()]``——只放行知识库目录与**进程工作目录**，
+    而软件默认输出目录是 ``%TEMP%\\jinghe-out``（或桌面），两者都不在围栏内，
+    于是「入库当前产物」必然返回「路径不在允许范围内」。
+
+    S9 设计文档的本意是放行「**产物目录**」，实现却成了 cwd——只在用户
+    恰好把产物放进 exe 同目录时才偶然重合。
+
+    这里改为显式枚举**软件自己会写产物的合法根**：知识库目录、默认输出
+    目录、桌面、用户自定义输出目录、上次运行输出目录。仍是白名单收敛，
+    **不放开放任意路径**（保住原安全意图）。
+    """
+    roots: list[str] = [str(KB_DIR), str(DEFAULT_OUTDIR), str(DEFAULT_DESKTOP)]
+    if _LAST_OUTDIR:
+        roots.append(_LAST_OUTDIR)
+    # 软件**实际写过产物**的目录——这才是 S9 文档说的「产物目录」。
+    # 用户在首页改了输出目录并跑过任一能力后，该目录即被记录在此。
+    roots.extend(sorted(_WRITTEN_OUTDIRS))
+    try:
+        cfg = _load_settings()
+        custom = str(cfg.get("default_outdir") or "").strip()
+        if custom:
+            roots.append(custom)
+    except Exception:
+        pass  # 设置读不到时用默认集合，不因此拒绝入库
+    out: list[str] = []
+    for r in roots:
+        if r and r not in out:
+            out.append(r)
+    return out
+
 # S3 音频转写任务：与阶段 1 提取任务 _JOB 分开持有，避免污染 /api/progress
 # 的事件队列与件数对账；仍复用同一个 Job 类（事件总线 / 子进程登记 / 超时）。
 _AUDIO_JOB: Job | None = None
@@ -2543,7 +2597,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/run":
                 self._send_json(self._api_run(
                     _norm_inputs(data),
-                    str(data.get("outdir") or "").strip(),
+                    _note_outdir(str(data.get("outdir") or "").strip()),
                 ))
             elif path == "/api/cancel":
                 self._send_json(self._api_cancel())
@@ -2561,7 +2615,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(self._api_open(str(data.get("path") or "").strip()))
             elif path == "/api/open-merged":
                 self._send_json(self._api_open_merged(
-                    str(data.get("outdir") or "").strip()))
+                    _note_outdir(str(data.get("outdir") or "").strip())))
             elif path == "/api/update":
                 self._send_json(self._api_update())
             elif path == "/api/update/start":
@@ -2581,7 +2635,7 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/summarize":
                 self._send_json(
-                    self._api_summarize(str(data.get("outdir") or "").strip()))
+                    self._api_summarize(_note_outdir(str(data.get("outdir") or "").strip())))
             elif path == "/api/transcribe":
                 self._send_json(self._api_transcribe(_norm_inputs(data)))
             elif path == "/api/word/inspect":
@@ -2589,19 +2643,19 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/word/enhance":
                 self._send_json(self._api_word_enhance(
                     _norm_inputs(data),
-                    str(data.get("outdir") or "").strip(),
+                    _note_outdir(str(data.get("outdir") or "").strip()),
                 ))
             elif path == "/api/word/export":
                 self._send_json(self._api_word_export(
                     _norm_inputs(data),
-                    str(data.get("outdir") or "").strip(),
+                    _note_outdir(str(data.get("outdir") or "").strip()),
                 ))
             elif path == "/api/audio/inspect":
                 self._send_json(self._api_audio_inspect(_norm_inputs(data)))
             elif path == "/api/audio/transcribe":
                 self._send_json(self._api_audio_transcribe(
                     _norm_inputs(data),
-                    str(data.get("outdir") or "").strip(),
+                    _note_outdir(str(data.get("outdir") or "").strip()),
                     str(data.get("model") or "").strip(),
                 ))
             elif path == "/api/audio/cancel":
@@ -2611,7 +2665,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/video/transcribe":
                 self._send_json(self._api_video_transcribe(
                     _norm_inputs(data),
-                    str(data.get("outdir") or "").strip(),
+                    _note_outdir(str(data.get("outdir") or "").strip()),
                     str(data.get("model") or "").strip(),
                 ))
             elif path == "/api/video/cancel":
@@ -2649,13 +2703,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(refine.start_refine(
                     str(data.get("path") or "").strip(),
                     str(data.get("model") or "").strip(),
-                    str(data.get("outdir") or "").strip(),
+                    _note_outdir(str(data.get("outdir") or "").strip()),
                 ))
             elif path == "/api/revise/start":
                 self._send_json(refine.start_revise(
                     str(data.get("path") or "").strip(),
                     str(data.get("model") or "").strip(),
-                    str(data.get("outdir") or "").strip(),
+                    _note_outdir(str(data.get("outdir") or "").strip()),
                     str(data.get("instruction") or "").strip(),
                 ))
             elif path == "/api/refine/cancel":
@@ -2679,7 +2733,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(self._api_refine_open(str(data.get("path") or "").strip()))
             elif path == "/api/kb/ingest":
                 # S9：把产物目录入库（include_ai 默认关，路径须在允许根目录内）
-                kb_roots = [str(KB_DIR), os.getcwd()]
+                kb_roots = _kb_allowed_roots()
                 self._send_json(kb.ingest_dir(
                     KB_DIR,
                     str(data.get("dir") or "").strip(),
@@ -2694,7 +2748,7 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/kb/open-source":
                 # S9：回跳原文位置（只解析坐标，不执行打开；路径围栏）
-                kb_roots = [str(KB_DIR), os.getcwd()]
+                kb_roots = _kb_allowed_roots()
                 self._send_json(kb.open_source(
                     KB_DIR, str(data.get("id") or "").strip(),
                     allowed_roots=kb_roots,
@@ -2706,7 +2760,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 可选 OCR：对指定扫描件 PDF 做识别，结果写入 outdir 的同名 md。
                 # 路径围栏：只接受本机存在的 .pdf，输出目录必须存在。
                 pdf_path = str(data.get("path") or "").strip()
-                out_dir = str(data.get("outdir") or "").strip()
+                out_dir = _note_outdir(str(data.get("outdir") or "").strip())
                 if not pdf_path or not pdf_path.lower().endswith(".pdf"):
                     self._send_json({"ok": False, "error": "请指定 PDF 文件"}, 400)
                 elif not Path(pdf_path).is_file():

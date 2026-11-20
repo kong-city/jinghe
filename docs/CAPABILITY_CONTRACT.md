@@ -467,3 +467,14 @@
   - **踩坑**：`el.pages` 是手工映射，加新页必须同步（否则 activatePage 回退 home）；`text_absent` 是全文级断言，不能用来断言「从某页迁出」。
   - **CDP 实测**：7 页逐一切换全部 visible=true 且无串页；加工页 7 按钮；知识库页显示真实状态且 `/api/kb/status` 返回 JSON；首页开始提取在输出区之后、预览同排无重叠。
   - 全量 **166 用例**（69+28+16+34+19）+ 门禁 9/9 + 视觉判分 43/43；SPEC.md 与冻结主流水线零改动；未上传。
+
+- **v1.3.0（2026-11-20 · T1：修三个 P0 断点，软件升号 v1.0.6）**：架构师复盘 + Explore 全面扫链路断点，实测确认三个 P0 让**已交付功能在默认配置下等于不存在**。先接线，再谈新功能。
+  - **E 知识库入库默认 100% 失败**：旧围栏 `kb_roots=[KB_DIR, os.getcwd()]` 只放行「知识库目录 + 进程 cwd」，而软件默认输出目录是 `%TEMP%\jinghe-out`（或桌面），两者都不在围栏内 → 点「入库当前产物」必报「路径不在允许范围内」。实测复现。
+    - **修法（最终版）**：合法根语义 = **「软件实际写过产物的目录」**（正是 S9 文档说的「产物目录」）。新增 `_WRITTEN_OUTDIRS` 集合 + `_note_outdir()`，在**全部 9 个写产物端点**（run / word.enhance / word.export / audio / video / refine / revise / pdf.ocr / summarize）记录 outdir；`_kb_allowed_roots()` = KB_DIR + DEFAULT_OUTDIR + DEFAULT_DESKTOP + _LAST_OUTDIR + 该集合。
+    - **安全边界不放松**：未被软件写过的目录（如 C://Windows）仍被拒，实测 ok=False。**教训：曾一度让前端传 outdir 导致围栏形同虚设，已回退——合法根必须由后端自己掌握的「写过产物」事实推导，不能由前端声称。**
+  - **F 入库漏掉全部后处理产物**：旧实现 `md_dir.glob("*.md")` 非递归 → 只扫 `out/md/` 一层，音视频/Word/链接/OCR 产物全漏，知识库只能装阶段 1。实测 3 个 md 只扫到 1 个。
+    - **修法**：改 `rglob` 递归扫描，排除 `INDEX.md`/`MERGED.md`（汇总重复）与 `.git`/`__pycache__` 等目录；**无 src 注释/锚点的文件如实报失败**（「未找到 src 来源注释或块锚点」），不谎报入库成功。
+  - **G 跨页提示不可见**：`errorBar` 位于 `page-home` 内部（index.html:158），加工/精读/修订/知识库 4 页共 26 处 showError/showNotice 全写进隐藏元素 → 失败时界面毫无反应。
+    - **修法**：提升为 `.content` 全局元素（移出 page-home，置于页头下方），七页全部 `barVisible:true / inViewport:true`（CDP 实测）。
+  - **test_74** 锁定三条（含安全边界：未写过的目录必须被拒）。**171 用例 + 门禁 9/9 + 视觉 48/48 全绿**；exe `Jinghe-1.0.6.exe` 10,006,222 字节。**未上传**。
+  - **待办 T2/T3/T4**：T2 修精读/修订漏传 outdir 导致产物嵌进冻结盘（`out/md/derived/derived/`）+ 清理历史错位产物（破坏性操作，需用户确认）；T3 接线（精读→修订自动接力、加工页可选产物、doc_id 命名替代序号名）；T4 产物中心（统一索引 + 历史列表 + 软件内打开），形态待用户选定。
