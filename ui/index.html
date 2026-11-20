@@ -306,6 +306,17 @@
                  aria-label="精读来源 md 路径" placeholder="选择已转换的 md 文件（out/md 或已生成的 .refine.md）">
           <button id="btnPickRefine" class="btn btn-ghost" type="button">选择 md</button>
         </div>
+        <!-- v1.0.8（T3 接线）：本次产物下拉——不必手填路径（序号名会漂移） -->
+        <div class="row">
+          <label class="set-text" for="refineArtifactSel">
+            <b>本次产物</b>
+            <em>直接选本次生成的 md，无需手填路径</em>
+          </label>
+          <select id="refineArtifactSel" class="text-input set-wide" aria-label="本次产物列表">
+            <option value="">（尚未提取 / 无产物）</option>
+          </select>
+          <button id="btnReloadArtifacts" class="btn btn-ghost" type="button" title="重新读取本次产物">刷新</button>
+        </div>
         <div class="row">
           <label class="check" for="refineModelWrap">模型
             <select id="refineModel" class="text-input" aria-label="提纯使用的模型"></select>
@@ -319,6 +330,9 @@
         <div id="refineResult" class="result-box" hidden>
           <div class="result-head">
             <span id="refineResultPath" class="mono"></span>
+            <!-- v1.0.8（T3 接线）：一键把精读产物送到修订页，消掉手填 refine.md 路径 -->
+            <button id="btnSendToRevise" class="btn btn-ghost" type="button"
+                    title="把本次精读产物直接带到修订页并填好路径">送往修订 →</button>
             <button id="btnOpenRefine" class="btn btn-ghost" type="button">打开产物</button>
           </div>
           <pre id="refinePreview" class="preview-md"></pre>

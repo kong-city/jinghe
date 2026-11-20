@@ -991,6 +991,52 @@ _UPDATE_PLAN_CACHE: tuple[float, dict] | None = None
 _UPDATE_PLAN_TTL = 60.0
 
 
+
+def _list_artifacts(outdir: str) -> dict:
+    """列出本次产物清单：阶段 1 的 md + derived/ 下的后处理产物。
+
+    v1.0.8（T3 接线）：精读 / 修订此前必须**手填路径**，而阶段 1 产物名是
+    ``NNN-<stem>.md`` 这种**序号名**，序号会随批次漂移（旧路径下一轮可能
+    指向别的文件），手填既费事又易错。本端点给出当前批次的真实产物清单，
+    供前端下拉直接选，消掉手填环节。
+
+    安全：目录必须落在**软件写过产物的目录**（同一白名单），只读枚举，
+    不写任何东西。
+    """
+    roots = _kb_allowed_roots()
+    raw = str(outdir or "").strip()
+    if not raw:
+        raw = _LAST_OUTDIR or str(DEFAULT_OUTDIR)
+    try:
+        root = Path(raw).expanduser().resolve()
+    except (OSError, ValueError):
+        return {"ok": False, "error": "路径无效"}
+    if not any(kb._is_within(root, Path(r)) for r in roots):
+        return {"ok": False, "error": "路径不在允许范围内", "dir": str(root)}
+    if not root.is_dir():
+        return {"ok": False, "error": "产物目录不存在", "dir": str(root)}
+
+    md_items = []
+    md_dir = root / "md"
+    if md_dir.is_dir():
+        for f in sorted(md_dir.glob("*.md")):
+            md_items.append({"path": str(f), "name": f.name,
+                             "size": f.stat().st_size})
+    derived_items = []
+    d_dir = media_runtime.derived_dir(root)
+    if d_dir.is_dir():
+        for f in sorted(d_dir.iterdir()):
+            if f.is_file():
+                derived_items.append({"path": str(f), "name": f.name,
+                                      "size": f.stat().st_size})
+    return {
+        "ok": True,
+        "dir": str(root),
+        "md": md_items,
+        "derived": derived_items,
+        "count": len(md_items) + len(derived_items),
+    }
+
 def _update_plan() -> dict:
     """带 TTL 缓存的安装条件探测结果。"""
     global _UPDATE_PLAN_CACHE
@@ -2301,6 +2347,14 @@ class Handler(BaseHTTPRequestHandler):
                 # S9：知识库状态（条目数 / 分词器 / 是否已初始化）
                 _touch_heartbeat()
                 self._send_json(kb.kb_status(KB_DIR))
+                return
+            if path == "/api/artifacts":
+                # v1.0.8（T3 接线）：本次产物清单，供精读/修订下拉直接选，
+                # 消掉「手填产物路径」环节（序号名会随批次漂移，手填易错）
+                _touch_heartbeat()
+                q = parse_qs(parsed.query)
+                self._send_json(_list_artifacts(
+                    (q.get("outdir") or [""])[0]))
                 return
             if path == "/api/progress":
                 _touch_heartbeat()

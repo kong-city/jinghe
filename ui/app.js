@@ -105,6 +105,7 @@
     refineResultPath: $("refineResultPath"),
     refinePreview: $("refinePreview"),
     btnOpenRefine: $("btnOpenRefine"),
+    btnSendToRevise: $("btnSendToRevise"),
     reviseCap: $("reviseCap"),
     reviseSource: $("reviseSource"),
     reviseInstruction: $("reviseInstruction"),
@@ -117,6 +118,8 @@
     revisePreviewMd: $("revisePreviewMd"),
     btnOpenReviseHtml: $("btnOpenReviseHtml"),
     reviseSyncCheck: $("reviseSyncCheck"),
+    refineArtifactSel: $("refineArtifactSel"),
+    btnReloadArtifacts: $("btnReloadArtifacts"),
     revisePreviewMdEl: $("revisePreviewMd"),
     beKind: $("beKind"),
     beMode: $("beMode"),
@@ -369,6 +372,8 @@
     if (name === "process") loadTools();
     // v1.1.0：进入知识库页时刷新真实状态（S9 端点早已实现）
     if (name === "kb") loadKbStatus();
+    // v1.0.8：进入精读页时刷新本次产物清单
+    if (name === "refine") loadArtifacts();
   }
 
   function applySettings(cfg) {
@@ -1333,6 +1338,8 @@
       el.btnOpenMerged.disabled = false;
       lastDoneOutdir = summary.outdir;
       updateFeatureButtons();
+      // v1.0.8：提取完成即刷新「本次产物」清单，精读页可直接选
+      loadArtifacts();
     }
     if (st === "done" && el.optOpenMerged.checked && summary && summary.outdir) {
       openMerged(summary.outdir);
@@ -2018,6 +2025,99 @@
     setTimeout(function () { reviseSyncBusy = false; }, 80);
   });
 
+  // ------------------------------------------------------------------ //
+  // v1.0.8（T3 接线）：本次产物清单——精读/修订不必手填路径。
+  // 阶段 1 产物名是 NNN-<stem>.md 序号名，序号会随批次漂移，
+  // 手填既费事又可能指向别的文件，故由后端给出当前批次的真实清单。
+  // ------------------------------------------------------------------ //
+  function currentOutdir() {
+    return (lastDoneOutdir || (el.outPath && el.outPath.value) || "").trim();
+  }
+
+  function loadArtifacts() {
+    if (!el.refineArtifactSel) return;
+    var sel = el.refineArtifactSel;
+    var dir = currentOutdir();
+    if (!dir) {
+      sel.innerHTML = '<option value="">（先在首页完成一次提取）</option>';
+      return;
+    }
+    api("/api/artifacts?outdir=" + encodeURIComponent(dir), undefined, 15000)
+      .then(function (r) {
+        sel.innerHTML = "";
+        if (!r || !r.ok) {
+          var o = document.createElement("option");
+          o.value = ""; o.textContent = "（读取失败：" + ((r && r.error) || "未知") + "）";
+          sel.appendChild(o);
+          return;
+        }
+        var md = r.md || [], dv = r.derived || [];
+        if (!md.length && !dv.length) {
+          var o2 = document.createElement("option");
+          o2.value = ""; o2.textContent = "（本次尚无产物）";
+          sel.appendChild(o2);
+          return;
+        }
+        if (md.length) {
+          var g1 = document.createElement("optgroup");
+          g1.label = "阶段 1 提取产物（md）";
+          md.forEach(function (f) {
+            var op = document.createElement("option");
+            op.value = f.path; op.textContent = f.name;
+            g1.appendChild(op);
+          });
+          sel.appendChild(g1);
+        }
+        if (dv.length) {
+          var g2 = document.createElement("optgroup");
+          g2.label = "后处理产物（derived）";
+          dv.forEach(function (f) {
+            var op = document.createElement("option");
+            op.value = f.path; op.textContent = f.name;
+            g2.appendChild(op);
+          });
+          sel.appendChild(g2);
+        }
+        // 与输入框当前值保持一致
+        if (el.refineSource && el.refineSource.value) {
+          sel.value = el.refineSource.value;
+        }
+      }).catch(function () {
+        sel.innerHTML = '<option value="">（读取失败）</option>';
+      });
+  }
+
+  // v1.0.8（T3 接线）：精读完成 → 一键送往修订（自动填路径并切页）
+  function sendRefineToRevise() {
+    var path = (el.refineResult && el.refineResult.dataset.path) || "";
+    if (!path) { showError("还没有精读产物可发送。"); return; }
+    if (el.reviseSource) el.reviseSource.value = path;
+    var btn = el.btnSendToRevise;
+    if (btn) btn.disabled = true;
+    try {
+      activatePage("revise");
+      showNotice("已把精读产物带到修订页，可直接点「开始修订」。");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function bindArtifacts() {
+    if (el.refineArtifactSel) {
+      el.refineArtifactSel.addEventListener("change", function () {
+        if (el.refineArtifactSel.value && el.refineSource) {
+          el.refineSource.value = el.refineArtifactSel.value;
+        }
+      });
+    }
+    if (el.btnReloadArtifacts) {
+      el.btnReloadArtifacts.addEventListener("click", loadArtifacts);
+    }
+    if (el.btnSendToRevise) {
+      el.btnSendToRevise.addEventListener("click", sendRefineToRevise);
+    }
+  }
+
   function bindReviseSync() {
     if (el.reviseSyncCheck) {
       el.reviseSyncCheck.addEventListener("change", function () {
@@ -2448,6 +2548,7 @@
     el.btnPickFiles.addEventListener("click", pickFiles);
     bindKbEvents();
     bindReviseSync();
+    bindArtifacts();
     el.btnSummarize.addEventListener("click", doSummarize);
     el.btnExportDocx.addEventListener("click", doWordExport);
     el.btnWordEnhance.addEventListener("click", doWordEnhance);

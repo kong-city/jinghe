@@ -5742,6 +5742,60 @@ class AppContractTest(unittest.TestCase):
         self.assertTrue(snap_root["index_exists"] or snap_root["md_count"] >= 0)
         self.assertIn("md_entries", snap_root, "快照须记录 md/ 下一级条目数（捕获子目录污染）")
 
+    # ------------------------------------------------------------------ #
+    # 76) v1.0.8 T3 接线：产物清单端点 / 精读页下拉 / 一键送往修订
+    # ------------------------------------------------------------------ #
+    def test_76_t3_wiring_no_manual_paths(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        import app as app_mod
+
+        # ① 产物清单端点：存在 + 围栏生效
+        self.assertIn('path == "/api/artifacts"', app_src)
+        self.assertIn("def _list_artifacts(", app_src)
+        prod = Path(self.tmp) / "t3-art"
+        (prod / "md").mkdir(parents=True)
+        (prod / "derived").mkdir()
+        (prod / "md" / "001-a.md").write_text("x", encoding="utf-8")
+        (prod / "derived" / "doc_b.refine.md").write_text("y", encoding="utf-8")
+        app_mod._note_outdir(str(prod))
+        r = app_mod._list_artifacts(str(prod))
+        self.assertTrue(r.get("ok"), "应能列出产物：%s" % r.get("error"))
+        self.assertEqual([x["name"] for x in r["md"]], ["001-a.md"])
+        self.assertEqual([x["name"] for x in r["derived"]], ["doc_b.refine.md"])
+        self.assertEqual(r.get("count"), 2)
+        # 越权目录必须被拒
+        bad = app_mod._list_artifacts(str(Path("C:/Windows/System32")))
+        self.assertFalse(bad.get("ok"), "越权目录不得列出")
+
+        # ② 精读页产物下拉
+        self.assertIn('id="refineArtifactSel"', html)
+        self.assertIn('id="btnReloadArtifacts"', html)
+        self.assertIn("function loadArtifacts(", js)
+        self.assertIn("/api/artifacts?outdir=", js)
+        self.assertIn("function bindArtifacts(", js)
+        # 下拉选中必须回填输入框
+        idx = js.index('el.refineArtifactSel.addEventListener("change"')
+        self.assertIn("el.refineSource.value", js[idx:idx + 400],
+                      "下拉选中须回填精读源输入框")
+
+        # ③ 一键送往修订：填路径 + 切页
+        self.assertIn('id="btnSendToRevise"', html)
+        self.assertIn("function sendRefineToRevise(", js)
+        sidx = js.index("function sendRefineToRevise(")
+        seg = js[sidx:sidx + 700]
+        self.assertIn("el.reviseSource.value = path", seg,
+                      "送往修订须把路径填进修订源输入框")
+        self.assertIn('activatePage("revise")', seg, "须切到修订页")
+
+        # ④ 提取完成即刷新清单（产物此刻才存在）
+        self.assertIn("loadArtifacts();", js)
+
+        # ⑤ 精读页进入时刷新
+        act = js[js.index("function activatePage"):js.index("function applySettings")]
+        self.assertIn('name === "refine") loadArtifacts()', act)
+
 
 def print_summary(result=None) -> None:
     """末尾打印契约数字摘要，便于交付留痕（风格与 test_extract.py 一致）。"""
