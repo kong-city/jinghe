@@ -63,15 +63,42 @@ def fmt(t: tuple[int, int, int]) -> str:
     return "%d.%d.%d" % t
 
 
-def remote_latest() -> dict:
+def _gh_token() -> str:
+    """从 git credential 取 GitHub token（只读，不落盘、不打印）。
+
+    GitHub **匿名 API 会限流返回 403**（用户 2026-11-20 实测），
+    匿名查询失败会让升号工具误判「无法核对远端」而跳号。
+    带 token 查询稳定，故作匿名失败时的回退。
+    """
     try:
-        req = urllib.request.Request(LATEST_API, headers={
-            "User-Agent": "jinghe-bump-version",
-            "Accept": "application/vnd.github+json"})
+        import subprocess
+        out = subprocess.run(["git", "credential", "fill"],
+                             input="protocol=https\nhost=github.com\n\n",
+                             capture_output=True, text=True, timeout=15).stdout
+        for line in out.splitlines():
+            if line.startswith("password="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def remote_latest() -> dict:
+    headers = {
+        "User-Agent": "jinghe-bump-version",
+        "Accept": "application/vnd.github+json",
+        "Cache-Control": "no-cache",
+    }
+    token = _gh_token()
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        req = urllib.request.Request(LATEST_API, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode("utf-8"))
         return {"ok": True, "version": re.sub(r"^v", "", str(data.get("tag_name") or ""))}
     except Exception as exc:
+        # 认证也失败：如实回报失败，**绝不猜**（猜了就会跳号）
         return {"ok": False, "version": "", "error": type(exc).__name__}
 
 

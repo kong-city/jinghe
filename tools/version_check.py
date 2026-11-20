@@ -42,12 +42,41 @@ def local_version() -> tuple[str, tuple[int, ...]]:
     return text, nums
 
 
-def remote_latest() -> dict:
-    """返回 {ok, version, tag, error}；网络失败诚实报 offline。"""
+def _gh_token() -> str:
+    """从 git credential 取 GitHub token（只读，不落盘、不打印）。
+
+    GitHub **匿名 API 会限流 403**（用户 2026-11-20 实测），匿名查询失败
+    会让 for-upload 误判「无法确认远端版本」而拒绝上传。带 token 稳定。
+    """
     try:
-        req = urllib.request.Request(LATEST_API, headers={
-            "User-Agent": "jinghe-version-check",
-            "Accept": "application/vnd.github+json"})
+        import subprocess
+        out = subprocess.run(["git", "credential", "fill"],
+                             input="protocol=https\nhost=github.com\n\n",
+                             capture_output=True, text=True, timeout=15).stdout
+        for line in out.splitlines():
+            if line.startswith("password="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def remote_latest() -> dict:
+    """返回 {ok, version, tag, error}；网络失败诚实报 offline。
+
+    优先带 token 查询（匿名 API 会 403 限流）；两者都失败才报 offline，
+    **绝不猜版本号**（猜了会导致跳号或误判上传）。
+    """
+    headers = {
+        "User-Agent": "jinghe-version-check",
+        "Accept": "application/vnd.github+json",
+        "Cache-Control": "no-cache",
+    }
+    token = _gh_token()
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        req = urllib.request.Request(LATEST_API, headers=headers)
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             data = json.loads(r.read().decode("utf-8"))
         tag = str(data.get("tag_name") or "")

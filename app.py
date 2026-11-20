@@ -1977,6 +1977,24 @@ def _open_document(path: Path) -> str:
     return "browser"
 
 
+def _open_in_explorer(target: Path) -> str:
+    """在系统文件管理器中浏览目录，返回打开方式标记。
+
+    抽成独立函数是为了**可注入**：测试用替身拦下真实调用，否则会真的
+    唤起资源管理器窗口——测试临时目录随 ``TemporaryDirectory`` 退出即被
+    删除，仍开着的资源管理器窗口就会弹「位置不可用」错误框
+    （用户 2026-11-20 反馈：老是跳出来）。生产行为与旧实现完全一致。
+    """
+    if hasattr(os, "startfile"):
+        os.startfile(str(target))  # type: ignore[attr-defined]
+        return "explorer"
+    if os.name == "nt":
+        subprocess.Popen(["explorer", str(target)])
+        return "explorer"
+    webbrowser.open(target.as_uri())
+    return "browser"
+
+
 def _merged_path(outdir: str) -> Path | None:
     """按输出目录解析 MERGED.md；端点只认固定文件名，不接受任意文件路径。
 
@@ -2815,15 +2833,7 @@ class Handler(BaseHTTPRequestHandler):
         # 目录必须走系统资源管理器，不能复用 _open_document（那个固定走
         # 记事本，打开目录会让用户看到空白记事本而不是文件夹）。
         try:
-            if hasattr(os, "startfile"):
-                os.startfile(str(target))  # type: ignore[attr-defined]
-                via = "explorer"
-            elif os.name == "nt":
-                subprocess.Popen(["explorer", str(target)])
-                via = "explorer"
-            else:
-                webbrowser.open(target.as_uri())
-                via = "browser"
+            via = _open_in_explorer(target)
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % type(exc).__name__}
         return {"ok": True, "path": str(target), "via": via}

@@ -100,6 +100,7 @@ import app  # noqa: E402
 
 os.startfile = lambda path: None  # 只在本测试子进程里生效
 app._open_document = lambda p: "startfile"  # 禁止真弹记事本 / 切换窗口
+app._open_in_explorer = lambda p: "explorer"  # 禁止真唤起资源管理器（否则目录删除后弹「位置不可用」）
 app.webbrowser.open = lambda *a, **kw: True  # 一键更新测试不真弹浏览器
 app._download_release_asset = lambda url, version: {"ok": False, "error": "测试替身：禁止联网下载"}
 raise SystemExit(app.main(["--no-browser", "--port", "0"]))
@@ -150,7 +151,7 @@ def pid_run_dirs(pid: int) -> set:
 class AppServer:
     """起一个真实 app.py 实例；所有交互走 HTTP，不 import app.py。"""
 
-    def __init__(self, *, cwd=None, patch_open: bool = False, workdir=None,
+    def __init__(self, *, cwd=None, patch_open: bool = True, workdir=None,
                  env_extra: dict | None = None) -> None:
         self.cwd = str(cwd or ROOT)
         self.patch_open = patch_open
@@ -168,8 +169,10 @@ class AppServer:
     # ---------------------------- 生命周期 ---------------------------- #
     def _argv(self) -> list[str]:
         if self.patch_open:
-            assert self.workdir is not None, "patch_open 需要 workdir 落启动器"
-            launcher = self.workdir / "launch_no_startfile.py"
+            # 启动器落在 workdir（测试临时目录）里，用完随测试一起清理；
+            # 没有 workdir 时落到 TEMP，避免写进项目目录。
+            base = self.workdir or Path(tempfile.gettempdir())
+            launcher = base / "launch_no_startfile.py"
             launcher.write_text(LAUNCHER_SOURCE, encoding="utf-8")
             return [sys.executable, "-u", str(launcher), str(ROOT)]
         return [sys.executable, "-u", str(APP), "--no-browser", "--port", "0"]
@@ -304,7 +307,7 @@ class AppContractTest(unittest.TestCase):
             self._tmp_holder.cleanup()
 
     # ---------------------------- 辅助 ---------------------------- #
-    def start(self, *, patch_open: bool = False,
+    def start(self, *, patch_open: bool = True,
               env_extra: dict | None = None) -> AppServer:
         self.srv = AppServer(patch_open=patch_open, workdir=self.tmp,
                              cwd=ROOT, env_extra=env_extra)
@@ -4636,7 +4639,10 @@ class AppContractTest(unittest.TestCase):
                       "后端未拒绝文件路径")
 
         # 真实 HTTP：目录可开、文件被拒
-        srv = self.start()
+        # patch_open=True：注入打开器替身，禁止真唤起资源管理器
+        # （否则临时目录随测试清理删除，资源管理器窗口弹「位置不可用」，
+        #  用户 2026-11-20 反馈老是跳出来）
+        srv = self.start(patch_open=True)
         outdir = Path(self.tmp) / "out-open"
         outdir.mkdir()
         afile = outdir / "x.md"
@@ -5540,6 +5546,35 @@ class AppContractTest(unittest.TestCase):
         # 顶部版本号保留（用户裁决）
         self.assertIn('id="headerTag"', html)
         self.assertIn('el.headerTag.textContent = "v" + st.version', js)
+
+    # ------------------------------------------------------------------ #
+    # 73) v1.0.5 回归：测试不得真唤起资源管理器（用户 2026-11-20 反馈老是弹窗）
+    # ------------------------------------------------------------------ #
+    def test_73_no_real_explorer_spawn_in_tests(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        js = (ROOT / "test_app.py").read_text(encoding="utf-8")
+
+        # ① 后端：资源管理器调用必须走可注入钩子 _open_in_explorer
+        self.assertIn("def _open_in_explorer(", src, "缺少可注入的资源管理器钩子")
+        self.assertIn("via = _open_in_explorer(target)", src,
+                      "_api_open_folder 必须走钩子，不能直接 os.startfile")
+        hook = src[src.index("def _open_in_explorer("):
+                   src.index("def _merged_path(")]
+        self.assertIn("os.startfile", hook, "钩子默认行为应保持真实打开（生产不变）")
+
+        # ② 测试启动器必须替换该钩子
+        self.assertIn("app._open_in_explorer = lambda p:", js,
+                      "测试启动器未替换 _open_in_explorer，会真弹资源管理器")
+
+        # ③ 默认带替身：所有 self.start() 都应被覆盖（避免新增用例漏改）
+        self.assertIn("patch_open: bool = True", js,
+                      "patch_open 应默认开启，否则新增用例会真弹窗")
+
+        # ④ 用例级：调 open-folder 的那处必须用 patch_open=True
+        idx = js.index('post_json("/api/open-folder"')
+        seg = js[max(0, idx - 900):idx]
+        self.assertIn("patch_open=True", seg,
+                      "调 open-folder 的用例必须用 patch_open=True")
 
 
 def print_summary(result=None) -> None:
