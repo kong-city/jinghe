@@ -132,6 +132,22 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError) as exc:
         check(False, "CI workflow 可读", str(exc))
 
+    # ⑥-b CI 必须覆盖仓库里**每一个** test_*.py（否则 CI 绿灯是假的）
+    # 2026-11-20 实测缺口：test_v10_features 有 19 个用例（守护冻结内核、
+    # host 检查安全边界、OCR 不自动下载、多组件 Job 独立性），却既不在 CI
+    # 的 unittest 命令里、也不在门禁的编译清单里 —— CI 显示全绿，实际少跑
+    # 一整套。新增测试文件若忘记加进 CI，门禁在此直接拦住。
+    try:
+        wf2 = _read(".github/workflows/ci.yml")
+        all_tests = sorted(p.stem for p in ROOT.glob("test_*.py"))
+        not_in_ci = [m for m in all_tests if m not in wf2]
+        check(not not_in_ci, "CI 覆盖全部测试模块",
+              "CI 未跑：%s（新增测试文件必须同步加进 .github/workflows/ci.yml）"
+              % ", ".join(not_in_ci) if not_in_ci
+              else "%d 个测试模块全部在 CI 内" % len(all_tests))
+    except (OSError, UnicodeError) as exc:
+        check(False, "CI 测试覆盖可查", str(exc))
+
     # ⑦ 关键 Python 文件语法可编译（不落 __pycache__）
     bad = []
     for rel in ("app.py", "extract.py", "test_app.py", "test_extract.py",
@@ -149,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
                 "kb.py",
                 # S10 可选组件管理（用户裁决：必须有测试 + 门禁守护）
                 "components.py", "test_components.py",
+                # v1.0.0 特性测试（默认路径 / 多组件 Job / OCR / 安全边界）
+                "test_v10_features.py",
                 # 版本契约判定器 + 一键升号（双终端协作护栏）
                 "tools/version_check.py", "tools/bump_version.py"):
         try:

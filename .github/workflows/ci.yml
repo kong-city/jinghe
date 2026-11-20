@@ -39,7 +39,7 @@ jobs:
         run: python -m py_compile app.py extract.py tools/check_release.py
 
       - name: 全量单元测试（源码，不用 exe）
-        run: python -m unittest -v test_extract test_app test_kb test_components
+        run: python -m unittest -v test_extract test_app test_kb test_components test_v10_features
 
       - name: 发版一致性门禁
         run: python tools/check_release.py --no-exe
