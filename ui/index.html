@@ -36,14 +36,6 @@
         </svg>
         <span class="nav-label">加工</span>
       </button>
-      <!-- v1.1.0：知识库页——S9 后端端点已实现，此前首页按钮仍是「规划中」占位 -->
-      <button class="nav-item" type="button" data-page="kb" title="知识库">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 5.5C4 4.7 4.7 4 5.5 4H10a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 16.5z"/>
-          <path d="M20 5.5c0-.8-.7-1.5-1.5-1.5H14a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"/>
-        </svg>
-        <span class="nav-label">知识库</span>
-      </button>
       <!-- S7d：精读 / 修订入口（提纯核心 / 补写修改，本机可插拔后端） -->
       <button class="nav-item" type="button" data-page="refine" title="精读">
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -56,6 +48,14 @@
           <path d="M4 20h4L20 8l-4-4L4 16v4z"/><path d="M14 6l4 4"/>
         </svg>
         <span class="nav-label">修订</span>
+      </button>
+      <!-- v1.1.0：知识库页——S9 后端端点已实现，此前首页按钮仍是「规划中」占位 -->
+      <button class="nav-item" type="button" data-page="kb" title="知识库">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 5.5C4 4.7 4.7 4 5.5 4H10a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 16.5z"/>
+          <path d="M20 5.5c0-.8-.7-1.5-1.5-1.5H14a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"/>
+        </svg>
+        <span class="nav-label">知识库</span>
       </button>
       <button class="nav-item" type="button" data-page="settings" title="设置">
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -348,9 +348,13 @@
             <span class="mono">彩色预览（新增绿 / 修改前红删除线 / 修改后蓝）</span>
             <button id="btnOpenReviseHtml" class="btn btn-ghost" type="button">打开彩色版</button>
           </div>
-          <iframe id="revisePreviewHtml" class="preview-frame" title="修订彩色预览" sandbox=""></iframe>
-          <details class="md-details">
-            <summary>查看符号标记版（纯文本 md）</summary>
+          <iframe id="revisePreviewHtml" class="preview-frame" title="修订彩色预览" sandbox="allow-scripts"></iframe>
+          <details class="md-details" id="reviseMdDetails">
+            <summary>查看符号标记版（纯文本 md）
+              <label class="sync-toggle" id="reviseSyncWrap" title="勾选后上下两个预览滚动轴同步滚动">
+                <input id="reviseSyncCheck" type="checkbox"> 同步滚动
+              </label>
+            </summary>
             <pre id="revisePreviewMd" class="preview-md"></pre>
           </details>
         </div>
@@ -498,7 +502,6 @@
       <!-- S10：相关组件（本机可选依赖的探测与一键启用） -->
       <section class="card" id="componentsCard">
         <div class="card-title">相关组件</div>
-        <div class="card-sub">下列组件用于音视频转写与链接下载。<strong>软件绝不自动下载</strong>：未安装的组件显示为灰色，只有你手动点「启用」按钮，才会下载到本机（绿色进度条显示进度）；不点就永远不下载。安装只写本机用户目录，不需要管理员权限，工具不随软件分发、不上传任何服务器。</div>
         <div id="componentList" class="component-list" aria-live="polite">
           <div class="component-empty">正在检测组件…</div>
         </div>
@@ -542,7 +545,7 @@
 
       <section class="card">
         <div class="card-title">日志与数据</div>
-        <div class="card-sub">运行时报错会连带记录组件与环境状态。日志按天归档，自动保留最近 7 天；设置仅保存在本机。</div>
+        <div class="card-sub">报错记录组件与环境状态，日志按天归档保留最近 7 天；设置仅存本机不上传。</div>
         <div class="about-item">
           <div class="about-log-row">
             <b class="mono" id="aboutLog">—</b>

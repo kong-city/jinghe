@@ -3984,7 +3984,13 @@ class AppContractTest(unittest.TestCase):
                       "修订额外要求", "精读后端类型", "后端接口地址", "后端 API 密钥"):
             self.assertIn('aria-label="%s"' % label, html, "缺 aria-label：%s" % label)
         self.assertIn("iframe", html)
-        self.assertIn('sandbox=""', html, "彩色预览 iframe 必须 sandbox 隔离")
+        # v1.0.2：为同步滚动放宽到 allow-scripts，但**未给 allow-same-origin**
+        # ——iframe 内脚本仍无法访问父页面 DOM/cookie/localStorage，只能用
+        # postMessage 通信，隔离边界仍在（只是从「禁脚本」调整为「脚本禁同源」）
+        self.assertIn('sandbox="allow-scripts"', html,
+                      "彩色预览 iframe 必须保持 sandbox 隔离")
+        self.assertNotIn("allow-same-origin", html,
+                         "绝不能给 iframe 放行同源，否则沙箱形同虚设")
         self.assertIn("srcdoc", js, "彩色预览应走 srcdoc（经只读端点取文本）")
 
         # ④ JS 调端点正确：GET 传 undefined（api() 靠 body===undefined 判 GET）
@@ -4616,7 +4622,7 @@ class AppContractTest(unittest.TestCase):
         self.assertLess(html.index('<div class="card-title">系统信息</div>'),
                         html.index('<div class="card-title">版本更新</div>'),
                         "系统信息应排在版本更新上面")
-        self.assertIn("自动保留最近 7 天", html, "系统日志卡片缺保留策略说明")
+        self.assertIn("保留最近 7 天", html, "日志与数据卡片缺保留策略说明")
 
         # ---------- ⑦ 首页输出区「更改」→「打开」，只接目录 ----------
         m = re.search(r'<button[^>]*id="btnBrowseOut"[^>]*>(.*?)</button>', html)
@@ -5432,11 +5438,68 @@ class AppContractTest(unittest.TestCase):
             self.assertIn(marker, ocr_fn, "OCR 行缺少组件同款结构 %s" % marker)
         self.assertIn("绝不自动下载", js, "OCR 指引须声明不自动下载")
 
-        # ④ 状态栏只在首页与关于显示（CSS 必须覆盖 display:flex）
+        # ④ 状态栏（v1.0.2 用户改判：全页显示 + sticky 固定，撤销按页隐藏）
         self.assertIn('id="statusbar"', html)
-        self.assertIn('.statusbar[hidden] { display: none; }', css)
+        self.assertIn('position: sticky', css, "状态栏未固定")
+        self.assertNotIn('.statusbar[hidden] { display: none; }', css,
+                         "按页隐藏规则已撤销")
         act = js[js.index("function activatePage"):js.index("function applySettings")]
-        self.assertIn('el.statusbar.hidden = !(name === "home" || name === "about")', act)
+        self.assertNotIn('el.statusbar.hidden', act, "状态栏不应再按页隐藏")
+
+    # ------------------------------------------------------------------ #
+    # 71) v1.0.2 五条 UI 裁决：状态栏全页固定 / 描述补充 / 同步滚动 / 导航顺序 / 清文案
+    # ------------------------------------------------------------------ #
+    def test_71_five_ui_refinements(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+
+        # ① 状态栏全页显示 + sticky 固定不随滚动
+        sb_css = css[css.index(".statusbar {"):css.index(".status-left")]
+        self.assertIn("position: sticky", sb_css)
+        self.assertIn("bottom: 0", sb_css)
+        self.assertIn("z-index:", sb_css)
+        self.assertIn("background:", sb_css, "需背景遮住下方滚动内容")
+        act = js[js.index("function activatePage"):js.index("function applySettings")]
+        self.assertNotIn("statusbar.hidden", act, "状态栏应全页显示")
+
+        # ② 关于页描述补 settings.json，且为单段不换行结构
+        about = html[html.index('id="page-about"'):]
+        # 精确切出「日志与数据」卡片的那一段 card-sub
+        ci = about.index("日志与数据")
+        sub_start = about.index('<div class="card-sub">', ci)
+        sub_end = about.index("</div>", sub_start)
+        card_sub = about[sub_start:sub_end]
+        self.assertIn("报错记录组件与环境状态", card_sub)
+        self.assertIn("设置仅存本机", card_sub)
+        self.assertIn("保留最近 7 天", card_sub)
+        inner = card_sub.split(">", 1)[1]
+        self.assertNotIn("<div", inner, "描述应为单段，尽量不换行")
+
+        # ③ 修订页同步滚动：勾选框 + postMessage 双向
+        self.assertIn('id="reviseSyncCheck"', html)
+        self.assertIn("同步滚动", html)
+        self.assertIn('id="reviseMdDetails"', html)
+        self.assertIn('sandbox="allow-scripts"', html, "iframe 需 allow-scripts 才能上报滚动")
+        self.assertIn("jinghe-scroll", js)
+        self.assertIn("jinghe-scroll-to", js)
+        self.assertIn("reviseSyncOn", js)
+        self.assertIn("postMessage", js)
+        self.assertIn(".sync-toggle", css)
+
+        # ④ 导航顺序：知识库在设置之上
+        def nav_pos(name):
+            return html.index('data-page="%s"' % name)
+        self.assertLess(nav_pos("revise"), nav_pos("kb"),
+                        "知识库应在修订之后")
+        self.assertLess(nav_pos("kb"), nav_pos("settings"),
+                        "知识库应在设置上面")
+        self.assertLess(nav_pos("settings"), nav_pos("about"))
+
+        # ⑤ 组件长文案已清除
+        self.assertNotIn("下列组件用于音视频转写与链接下载", html)
+        self.assertNotIn("不点就永远不下载", html)
+        self.assertIn('id="componentList"', html, "组件列表本身保留")
 
 
 def print_summary(result=None) -> None:

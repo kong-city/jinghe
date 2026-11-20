@@ -127,6 +127,8 @@
     revisePreviewHtml: $("revisePreviewHtml"),
     revisePreviewMd: $("revisePreviewMd"),
     btnOpenReviseHtml: $("btnOpenReviseHtml"),
+    reviseSyncCheck: $("reviseSyncCheck"),
+    revisePreviewMdEl: $("revisePreviewMd"),
     beKind: $("beKind"),
     beMode: $("beMode"),
     beAllowSupplement: $("beAllowSupplement"),
@@ -371,8 +373,6 @@
     var meta = PAGE_META[name] || PAGE_META.home;
     if (el.pageTitle) el.pageTitle.textContent = meta.title;
     if (el.pageSub) el.pageSub.textContent = meta.sub;
-    // v1.0.1：底部状态栏只在首页与关于显示，其余页面隐藏
-    if (el.statusbar) el.statusbar.hidden = !(name === "home" || name === "about");
     if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); loadComponents(); }
     if (name === "about") loadAbout();
     if (name === "refine" || name === "revise") refreshRefineCap();
@@ -1860,7 +1860,22 @@
         el.reviseResult.dataset.html = htmlPath;
         api("/api/refine/artifact?path=" + encodeURIComponent(htmlPath), undefined, 8000)
           .then(function (r) {
-            if (el.revisePreviewHtml && r && r.ok) el.revisePreviewHtml.srcdoc = r.text;
+            if (el.revisePreviewHtml && r && r.ok) {
+              // v1.0.2：注入滚动上报脚本——sandbox 只给 allow-scripts，
+              // 用 postMessage 把滚动比例传出，不触碰父页面 DOM（仍隔离）
+              var scrollProbe = '<script>(function(){' +
+                'var d=document.documentElement,b=document.body;' +
+                'function ratio(){var max=(d.scrollHeight||b.scrollHeight)-(window.innerHeight||0);' +
+                'return max>0?Math.min(1,Math.max(0,window.scrollY/max)):0;}' +
+                'window.addEventListener("scroll",function(){' +
+                'parent.postMessage({type:"jinghe-scroll",ratio:ratio()},"*");},{passive:true});' +
+                'window.addEventListener("message",function(e){' +
+                'var d2=e.data;if(!d2||d2.type!=="jinghe-scroll-to")return;' +
+                'var max=(d.scrollHeight||b.scrollHeight)-(window.innerHeight||0);' +
+                'window.scrollTo(0,max*d2.ratio);});' +
+                '})();<\/script>';
+              el.revisePreviewHtml.srcdoc = r.text + scrollProbe;
+            }
           }).catch(function () { /* 预览失败不影响产物本身 */ });
       }
       if (output && el.revisePreviewMd) {
@@ -2000,6 +2015,50 @@
     var outdir = (summary && summary.outdir) || el.outPath.value.trim();
     if (!outdir) { showError("请先完成提取以生成输出目录"); return; }
     callFeature("/api/summarize", { outdir: outdir }, el.btnSummarize, "提炼中…");
+  }
+
+  // ------------------------------------------------------------------ //
+  // v1.0.2 修订预览同步滚动：勾选后彩色版 iframe 与符号标记版 pre 同比例滚动。
+  // iframe 是 sandbox=allow-scripts（不放行 same-origin），靠 postMessage 通信。
+  // ------------------------------------------------------------------ //
+  var reviseSyncOn = false;
+  var reviseSyncBusy = false;
+
+  function reviseScrollPre() {
+    var pre = el.revisePreviewMdEl;
+    if (!reviseSyncOn || reviseSyncBusy || !pre) return;
+    var max = pre.scrollHeight - pre.clientHeight;
+    if (max <= 0) return;
+    reviseSyncBusy = true;
+    var ratio = Math.min(1, Math.max(0, pre.scrollTop / max));
+    if (el.revisePreviewHtml && el.revisePreviewHtml.contentWindow) {
+      el.revisePreviewHtml.contentWindow.postMessage(
+        { type: "jinghe-scroll-to", ratio: ratio }, "*");
+    }
+    setTimeout(function () { reviseSyncBusy = false; }, 80);
+  }
+
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!reviseSyncOn || reviseSyncBusy || !d || d.type !== "jinghe-scroll") return;
+    var pre = el.revisePreviewMdEl;
+    if (!pre) return;
+    var max = pre.scrollHeight - pre.clientHeight;
+    if (max <= 0) return;
+    reviseSyncBusy = true;
+    pre.scrollTop = max * Math.min(1, Math.max(0, d.ratio || 0));
+    setTimeout(function () { reviseSyncBusy = false; }, 80);
+  });
+
+  function bindReviseSync() {
+    if (el.reviseSyncCheck) {
+      el.reviseSyncCheck.addEventListener("change", function () {
+        reviseSyncOn = !!el.reviseSyncCheck.checked;
+      });
+    }
+    if (el.revisePreviewMdEl) {
+      el.revisePreviewMdEl.addEventListener("scroll", reviseScrollPre, { passive: true });
+    }
   }
 
   // ------------------------------------------------------------------ //
@@ -2420,6 +2479,7 @@
     el.btnBrowseOut.addEventListener("click", browseOutput);
     el.btnPickFiles.addEventListener("click", pickFiles);
     bindKbEvents();
+    bindReviseSync();
     el.btnSummarize.addEventListener("click", doSummarize);
     el.btnExportDocx.addEventListener("click", doWordExport);
     el.btnWordEnhance.addEventListener("click", doWordEnhance);
