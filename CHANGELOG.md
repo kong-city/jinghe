@@ -4,6 +4,10 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [1.1.3] - 2026-11-21
+
+- **修复 CI 发布作业**：fresh checkout 后 `electron/backend/` 目录（仅含被 gitignore 的 exe）不存在，`Copy-Item` 后端 exe 时失败导致 Release 未发布。修复：Copy 前先 `New-Item` 建目录，并新增 `electron/backend/.gitkeep` 占位确保目录随仓库存在。
+
 ## [1.1.2] - 2026-11-21
 
 - **CI 构建链创建**：发布作业新增 Node 环境 + `npm ci` + electron-builder，构建 Electron NSIS 安装包（`Jinghe-<ver>-setup.exe`）并产出 `latest.yml`；Release 同时上传后端 exe、Electron 安装包、更新元数据三类资产。门禁新增「CI 构建 Electron 安装包」断言守护该链路。

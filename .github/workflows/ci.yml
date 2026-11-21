@@ -88,6 +88,9 @@ jobs:
           $version = $tag -replace '^v', ''
           $src = "dist/Jinghe-$version.exe"
           if (-not (Test-Path $src)) { throw "找不到后端产物 $src" }
+          # electron/backend/ 里只有被 gitignore 的 exe，git 不跟踪空目录，
+          # fresh checkout 后该目录不存在——必须先建，否则 Copy-Item 失败。
+          New-Item -ItemType Directory -Force -Path "electron/backend" | Out-Null
           Copy-Item -Force $src "electron/backend/Jinghe.exe"
           Write-Host "后端就位：$src -> electron/backend/Jinghe.exe"
 

@@ -1,0 +1,2 @@
+# 该目录仅用于存放 CI 构建的后端 exe（被 .gitignore 排除）。
+# 保留此占位文件，确保 fresh checkout 后目录存在，CI 的 Copy-Item 不会因目录缺失而失败。
