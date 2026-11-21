@@ -1,4 +1,4 @@
-# 精核 · 阶段 1 输入格式矩阵与降级规格（v2.11）
+# 精核 · 阶段 1 输入格式矩阵与降级规格（v2.12）
 
 > 本文件是共享任务 #2「建立输入格式矩阵与降级规格」的落盘定稿，按交付形态拍板（v2）更新。
 > 只描述阶段 1「文件内容提取 + 汇总」的规格；阶段 2 核心提炼 / Word、阶段 3 音视频、阶段 4 知识库 / 自动化一律不提前实现。
@@ -26,6 +26,7 @@
 | v2.10 | **软件 v0.2.5：治理「仅预览分流」无反馈隐患 + 后端两类加固 + 新增产物入口**。**定性校正（重要）**：本轮回应的用户反馈「提取成功后打开 .md、关掉再点『仅预览分流』没反应」，最终定性为——前端 `api()` 原本是裸 `fetch` **无超时**、`doPreview()` 用 `.then()` 冒充 `.finally()` 复位状态，是可证实的机制缺陷（会话日志确有 3 次 `ConnectionResetError 10054`，响应体未完整送达时 Promise 永不落定 → `previewing` 永久 true → 按钮被禁用且点击被静默吞掉）；但**不能断言「已复现锁死」**——日志里 open 之后仍有 5 条 dry-run 到达且服务端已回，且 `/api/progress`、`/api/state` 不打日志、日志只证「开始发送响应」而非「送达」，故本次是**根治隐患**而非修复已坐实的故障。① **前端**：`api(path, body, timeoutMs)` + `AbortController` 分级超时（dry-run 40000 / progress·state·cancel·open·run 10000 / pick-* 0 不 abort）/ 超时中文归一化「请求超时，已自动恢复，请重试」；`doPreview`·`browse`·`pickFiles` 的 cleanup 改 `.finally`；`finish()` 与 `init()` 兜底复位 `running`/`previewing`；`init()` 的 `if (st.running)` 改为先带超时确认 `/api/progress` 再决定是否 `startRunning`；`doCancel` 补 `.then`、`doRun` 加 `typeof` 守卫与 catch 复位。② **消除观感缺口**：预览成功/失败在 `inputMeta` 写**带 HH:MM:SS 时间戳**的常驻文案（输入不变也能看出已响应）；新增「打开合并文档」按钮（默认 disabled、不进 `updateControls` 禁用列表、`finish()` 在任务成功且有 outdir 时启用），弥补「关闭 MERGED.md 后无入口重开」；界面加一行说明「仅预览分流只盘点分类，不生成文件、不打开文档」。③ **后端加固（非根因，但消除同类隐患）**：`DRY_RUN_TIMEOUT` 由 600s 收敛为 30s，超时单独分支返回中文「预览超时（超过 30 秒）：目录过大 / 文件被占用 / 位于网络盘，请缩小选择范围」；`_run_job_inner` 把 `job.running = False` 放进 `finally` 并把异常路径 `state` 置 `failed`；新增 `_reap_dead_job()` 僵尸任务兜底（判据：`running=True` 且线程为 None 或已退出），在 `/api/state`、`/api/progress`、`/api/run` 三处调用。④ **排查方法论沉淀**：`app.py` 日志在 `send_response()` 写状态行时打印、**早于** `wfile.write(body)`（`except (BrokenPipeError, ConnectionResetError)` 静默吞写失败），故日志出现不代表响应体送达；`/api/progress`、`/api/state` 不打日志；日志条数 ≠ 点击次数——以后不要仅凭「日志出现」断定响应送达，也不要仅凭「零日志」断定按钮锁死。⑤ 回归：`test_app.py` 24/24（新增 `test_19` dry-run 契约、`test_20` 预览不污染状态、`test_21` 静态资源 no-store、`test_22` 前端锁静态契约、`test_23` 运行态复位、`test_24` 僵尸 job 兜底）、`test_extract.py` 27/27 全绿。 |
 
 | v2.11 | **软件 v0.2.6：新增「打开输出目录」按钮，弥补只看到文件夹、看不到导出内容的缺口**。① 现状：提取产物落在 `out-<时间戳>`（含 `MERGED.md` / `INDEX.md` / `md/*.md` / `provenance.json` / `run.log`），但「输出与选项」卡片此前只有「打开合并文档」（仅开 `MERGED.md`）与「更改」（输出目录选择器，文件夹对话框本就只显示文件夹）——用户没有一键打开整个输出文件夹的入口，于是「打开只能看到文件夹、看不到导出内容」。② 改动：UI 新增「打开输出目录」按钮（默认 disabled、不进 `updateControls` 禁用列表、`finish()` 在任务成功且有 `outdir` 时启用），点击经 `POST /api/open` 传 `outdir`，后端 `os.startfile(dir)` 用资源管理器打开该目录；复用既有静态契约，纯前端改动、后端 `/api/open` 已天然支持目录。③ 实测产物目录结构复核确认内容正常生成（顶层 `MERGED.md` / `INDEX.md` 与 `md/` 子目录均在），故本次是补入口而非修生成。 |
+| v2.12 | **规格随软件 v1.1.x 的 Electron 化同步修订（规格版本独立轨道，仅描述界面外壳变更，阶段 1 提取语义一字未动）**。① §6.4 限制 C 由「依赖 Edge 应用模式」改写为「Edge → Electron 自带 Chromium」：默认发布形态改为 Electron 外壳，目标机器无需 Edge / Python / Node，原 Edge 路径降为源码态调试回退；记录体积代价（~10MB → 免安装 ~267MB / NSIS ~60–100MB）与用户裁决（接受）。② §8.1 文件职责：`app.py` 的窗口启动器口径改指 Electron `--no-browser`，新增 `electron/` 目录职责说明。③ 新增 §8.2.1「Electron 外壳进程结构」：两层进程、单实例、后端复用探测、关窗回收、`--cli` 自我重入不变、`latest.yml` 自更新元数据。④ 规格版本 v2.11 → v2.12。**这说明「规格同步」实现的是规格文档与实现的一致性，不是新增软件功能**；§8 首段「界面只消费 `extract.py` 产物、不改变阶段 1 语义」的铁律继续成立。 |
 
 ### 0.1 版本号双轨制（v2.4 立规，防误用）
 
@@ -262,10 +263,11 @@
 - **好消息（顺序上不会更坏）**：`> MAX_SINGLE_BYTES(100MB)` 的分支在编码预处理**之前**就 `continue` 落「需拆分」，因此真正进入编码探测的最大档位就是 100 MB，不会出现「200 MB 先被整读进内存、再判拆分」的倒序。
 - 操作建议：`>50MB 且非 UTF-8` 时**提示用户先拆分**，而不是硬扛。
 
-**限制 C · 界面依赖 Edge 应用模式（v0.2.0 界面层）**
-- 机制：桌面窗口通过 `msedge.exe --app=<url> --window-size=1060,720` 打开，不使用 WebView2 或内嵌浏览器内核。
-- 现实：Edge 是 Windows 10/11 系统自带组件，**目标机器通常无需额外安装**；但若被卸载、被组策略禁用或路径不可定位，则**降级为系统默认浏览器带地址栏打开**——功能不受影响，只是失去无地址栏的「应用窗口」观感。
-- 口径：这属**可选呈现层的降级**，不是启动失败，**不得在界面或日志里报「不支持」类错误**。
+**限制 C · 界面外壳：Edge 应用模式 → Electron 自带 Chromium（v1.1.0 起修订）**
+- 历史（v0.2.0–v1.0.9）：桌面窗口通过 `msedge.exe --app=<url> --window-size=1060,720` 打开，不使用 WebView2 或内嵌浏览器内核；Edge 被卸载 / 组策略禁用时降级为系统默认浏览器带地址栏打开。
+- **现状（v1.1.0+）：对外默认形态改为 Electron 桌面外壳（`electron/`）**——随包分发 Chromium 内核，`main.js` 起无浏览器外观的窗口加载本地 HTTP 服务，`app.py` 以 `--no-browser` 仅作后端。目标机器**无需 Edge、无需 Python、无需 Node**。原 Edge 路径保留为源码态调试的可选回退，不再是发布形态。
+- 口径：**界面层依然只是「呈现与调度外壳」，不改变阶段 1 的任何提取语义**（§8 首段铁律不变）。换壳只替换最外层窗口容器，`ui/`、后端 API、轮询、状态机、路径防护全部零改动。
+- 代价：体积由 ~10MB 增至免安装目录 ~267MB（NSIS 约 60–100MB）；用户 2026-11-21 裁决接受该代价。
 
 **限制 D · `--no-browser` 调试输出在旧版 `cmd.exe` 花屏**
 - 机制：界面进程按 **UTF-8** 统一写出（`sys.stdout/stderr.reconfigure(encoding="utf-8")`），而旧版 `cmd.exe` 默认代码页为 **936（GBK）**，直接重定向阅读会出现乱码 / 花屏。
@@ -305,9 +307,17 @@
 
 ### 8.1 文件职责
 
-- **`app.py`（1263 行）**：标准库 `ThreadingHTTPServer` 承载单页界面；7 个 `/api/*` 业务端点 + 静态路由（§8.3）；Edge `--app` 启动器；`--cli` 自我重入入口；`ctypes` 原生文件夹选择对话框（`IFileDialog`，失败回退旧式 API）；冻结态兼容（`sys._MEIPASS`、无控制台、无 `python.exe`）；**启动时清扫已退出进程遗留的编码副本目录（`_sweep_orphan_dirs`）**。
+- **`app.py`（1263 行）**：标准库 `ThreadingHTTPServer` 承载单页界面；8 个 `/api/*` 业务端点 + 静态路由（§8.3）；窗口启动器（源码态调试用 Edge `--app` / Electron 外壳用 `--no-browser`，见 §8.2.1）；`--cli` 自我重入入口；`ctypes` 原生文件夹选择对话框（`GetOpenFileNameW` 多选，文件夹仍用 `IFileDialog`）；冻结态兼容（`sys._MEIPASS`、无控制台、无 `python.exe`）；**启动时清扫已退出进程遗留的编码副本目录（`_sweep_orphan_dirs`）**。
 - **`ui/index.html` / `ui/app.js` / `ui/app.css`**：零 CDN、零外部字体，**离线可用**；不引入任何前端框架与构建步骤。
-- **`build.py` / `build.spec`**：PyInstaller onefile + `--windowed`；`--add-data "ui;ui"`、`--add-data "vendor;vendor"`。
+- **`build.py` / `build.spec`**：PyInstaller onefile + `--windowed`；`--add-data "ui;ui"`、`--add-data "vendor;vendor"`。产出的是**后端组件 exe**，由 Electron 外壳以 `extraResources` 随包携带。
+- **`electron/`（v1.1.0+ 新增）**：`main.js`（起后端 + 单实例 + 关窗即退 + 端口识别）、`preload.js`、`package.json`、`pack_portable.py`（纯标准库组装免安装版）。只替换窗口壳，不碰任何 UI / 业务 / API。详见 `electron/README.md`。
+
+### 8.2.1 Electron 外壳进程结构（v1.1.0+ 默认发布形态）
+
+- **两层进程**：Electron 主进程（`electron/main.js`）只管窗口壳；它 `spawn` 随包后端 `resources/backend/Jinghe.exe --no-browser --port <port>`，窗口加载 `http://127.0.0.1:<port>/`。
+- **生命周期**：单实例锁（二次双击唤起已有窗口）、后端复用探测（`isJingheListening` 读 `/api/state`）、端口占用拒绝劫持、关窗 / 进程退出时回收后端。
+- **后端仍守 §8.2 的 `--cli` 自我重入**：外壳只是把原来的 Edge 启动器换成了自带 Chromium 的窗口，`app.py` 的 HTTP 服务、路由、状态机一行未改。
+- **自更新元数据**：CI 打 NSIS 时产出 `latest.yml`（`electron-builder` + `publish.github`），供 electron-updater 消费；外壳更新与后端自更新（`self_update.py`）的关系见 `electron/README.md` 未决项。
 
 ### 8.2 进程结构（冻结后自我重入）
 

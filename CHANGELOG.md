@@ -4,6 +4,22 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [1.1.2] - 2026-11-21
+
+- **CI 构建链创建**：发布作业新增 Node 环境 + `npm ci` + electron-builder，构建 Electron NSIS 安装包（`Jinghe-<ver>-setup.exe`）并产出 `latest.yml`；Release 同时上传后端 exe、Electron 安装包、更新元数据三类资产。门禁新增「CI 构建 Electron 安装包」断言守护该链路。
+- **SPEC 规格同步至 Electron 架构**（规格版本 v2.11 → v2.12）：§6.4 限制 C 由「依赖 Edge 应用模式」改写为「Edge → Electron 自带 Chromium」；§8.1 补 `electron/` 目录职责；新增 §8.2.1 Electron 外壳进程结构。说明：规格同步只保证文档与实现一致，不新增软件功能。
+- 为推荐的外壳自更新方案（electron-updater + GitHub Release）铺路：`package.json` 配置 `publish.github`，CI 稳定产出 `latest.yml`。
+
+## [1.1.1] - 2026-11-21
+
+- 界面功能按钮文案统一改为中文（导出文档/文档输入增强/音频转写为文档/视频提取为文档/链接提取为文档/选择文档/选择精读文档）
+
+## [1.1.0] - 2026-11-21
+
+- **架构级变更（去浏览器内核路线落地）**：桌面窗口壳由「系统 Edge `--app` 模式」改为随包分发的 **Electron + Chromium**，目标机器不再依赖 Edge 或任何预装浏览器。UI（ui/ 三件套）、业务核心（extract/backend/refine 等）、HTTP API、轮询与自更新逻辑**全部零改动**——Electron 只负责拉起本地后端并开一个无浏览器外观的窗口。新增 `electron/` 工程（main.js / preload.js / package.json），支持单实例、重复双击唤起、关窗即退、端口占用识别。
+- 版本升号说明：patch 段已满 9，按项目进位规则（每段上限 9、满则进位）1.0.9 → 1.1.0；遵循用户「版本一律走 patch 制、不因功能升 minor」裁决。
+- **未决项**：原自更新（self_update.py）替换的是后端 `Jinghe.exe`，Electron 化后外壳更新需改用 electron-updater 或外链引导，此项在 `开发线说明.md` 中单列，待裁决。CI 构建链（PyInstaller → Electron builder）亦待同步。
+
 ## [1.0.9] - 2026-11-20
 
 - CI 补齐 test_v10_features + 门禁新增 CI 覆盖检查

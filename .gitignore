@@ -21,3 +21,10 @@ Thumbs.db
 .edge-probe*/
 ui/__probe*.html
 v[0-9]*.png
+
+# ---- Electron 外壳（v1.1.0+）----
+# node_modules 与构建产物一律不入库，CI 用 npm ci 按 package-lock.json 还原
+electron/node_modules/
+electron/release/
+# 后端 exe 由 CI 构建后COPY进来（见 ci.yml），不提交二进制
+electron/backend/*.exe

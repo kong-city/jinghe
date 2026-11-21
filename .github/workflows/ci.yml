@@ -45,11 +45,11 @@ jobs:
         run: python tools/check_release.py --no-exe
 
   release:
-    name: 构建 exe 并上传 Release 资产
+    name: 构建后端 exe + Electron 安装包并上传 Release
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
@@ -62,27 +62,65 @@ jobs:
       - name: 安装 PyInstaller（钉版）
         run: python -m pip install --disable-pip-version-check "pyinstaller==6.11.1"
 
-      - name: 构建单文件 exe
+      - name: 构建单文件后端 exe
         run: python build.py
 
       - name: 校验产物与版本一致性
         run: python tools/check_release.py --require-exe
 
-      - name: 创建 Release 并上传带版本号的 exe
+      # ---- Electron 外壳链（v1.1.2 起）----------------------------------
+      # 后端 exe 只是 resources/backend 里的一个组件；对外主产物是 Electron
+      # 安装包。CI 跑在 GitHub 境外网络，electron-builder 下载 NSIS/WinCodeSign
+      # 二进制不会像国内那样卡住，因此这里走标准 electron-builder 流程。
+      - name: 准备 Node（Electron 打包）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装 Electron 依赖（npm ci 按 lock 精确还原）
+        working-directory: electron
+        run: npm ci --no-audit --no-fund
+
+      - name: 放置后端 exe 到打包目录
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          $src = "dist/Jinghe-$version.exe"
+          if (-not (Test-Path $src)) { throw "找不到后端产物 $src" }
+          Copy-Item -Force $src "electron/backend/Jinghe.exe"
+          Write-Host "后端就位：$src -> electron/backend/Jinghe.exe"
+
+      - name: 构建 Electron 安装包与更新元数据
+        working-directory: electron
+        # -p never：只产出安装包与 latest.yml，上传统一交给下方 gh CLI，
+        # 避免 electron-builder 与 gh release 双上传互相 clobber。
+        run: npm run dist -- --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 创建 Release 并上传全部资产
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag -replace '^v', ''
-          $asset = "Jinghe-$version.exe"
-          $exe = "dist/$asset"
-          if (-not (Test-Path $exe)) { throw "找不到产物 $exe（build.py 应产出带版本号资产）" }
+          # 三类资产：后端 exe（兼容旧版 / 门禁关键字）、Electron 安装包、
+          # electron-updater 更新元数据（为外壳自更新方案 A 铺路）。
+          $backend = "dist/Jinghe-$version.exe"
+          $setup   = "electron/release/Jinghe-$version-setup.exe"
+          $latest  = "electron/release/latest.yml"
+          foreach ($f in @($backend, $setup, $latest)) {
+            if (-not (Test-Path $f)) { throw "找不到资产 $f" }
+          }
           gh release view $tag 2>$null | Out-Null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title "精核 $tag" --generate-notes
             if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败" }
           }
-          gh release upload $tag $exe --clobber
-          if ($LASTEXITCODE -ne 0) { throw "上传 exe 资产失败" }
-          Write-Host "已发布 $tag，资产 $asset"
+          gh release upload $tag $backend --clobber
+          gh release upload $tag $setup   --clobber
+          gh release upload $tag $latest  --clobber
+          if ($LASTEXITCODE -ne 0) { throw "上传资产失败" }
+          Write-Host "已发布 $tag：后端 exe + Electron 安装包 + latest.yml"

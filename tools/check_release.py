@@ -132,6 +132,20 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError) as exc:
         check(False, "CI workflow 可读", str(exc))
 
+    # ⑥-a CI 必须构建 Electron 安装包并产出 latest.yml（v1.1.2 起）
+    # Electron 化后对外主产物是 setup.exe，后端 exe 只是随包组件。若 CI 被
+    # 回退成只打 PyInstaller，外壳就再无人构建、自更新元数据也会断供。
+    try:
+        wf3 = _read(".github/workflows/ci.yml")
+        electron_keys = ("setup-node", "npm ci", "npm run dist",
+                         "latest.yml", "Jinghe-$version-setup.exe")
+        missing3 = [k for k in electron_keys if k.lower() not in wf3.lower()]
+        check(not missing3, "CI 构建 Electron 安装包",
+              "缺少关键字：%s" % ",".join(missing3) if missing3
+              else "Node + npm ci + electron-builder + latest.yml")
+    except (OSError, UnicodeError) as exc:
+        check(False, "CI Electron 链可查", str(exc))
+
     # ⑥-b CI 必须覆盖仓库里**每一个** test_*.py（否则 CI 绿灯是假的）
     # 2026-11-20 实测缺口：test_v10_features 有 19 个用例（守护冻结内核、
     # host 检查安全边界、OCR 不自动下载、多组件 Job 独立性），却既不在 CI

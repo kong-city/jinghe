@@ -226,9 +226,9 @@
         <div class="feature-grid">
           <button id="btnSummarize" class="feature-btn" type="button" disabled>核心提炼（摘要）</button>
           <button id="btnExportDocx" class="feature-btn" type="button" disabled
-                  title="把 MERGED.md / 所选 .md 导出为独立 .docx（落 out/derived/），来源注释与块级锚点按原文保留">导出 Word</button>
+                  title="把 MERGED.md / 所选 .md 导出为独立 .docx（落 out/derived/），来源注释与块级锚点按原文保留">导出文档</button>
           <button id="btnWordEnhance" class="feature-btn" type="button" disabled
-                  title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）">Word 输入增强</button>
+                  title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）">文档输入增强</button>
         </div>
       </section>
 
@@ -237,10 +237,10 @@
         <p class="card-sub">本机 whisper 转写音频、独立 video handler 提取视频三区块（元数据 / 音轨转写 / 画面·字幕）。缺工具时按钮显示「未启用」；绝不复用音频路径处理视频，绝不编造画面描述。</p>
         <div class="feature-grid">
           <button id="btnAudioTranscribe" class="feature-btn" type="button" disabled
-                  title="用本机 whisper 把所选音频转成带时间戳的 .md（落 out/derived/）">音频转写 → .md</button>
+                  title="用本机 whisper 把所选音频转成带时间戳的 .md（落 out/derived/）">音频转写为文档</button>
           <button id="btnAudioCancel" class="feature-btn" type="button" hidden>取消转写</button>
           <button id="btnVideoTranscribe" class="feature-btn" type="button" disabled
-                  title="用本机 ffmpeg + whisper 把所选视频转成三区块 .md（落 out/derived/）；独立 video handler，不复用音频路径">视频提取 → .md</button>
+                  title="用本机 ffmpeg + whisper 把所选视频转成三区块 .md（落 out/derived/）；独立 video handler，不复用音频路径">视频提取为文档</button>
           <button id="btnVideoCancel" class="feature-btn" type="button" hidden>取消提取</button>
         </div>
         <p id="toolStatus" class="card-sub tool-status" hidden></p>
@@ -261,7 +261,7 @@
                  placeholder="可选：本机 cookie 文件路径（只读引用，不复制不上传）">
         </div>
         <div class="row set-actions">
-          <button id="btnLinkRun" class="btn btn-primary" type="button" disabled>链接提取 → .md</button>
+          <button id="btnLinkRun" class="btn btn-primary" type="button" disabled>链接提取为文档</button>
           <button id="btnLinkInspect" class="btn btn-ghost" type="button" disabled>预检链接</button>
           <button id="btnLinkCancel" class="btn btn-ghost" type="button" hidden>取消提取</button>
           <span id="linkStatus" class="run-status"></span>
@@ -304,7 +304,7 @@
         <div class="row">
           <input id="refineSource" class="text-input" type="text" spellcheck="false" autocomplete="off"
                  aria-label="精读来源 md 路径" placeholder="选择已转换的 md 文件（out/md 或已生成的 .refine.md）">
-          <button id="btnPickRefine" class="btn btn-ghost" type="button">选择 md</button>
+          <button id="btnPickRefine" class="btn btn-ghost" type="button">选择文档</button>
         </div>
         <!-- v1.0.8（T3 接线）：本次产物下拉——不必手填路径（序号名会漂移） -->
         <div class="row">
@@ -349,7 +349,7 @@
         <div class="row">
           <input id="reviseSource" class="text-input" type="text" spellcheck="false" autocomplete="off"
                  aria-label="修订来源 refine.md 路径" placeholder="选择精读产物 .refine.md">
-          <button id="btnPickRevise" class="btn btn-ghost" type="button">选择 refine.md</button>
+          <button id="btnPickRevise" class="btn btn-ghost" type="button">选择精读文档</button>
         </div>
         <div class="row">
           <input id="reviseInstruction" class="text-input" type="text" spellcheck="false" autocomplete="off"
