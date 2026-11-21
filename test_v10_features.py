@@ -208,6 +208,111 @@ class TestElectronProcessReaping(unittest.TestCase):
         self.assertIn("!macro customUnInstall", nsh)
         self.assertIn("app.asar", nsh)
 
+    def test_uninstaller_prompts_for_data_deletion(self):
+        nsh = (ROOT / "electron" / "installer.nsh").read_text(encoding="utf-8")
+        self.assertIn("IfSilent", nsh, "静默卸载必须跳过数据删除询问")
+        self.assertIn("MB_YESNO", nsh, "交互式卸载必须询问是否删除数据")
+        self.assertIn("MB_DEFBUTTON2", nsh, "默认按钮必须是安全选项（否）")
+        self.assertIn("jinghe_skip_data_prompt", nsh)
+        self.assertIn('RMDir /r "$LOCALAPPDATA\\Jinghe"', nsh)
+
+
+class TestDataExport(unittest.TestCase):
+    """v1.1.9：用户数据导出（设置 / 知识库 / 日志 → zip）。"""
+
+    def test_export_api_routes_wired(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('path == "/api/export-data"', src)
+        self.assertIn('path == "/api/pick-export-dest"', src)
+        self.assertIn("import zipfile", src)
+        self.assertIn("def _api_export_data", src)
+
+    def test_export_uses_stdlib_zipfile(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        m = re.search(r"def _api_export_data\(.*?(?=\n    def |\n    # ---)", src, re.S)
+        self.assertIsNotNone(m, "应能定位 _api_export_data 方法体")
+        body = m.group(0)
+        self.assertIn("zipfile.ZipFile", body)
+        self.assertIn("ZIP_DEFLATED", body)
+        self.assertIn("settings.json", body)
+        self.assertIn('"kb/"', body)
+        # 原子写入，避免半截 zip
+        self.assertIn(".tmp", body)
+        self.assertIn(".replace(", body)
+
+    def test_export_actually_produces_zip(self):
+        """用临时目录替换 LOG_DIR/KB_DIR，真实调用导出方法并校验 zip 内容。"""
+        import tempfile
+        import zipfile as _zipfile
+        from unittest import mock
+
+        import app as appmod
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_dir = root / "Jinghe"
+            kb_dir = log_dir / "kb"
+            kb_dir.mkdir(parents=True)
+            (log_dir / "settings.json").write_text('{"auto_exit": true}', encoding="utf-8")
+            (log_dir / "app.log").write_text("[INFO] hello\n", encoding="utf-8")
+            (kb_dir / "kb.sqlite3").write_bytes(b"fake-sqlite-bytes")
+            (kb_dir / "note.md").write_text("# note\n", encoding="utf-8")
+            dest = root / "backup.zip"
+
+            handler = appmod.Handler.__new__(appmod.Handler)
+            with mock.patch.object(appmod, "LOG_DIR", log_dir), \
+                 mock.patch.object(appmod, "KB_DIR", kb_dir):
+                res = handler._api_export_data(str(dest), include_logs=True)
+
+            self.assertTrue(res.get("ok"), "导出应成功：%s" % res)
+            self.assertTrue(dest.is_file(), "zip 文件应生成")
+            with _zipfile.ZipFile(dest) as zf:
+                names = set(zf.namelist())
+            self.assertIn("settings.json", names)
+            self.assertIn("kb/kb.sqlite3", names)
+            self.assertIn("kb/note.md", names)
+            self.assertIn("app.log", names)
+            self.assertIn("备份说明.txt", names)
+            self.assertEqual(res.get("entries"), 4)
+
+    def test_export_without_logs_excludes_logs(self):
+        import tempfile
+        import zipfile as _zipfile
+        from unittest import mock
+
+        import app as appmod
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_dir = root / "Jinghe"
+            kb_dir = log_dir / "kb"
+            kb_dir.mkdir(parents=True)
+            (log_dir / "settings.json").write_text("{}", encoding="utf-8")
+            (log_dir / "app.log").write_text("[INFO] x\n", encoding="utf-8")
+            (kb_dir / "kb.sqlite3").write_bytes(b"db")
+            dest = root / "backup.zip"
+
+            handler = appmod.Handler.__new__(appmod.Handler)
+            with mock.patch.object(appmod, "LOG_DIR", log_dir), \
+                 mock.patch.object(appmod, "KB_DIR", kb_dir):
+                res = handler._api_export_data(str(dest), include_logs=False)
+
+            self.assertTrue(res.get("ok"))
+            with _zipfile.ZipFile(dest) as zf:
+                names = set(zf.namelist())
+            self.assertIn("settings.json", names)
+            self.assertIn("kb/kb.sqlite3", names)
+            self.assertNotIn("app.log", names, "include_logs=False 时不应打包日志")
+
+    def test_ui_export_button_wired(self):
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="btnExportData"', html)
+        self.assertIn('id="exportDataStatus"', html)
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('function exportData()', js)
+        self.assertIn('api("/api/export-data"', js)
+        self.assertIn("btnExportData", js)
+
 
 if __name__ == "__main__":
     unittest.main()

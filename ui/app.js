@@ -145,7 +145,10 @@
     aboutLog: $("aboutLog"),
     btnOpenAboutLog: $("btnOpenAboutLog"),
     aboutSettingsFile: $("aboutSettingsFile"),
-    btnOpenAboutSettings: $("btnOpenAboutSettings")
+    btnOpenAboutSettings: $("btnOpenAboutSettings"),
+    btnExportData: $("btnExportData"),
+    exportIncludeLogs: $("exportIncludeLogs"),
+    exportDataStatus: $("exportDataStatus")
   };
 
   // 后端 app.log 路径（来自 /api/state.log_file）；启动即可用，按钮常亮
@@ -696,6 +699,43 @@
         if (!r || !r.ok) showError("打开日志失败：" + ((r && r.error) || "未知"));
       })
       .catch(function (err) { showError("打开日志失败：" + (err.message || err)); });
+  }
+
+  /* v1.1.9：导出本机数据备份（设置 + 知识库 + 可选日志）为 .zip。
+     另存为对话框要等用户操作，第三参数传 0：绝不能 abort。 */
+  function exportData() {
+    if (!el.btnExportData) return;
+    var includeLogs = !!(el.exportIncludeLogs && el.exportIncludeLogs.checked);
+    var btn = el.btnExportData;
+    var old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "导出中…";
+    if (el.exportDataStatus) el.exportDataStatus.textContent = "正在打开另存为对话框…";
+    api("/api/export-data", { path: "", include_logs: includeLogs }, 0)
+      .then(function (r) {
+        if (!r || !r.ok) {
+          if (r && r.cancelled) {
+            if (el.exportDataStatus) el.exportDataStatus.textContent = "已取消导出";
+          } else {
+            var msg = (r && r.error) || "未知错误";
+            if (el.exportDataStatus) el.exportDataStatus.textContent = "导出失败：" + msg;
+            showError("导出数据失败：" + msg);
+          }
+          return;
+        }
+        var size = Math.max(1, Math.round((r.bytes || 0) / 1024));
+        var txt = "已导出 " + (r.entries || 0) + " 项（约 " + size + " KB）→ " + r.path;
+        if (el.exportDataStatus) el.exportDataStatus.textContent = txt;
+        showNotice("数据备份完成，已保存到你选择的位置。");
+      })
+      .catch(function (err) {
+        if (el.exportDataStatus) el.exportDataStatus.textContent = "导出失败：" + (err.message || err);
+        showError("导出数据失败：" + (err.message || err));
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = old;
+      });
   }
 
   function setState(name) {
@@ -2667,6 +2707,9 @@
     }
     if (el.btnOpenAboutLog) {
       el.btnOpenAboutLog.addEventListener("click", function () { openLogFile(); });
+    }
+    if (el.btnExportData) {
+      el.btnExportData.addEventListener("click", function () { exportData(); });
     }
     if (el.btnCheckUpdate) {
       el.btnCheckUpdate.addEventListener("click", function () { checkUpdate(); });

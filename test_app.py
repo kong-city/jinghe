@@ -5427,8 +5427,10 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn("btnOpenSettingsFile", settings_page)
         about_page = html[html.index('id="page-about"'):]
         self.assertIn('<div class="card-title">日志与数据</div>', about_page)
-        self.assertEqual(about_page.count('class="about-log-row"'), 2,
-                         "关于页应有日志 + 设置文件两行同格式")
+        # v1.1.9：新增第三行「导出数据」按钮，沿用同格式；三行分别承载
+        # 日志 / 设置文件 / 数据导出入口。
+        self.assertEqual(about_page.count('class="about-log-row"'), 3,
+                         "关于页应有日志 + 设置文件 + 数据导出三行同格式")
         self.assertIn('id="aboutSettingsFile"', about_page)
         self.assertIn('id="btnOpenAboutSettings"', about_page)
         self.assertIn('id="aboutLog"', about_page)

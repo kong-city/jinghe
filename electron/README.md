@@ -1,4 +1,4 @@
-# 精核 · Electron 桌面外壳（当前 v1.1.8；下述实测记录为 v1.1.1 时的产物）
+# 精核 · Electron 桌面外壳（当前 v1.1.9；下述实测记录为 v1.1.1 时的产物）
 
 > 本目录属于去浏览器内核开发线 `desktop/native-gui`，与已封存的 v1.0.9 基线物理隔离。
 
@@ -29,6 +29,7 @@ electron/
 ├── package.json      # Electron + electron-builder 配置，版本与软件版本同步
 ├── main.js           # 主进程：启动后端 / 单实例 / 窗口 / 关窗退出 / 外链处理
 ├── preload.js        # 最小 preload：只暴露只读 shell 标记，不赋权
+├── installer.nsh     # NSIS 卸载补强：补删 app.asar + 询问是否删除个人数据
 ├── .npmrc            # 国内镜像（npmmirror），加速 electron 二进制下载
 ├── backend/          # 打包时放置 PyInstaller 产出的 Jinghe.exe（当前为空，见未决项）
 └── node_modules/     # npm install 生成（不入库）
@@ -114,6 +115,17 @@ cd electron && npm run dist
 | 4 | 版本策略 | 一律 patch 小升级，已按 1.1.1 → 1.1.4 执行；7 个版本标记（真源 + 6 派生点）由升号工具同步、门禁校验 |
 | 5 | 合规/法务 | 开源上传 GitHub：Electron 为 MIT，开源分发无商用编解码顾虑 |
 | 6 | 体积 | 接受：免安装 267.4MB（未压缩）/ NSIS 约 60–100MB |
+
+## 数据管理（v1.1.9）
+
+**导出数据**（关于页 → 日志与数据 → 「导出数据」）：把本机用户数据打包成 `.zip` 备份，可选是否含运行日志。覆盖 `%LOCALAPPDATA%\Jinghe` 下的 `settings.json`、`kb/`（知识库）、`app.log`。纯标准库 `zipfile`，原子写入（.tmp → replace），只读不改原始数据。后端端点 `/api/export-data`、`/api/pick-export-dest`。
+
+**卸载时删除数据**（`installer.nsh` 的 `customUnInstall`）：
+- 交互式卸载：弹窗询问是否删除个人数据，默认按钮为「否」（安全），选「是」才删除。
+- 静默卸载（`/S`，CI / 自动化）：一律保留数据（`IfSilent` 跳过询问），杜绝无人值守误删。
+- 顺带补删 electron-builder 默认清单漏掉的 `resources/app.asar`。
+
+实测：工作区外干净路径静默卸载退出码 0、零残留；此前工作区内复测残留的 app.asar 经查是被 WorkBuddy 安全扫描器持有句柄（独占打开失败）的测试环境伪影，非安装包缺陷。详见 `docs/安装卸载与进程回收测试报告.md`。
 
 ## 中英切换方案（暂停封存）
 

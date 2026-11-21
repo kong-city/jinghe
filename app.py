@@ -36,6 +36,7 @@ import time
 import traceback
 import urllib.request
 import webbrowser
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -1646,6 +1647,7 @@ _SAVE_FLAGS = (_OFN_HIDEREADONLY | _OFN_NOCHANGEDIR | _OFN_EXPLORER
                | _OFN_PATHMUSTEXIST | _OFN_LONGNAMES | _OFN_ENABLESIZING
                | _OFN_OVERWRITEPROMPT)
 _SAVE_TITLE = "把运行日志生成到指定文件"
+_EXPORT_TITLE = "导出精核数据到指定文件"
 
 # 过滤器：name\0spec\0 依次排列，末尾再补一个 \0 表示整表结束
 # S1：Win32 文件对话框过滤器由 FORMAT_REGISTRY 派生，不再手写扩展名。
@@ -1734,8 +1736,14 @@ def _pick_files_win32(initial: str) -> list[str]:
     return _parse_ofn_paths(_split_ofn_buffer(filebuf, _OFN_FILE_BUFFER_CHARS))
 
 
-def _pick_save_file_win32(default_name: str) -> str | None:
-    """GetSaveFileNameW 另存为；用户取消返回 None，真实错误抛异常。"""
+def _pick_save_file_win32(default_name: str, *,
+                          filter_spec: str | None = None,
+                          title: str | None = None,
+                          def_ext: str = "log") -> str | None:
+    """GetSaveFileNameW 另存为；用户取消返回 None，真实错误抛异常。
+
+    参数默认值与日志导出保持一致；数据导出传入 zip 专用的 filter/title/def_ext。
+    """
     comdlg32 = ctypes.windll.comdlg32
     user32 = ctypes.windll.user32
     comdlg32.GetSaveFileNameW.restype = ctypes.c_int
@@ -1744,14 +1752,16 @@ def _pick_save_file_win32(default_name: str) -> str | None:
     comdlg32.CommDlgExtendedError.argtypes = []
     user32.GetForegroundWindow.restype = ctypes.c_void_p
 
-    filt = ctypes.create_unicode_buffer(
-        "日志文件\0*.log\0文本文件\0*.txt\0Markdown\0*.md\0所有文件\0*.*\0\0")
+    if filter_spec is None:
+        filter_spec = ("日志文件\0*.log\0文本文件\0*.txt\0"
+                       "Markdown\0*.md\0所有文件\0*.*\0\0")
+    filt = ctypes.create_unicode_buffer(filter_spec)
     filebuf = ctypes.create_unicode_buffer(1024)
     filebuf.value = default_name
     initbuf = ctypes.create_unicode_buffer(1024)
     initbuf.value = str(LOG_DIR)
-    titlebuf = ctypes.create_unicode_buffer(_SAVE_TITLE)
-    defext = ctypes.create_unicode_buffer("log")
+    titlebuf = ctypes.create_unicode_buffer(title or _SAVE_TITLE)
+    defext = ctypes.create_unicode_buffer(def_ext)
 
     ofn = _OPENFILENAMEW()
     ofn.lStructSize = ctypes.sizeof(_OPENFILENAMEW)
@@ -2720,6 +2730,13 @@ class Handler(BaseHTTPRequestHandler):
                     str(data.get("path") or "").strip(),
                     bool(data.get("errors_only")),
                 ))
+            elif path == "/api/pick-export-dest":
+                self._send_json(self._api_pick_export_dest())
+            elif path == "/api/export-data":
+                self._send_json(self._api_export_data(
+                    str(data.get("path") or "").strip(),
+                    include_logs=bool(data.get("include_logs", True)),
+                ))
             elif path == "/api/summarize":
                 self._send_json(
                     self._api_summarize(_note_outdir(str(data.get("outdir") or "").strip())))
@@ -3242,6 +3259,102 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "path": str(dest),
                 "bytes": len(text.encode("utf-8")),
                 "lines": len(lines), "errors_only": bool(errors_only)}
+
+    def _api_pick_export_dest(self) -> dict:
+        """原生另存为对话框：为数据导出选 .zip 目标路径。"""
+        if os.name != "nt" or not hasattr(ctypes.windll, "comdlg32"):
+            return {"ok": False, "error": "当前系统不支持原生另存为对话框，请直接填写目标路径"}
+        try:
+            chosen = _pick_save_file_win32(
+                "精核数据备份-%s.zip" % time.strftime("%Y%m%d-%H%M%S"),
+                filter_spec="ZIP 压缩包\0*.zip\0所有文件\0*.*\0\0",
+                title=_EXPORT_TITLE,
+                def_ext="zip",
+            )
+        except Exception as exc:
+            _log_error("API:/api/pick-export-dest", "另存为对话框失败", exc)
+            return {"ok": False, "error": "另存为对话框失败：%s" % exc}
+        if not chosen:
+            return {"ok": False, "cancelled": True}
+        return {"ok": True, "path": chosen}
+
+    def _api_export_data(self, target: str, *, include_logs: bool) -> dict:
+        """把本机用户数据打包成 .zip 备份。
+
+        覆盖范围（全部在 %LOCALAPPDATA%\\Jinghe 下，纯本机、不联网）：
+          - settings.json   设置
+          - kb/             知识库（sqlite + 源文档）
+          - app.log / .1    运行日志（include_logs=True 时）
+
+        只读取、不删除、不改动任何原始数据；备份文件写到用户指定路径。
+        原子写入：先写 .tmp 再 replace，避免半截 zip。
+        """
+        if not target:
+            picked = self._api_pick_export_dest()
+            if not picked.get("ok"):
+                return picked
+            target = str(picked["path"])
+        try:
+            dest = Path(target).expanduser()
+            dest = (dest if dest.is_absolute() else (Path.cwd() / dest)).resolve()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": "目标路径无效：%s" % exc}
+        if dest.is_dir():
+            return {"ok": False, "error": "目标是一个文件夹，请填写 .zip 文件名"}
+        if dest.suffix.lower() != ".zip":
+            dest = dest.with_name(dest.name + ".zip")
+
+        # 收集待打包文件（相对 LOG_DIR 的归档名）；缺失项跳过，不报错。
+        entries: list[tuple[Path, str]] = []
+        settings = LOG_DIR / "settings.json"
+        if settings.is_file():
+            entries.append((settings, "settings.json"))
+        if KB_DIR.is_dir():
+            for src in sorted(KB_DIR.rglob("*")):
+                if src.is_file():
+                    entries.append((src, "kb/" + src.relative_to(KB_DIR).as_posix()))
+        if include_logs:
+            for name in ("app.log", "app.log.1"):
+                src = LOG_DIR / name
+                if src.is_file():
+                    entries.append((src, name))
+
+        if not entries:
+            return {"ok": False, "error": "本机暂无可导出的数据（设置 / 知识库 / 日志都不存在）"}
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        manifest = "\n".join([
+            "精核 · 用户数据备份",
+            "导出时间: %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+            "软件版本: %s" % _env_snapshot().get("version"),
+            "包含内容: %s" % "、".join(arc for _, arc in entries),
+            "说明: settings.json 为设置，kb/ 为知识库，app.log 为运行日志。",
+            "恢复: 关闭软件后，把对应文件放回 %LOCALAPPDATA%\\Jinghe 同名位置即可。",
+            "=" * 60,
+            "",
+        ])
+        tmp = dest.with_name(dest.name + ".tmp")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("备份说明.txt", manifest.encode("utf-8"))
+                for src, arc in entries:
+                    zf.write(src, arc)
+            tmp.replace(dest)
+        except OSError as exc:
+            _log_error("API:/api/export-data", "写数据备份 zip 失败", exc, request=target)
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            return {"ok": False, "error": "写入备份失败：%s" % exc}
+
+        size = dest.stat().st_size if dest.exists() else 0
+        _append_log("[INFO] 用户数据已导出：%s（%d 项，%d 字节，含日志=%s）"
+                    % (dest, len(entries), size, include_logs))
+        return {"ok": True, "path": str(dest), "bytes": size,
+                "entries": len(entries), "include_logs": bool(include_logs)}
 
     # ---------------------------- 阶段 2 / 3 后处理 ---------------------------- #
     def _api_summarize(self, outdir: str) -> dict:
