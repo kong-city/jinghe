@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -120,6 +121,42 @@ def main(argv: list[str] | None = None) -> int:
               "使用说明.md 当前版本一致", "当前版本 **v%s**" % version)
     except (OSError, UnicodeError) as exc:
         check(False, "使用说明.md 可读", str(exc))
+
+    # ⑤-a Electron 化后新增的版本派生点必须全部等于真源（v1.1.4 起守护）。
+    # 曾实测到 package-lock.json 停在 1.1.0、README 标题停在 1.1.2，
+    # 后端说一套、安装包说另一套，用户无法判断装的是哪个版本。
+    try:
+        pkg = json.loads(_read("electron/package.json"))
+        check(str(pkg.get("version", "")) == version,
+              "electron/package.json 当前版本一致",
+              "version=%r，期望 %s" % (pkg.get("version"), version))
+    except (OSError, UnicodeError, ValueError) as exc:
+        check(False, "electron/package.json 可解析", str(exc))
+    try:
+        lock = json.loads(_read("electron/package-lock.json"))
+        root_v = str(lock.get("version", ""))
+        pkg_v = str(((lock.get("packages") or {}).get("") or {}).get("version", ""))
+        check(root_v == version and pkg_v == version,
+              "electron/package-lock.json 当前版本一致",
+              "顶层=%r, packages['']=%r，期望 %s" % (root_v, pkg_v, version))
+    except (OSError, UnicodeError, ValueError) as exc:
+        check(False, "electron/package-lock.json 可解析", str(exc))
+    try:
+        ereadme = _read("electron/README.md")
+        m = re.search(r"当前 v(\d+\.\d+\.\d+)", ereadme)
+        got = m.group(1) if m else ""
+        check(got == version, "electron/README.md 当前版本一致",
+              "标题标记=%r，期望 %s" % (got, version))
+    except (OSError, UnicodeError) as exc:
+        check(False, "electron/README.md 可读", str(exc))
+    try:
+        devline = _read("开发线说明.md")
+        found = re.findall(r"(?:· \*\*v|当前状态（v)(\d+\.\d+\.\d+)", devline)
+        check(bool(found) and all(v == version for v in found),
+              "开发线说明.md 当前版本一致",
+              "标记=%s，期望全部为 %s" % (",".join(found) or "无", version))
+    except (OSError, UnicodeError) as exc:
+        check(False, "开发线说明.md 可读", str(exc))
 
     # ⑥ CI workflow 存在且发布阶段会上传 exe 资产
     try:

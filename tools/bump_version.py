@@ -10,11 +10,17 @@
 2. 按改动类型（patch/minor/major）算出候选版本号；
 3. **联网核对 GitHub latest**：若候选号仍 ≤ 远端，自动往上顶（patch +1 直到
    严格大于远端）——从数学上杜绝撞号；
-4. 原子同步所有「当前版本」派生点：
+4. 原子同步所有「当前版本」派生点（v1.1.4 起补全 Electron 开发线）：
    - ``extract.py::__version__``（唯一真源）
    - ``CHANGELOG.md`` 顶部新增 ``## [x.y.z] - 日期`` 条目
    - ``使用说明.md`` 的「当前版本 **vX.Y.Z**」
-   历史留痕（契约 vN 记录、CHANGELOG 旧条目、测试里的 mock 值）一律不动。
+   - ``electron/package.json`` 的顶层 ``version``
+   - ``electron/package-lock.json`` 的顶层 ``version`` 与 ``packages[""].version``
+   - ``electron/README.md`` 标题的「当前 vX.Y.Z」
+   - ``开发线说明.md`` 的目录表版本与「当前状态（vX.Y.Z）」
+   历史留痕（契约 vN 记录、CHANGELOG 旧条目、测试里的 mock 值、依赖版本号）一律不动。
+   Electron 化后外壳 exe 也带版本号，漏同步任何一个点都会造成「后端说 v1.1.4、
+   安装包说 v1.1.0」的混乱，故必须由工具统一写入、由门禁统一校验。
 
 用法：
     python tools/bump_version.py minor --reason "新增 XX 能力"
@@ -41,6 +47,10 @@ POLICY = ROOT / "version-policy.json"
 EXTRACT = ROOT / "extract.py"
 CHANGELOG = ROOT / "CHANGELOG.md"
 GUIDE = ROOT / "使用说明.md"
+ELECTRON_PKG = ROOT / "electron" / "package.json"
+ELECTRON_LOCK = ROOT / "electron" / "package-lock.json"
+ELECTRON_README = ROOT / "electron" / "README.md"
+DEV_LINE = ROOT / "开发线说明.md"
 LATEST_API = "https://api.github.com/repos/kong-city/jinghe/releases/latest"
 
 
@@ -193,6 +203,39 @@ def set_guide(version: str, dry: bool) -> None:
         GUIDE.write_text(new, encoding="utf-8", newline="")
 
 
+def _replace_once(path: Path, pattern: str, version: str, label: str,
+                  dry: bool, count: int = 1) -> None:
+    """按正则替换当前版本标记；匹配数不符即报错，宁可停也不静默漏改。"""
+    text = path.read_text(encoding="utf-8")
+    new, n = re.subn(pattern,
+                     lambda m: m.group(1) + version + m.group(2), text,
+                     count=count)
+    if n != count:
+        raise SystemExit("%s 当前版本替换失败（期望 %d 处，实际 %d 处）"
+                         % (label, count, n))
+    if not dry:
+        path.write_text(new, encoding="utf-8", newline="")
+
+
+def set_electron_and_devline(version: str, dry: bool) -> None:
+    """同步 Electron 外壳工程与开发线文档里的「当前版本」标记。"""
+    # package.json 顶层 version；lock 前两处正好是顶层与 packages[""].version，
+    # 后续都是依赖版本，绝不能动。
+    _replace_once(ELECTRON_PKG, r'("version"\s*:\s*")\d+\.\d+\.\d+(")',
+                  version, "electron/package.json", dry)
+    _replace_once(ELECTRON_LOCK, r'("version"\s*:\s*")\d+\.\d+\.\d+(")',
+                  version, "electron/package-lock.json", dry, count=2)
+    _replace_once(ELECTRON_README,
+                  r'(# 精核 · Electron 桌面外壳（当前 v)\d+\.\d+\.\d+(；)',
+                  version, "electron/README.md", dry)
+    # 开发线说明有两处当前版本标记：目录表 + 当前状态标题。
+    _replace_once(DEV_LINE,
+                  r'(jinghe-desktop/` \| `desktop/native-gui` · \*\*v)\d+\.\d+\.\d+(\*\*)',
+                  version, "开发线说明.md 目录表", dry)
+    _replace_once(DEV_LINE, r'(## 当前状态（v)\d+\.\d+\.\d+(）)',
+                  version, "开发线说明.md 当前状态", dry)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="精核一键自动升号")
     ap.add_argument("kind", nargs="?", choices=("patch", "minor", "major"),
@@ -220,7 +263,9 @@ def main(argv=None) -> int:
     print("当前版本 : %s" % current)
     print("目标版本 : %s" % new_ver)
     print("说明     : %s" % (note or "按规则升号"))
-    print("派生点   : extract.py / CHANGELOG.md / 使用说明.md")
+    print("派生点   : extract.py / CHANGELOG.md / 使用说明.md / "
+          "electron/package.json / electron/package-lock.json / "
+          "electron/README.md / 开发线说明.md")
     if args.dry_run:
         print("[DRY-RUN] 未写入任何文件")
         return 0
@@ -228,7 +273,8 @@ def main(argv=None) -> int:
     set_extract(new_ver, dry=False)
     add_changelog(new_ver, args.reason, dry=False)
     set_guide(new_ver, dry=False)
-    print("[OK] 已升号 %s → %s，三个派生点已同步" % (current, new_ver))
+    set_electron_and_devline(new_ver, dry=False)
+    print("[OK] 已升号 %s → %s，真源 + 6 个派生点已同步" % (current, new_ver))
     print("下一步：跑门禁 python tools/check_release.py --no-exe，再上传前跑 for-upload")
     return 0
 

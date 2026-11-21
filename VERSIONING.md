@@ -42,7 +42,7 @@
 
 ## 一键升号（每次改动必做）
 
-**不要手动改版本号** —— 用工具，它会自动同步三个派生点并确保不撞号：
+**不要手动改版本号** —— 用工具，它会自动同步真源 + 6 个派生点并确保不撞号：
 
 ```bash
 python tools/bump_version.py patch --reason "修 XX bug"
@@ -51,9 +51,12 @@ python tools/bump_version.py major --reason "架构级变更"
 ```
 
 工具会：① 按 `version-policy.json` 规则算号；② **联网核对 GitHub latest，
-若候选号仍 ≤ 远端就自动 +1 顶上去**（数学上杜绝撞号）；③ 同步
-`extract.py` / `CHANGELOG.md` / `使用说明.md` 三个当前版本派生点。
-预览用 `--dry-run`。离线时保守 +1 并提示人工确认。
+若候选号仍 ≤ 远端就自动 +1 顶上去**（数学上杜绝撞号）；③ 同步全部当前版本标记：
+`extract.py`（真源）、`CHANGELOG.md`、`使用说明.md`、`electron/package.json`、
+`electron/package-lock.json`（顶层 + `packages[""]`）、`electron/README.md` 标题、
+`开发线说明.md`（目录表 + 当前状态）。历史记录与依赖版本号一律不动。
+`tools/check_release.py` 会逐项校验，漂移即失败。预览用 `--dry-run`。
+离线时保守 +1 并提示人工确认。
 
 **为什么每次改动都要升号**：本地与远端共用一套版本号，若上传时版本没变，
 `for-upload` 会拒绝（另一终端也无法凭版本识别代码变更）。升号是上传的通行证。

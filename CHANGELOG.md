@@ -4,6 +4,10 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [1.1.4] - 2026-11-21
+
+- 统一版本派生点：升号工具同步 electron/package.json、package-lock.json、README 与开发线说明；发版门禁新增 4 项版本一致性断言；中英切换方案暂停封存（见 docs/待处理项-中英切换.md）
+
 ## [1.1.3] - 2026-11-21
 
 - **修复 CI 发布作业**：fresh checkout 后 `electron/backend/` 目录（仅含被 gitignore 的 exe）不存在，`Copy-Item` 后端 exe 时失败导致 Release 未发布。修复：Copy 前先 `New-Item` 建目录，并新增 `electron/backend/.gitkeep` 占位确保目录随仓库存在。
