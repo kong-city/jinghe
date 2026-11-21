@@ -281,8 +281,30 @@ def _run_refine_extract(path: str, outdir: str, cap: dict) -> None:
             _TASK["state"] = "cancelled"
             return
     text = src.read_text(encoding="utf-8", errors="replace")
-    _task_add("log", "抽取式提纯中（TF-ICF + TextRank + MMR）…", 0.35)
-    result = _extract.extract_core(text, top_k=_EXTRACT_TOP_K)
+    # S11：读取多轮迭代轮数（默认 1 = 原 extract_core 路径，零行为变化）
+    try:
+        rounds = backend._as_rounds(
+            backend.load_config().get("refine_rounds", 1))
+    except Exception:
+        rounds = 1
+    if rounds > 1:
+        import iterate_engine as _iterate
+        _task_add("log", "多轮自我迭代提纯（%d 轮，逐轮聚焦，仍只取原文原句）…"
+                  % rounds, 0.3)
+
+        def _cancelled() -> bool:
+            with _TASK_LOCK:
+                return bool(_TASK and _TASK.get("cancelled"))
+
+        result = _iterate.iterate_core(text, top_k=_EXTRACT_TOP_K,
+                                       max_rounds=rounds,
+                                       cancelled=_cancelled)
+        run_n = int((result.get("stats") or {}).get("rounds_run") or 1)
+        _task_add("log", "迭代 %d 轮%s" % (
+            run_n, "，已收敛" if result.get("converged") else ""), 0.6)
+    else:
+        _task_add("log", "抽取式提纯中（TF-ICF + TextRank + MMR）…", 0.35)
+        result = _extract.extract_core(text, top_k=_EXTRACT_TOP_K)
     points = result.get("points") or []
     _task_add("log", "入选核心 %d 条" % len(points), 0.7)
     if not points:
@@ -307,6 +329,11 @@ def _run_refine_extract(path: str, outdir: str, cap: dict) -> None:
         "model": "—",
     }
     md_text, doc_id = _extract.render_md(src, result, meta)
+    # S11：多轮时在产物末尾追加「迭代轨迹」（逐轮重合度/收敛状态，不含新事实）
+    if rounds > 1:
+        import iterate_engine as _iterate
+        md_text = _iterate.render_rounds(md_text, result)
+        meta["rounds"] = int((result.get("stats") or {}).get("rounds_run") or 1)
     target = media_runtime.ensure_derived(outdir) / (doc_id + REFINE_SUFFIX)
     target.write_text(md_text, encoding="utf-8")
     _engine.append_provenance(outdir, {

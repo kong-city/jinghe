@@ -48,6 +48,12 @@ MODE_EXTRACT = "extract"
 MODE_LLM = "llm"
 VALID_MODES = (MODE_EXTRACT, MODE_LLM)
 
+# S11：多轮自我迭代提纯轮数（仅 extract 模式生效）
+# 默认 1 轮 = 与 S8 旧行为完全一致；上限 5，防止误配导致长耗时。
+REFINE_ROUNDS_DEFAULT = 1
+REFINE_ROUNDS_MIN = 1
+REFINE_ROUNDS_MAX = 5
+
 LOCAL_DEFAULT_ENDPOINT = "http://localhost:11434"
 DEFAULT_CONFIG = {
     "kind": KIND_NONE,
@@ -56,6 +62,7 @@ DEFAULT_CONFIG = {
     "api_key": "",      # Cloud 必填；Local 留空
     "model": "",        # 可选；空则用后端默认/第一个模型
     "allow_suppplement": False,  # S8：AI 补写开关，默认关闭（用户 2026-11-17 明确）
+    "refine_rounds": REFINE_ROUNDS_DEFAULT,  # S11：多轮自我迭代轮数，默认 1（兼容旧行为）
 }
 
 _TIMEOUT_PROBE = 3.0
@@ -82,7 +89,18 @@ def _validate_config(data: object) -> dict:
         out[key] = val.strip() if isinstance(val, str) else ""
     # S8：补写开关只认「明确为真」；缺省 false（默认关闭 = 默认不造假）
     out["allow_suppplement"] = _as_bool(data.get("allow_suppplement", False))
+    # S11：迭代轮数收敛到 [1,5]；脏值回退默认，绝不因配置崩任务
+    out["refine_rounds"] = _as_rounds(data.get("refine_rounds", REFINE_ROUNDS_DEFAULT))
     return out
+
+
+def _as_rounds(value) -> int:
+    """保守整数解析：非法/越界值收敛到合法区间，默认 1 轮。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return REFINE_ROUNDS_DEFAULT
+    return max(REFINE_ROUNDS_MIN, min(REFINE_ROUNDS_MAX, n))
 
 
 def load_config(refresh: bool = False) -> dict:
@@ -184,6 +202,7 @@ def public_config() -> dict:
         "api_key": mask_key(cfg["api_key"]),
         "has_key": bool(cfg["api_key"]),
         "allow_suppplement": _as_bool(cfg.get("allow_suppplement", False)),
+        "refine_rounds": _as_rounds(cfg.get("refine_rounds", REFINE_ROUNDS_DEFAULT)),
         "config_file": str(CONFIG_FILE),
     }
 

@@ -123,6 +123,7 @@
     revisePreviewMdEl: $("revisePreviewMd"),
     beKind: $("beKind"),
     beMode: $("beMode"),
+    beRounds: $("beRounds"),
     beAllowSupplement: $("beAllowSupplement"),
     beEndpoint: $("beEndpoint"),
     beApiKey: $("beApiKey"),
@@ -1872,6 +1873,7 @@
       if (el.beEndpoint) el.beEndpoint.value = cfg.endpoint || "";
       if (el.beApiKey) el.beApiKey.value = cfg.api_key || "";  // 掩码，真 key 不回显
       if (el.beModel) el.beModel.value = cfg.model || "";
+      if (el.beRounds) el.beRounds.value = String(cfg.refine_rounds || 1);
       if (el.beAllowSupplement) el.beAllowSupplement.checked = !!cfg.allow_suppplement;
       applyBackendMode();
     }).catch(function () {
@@ -1887,6 +1889,10 @@
     for (var i = 0; i < fields.length; i += 1) {
       if (fields[i]) fields[i].disabled = !llm;
     }
+    // S11：迭代轮数只对「可信提纯」生效，LLM 模式置灰并给出说明
+    if (el.beRounds) el.beRounds.disabled = llm;
+    var roundsRow = document.getElementById("beRoundsRow");
+    if (roundsRow) roundsRow.hidden = llm;
     var tip = document.getElementById("beLlmHint");
     if (tip) tip.hidden = llm;
     // 精读 / 修订页按模式联动：
@@ -1923,7 +1929,8 @@
       endpoint: (el.beEndpoint && el.beEndpoint.value || "").trim(),
       api_key: keyVal,
       model: (el.beModel && el.beModel.value || "").trim(),
-      allow_suppplement: !!(el.beAllowSupplement && el.beAllowSupplement.checked)
+      allow_suppplement: !!(el.beAllowSupplement && el.beAllowSupplement.checked),
+      refine_rounds: (el.beRounds && el.beRounds.value) || "1"
     };
     if (el.backendStatus) el.backendStatus.textContent = "保存中…";
     api("/api/refine/backend", payload, 10000).then(function (r) {
@@ -1935,6 +1942,9 @@
       if (el.beApiKey && r.config) el.beApiKey.value = r.config.api_key || "";
       if (el.beAllowSupplement && r.config) {
         el.beAllowSupplement.checked = !!r.config.allow_suppplement;
+      }
+      if (el.beRounds && r.config) {
+        el.beRounds.value = String(r.config.refine_rounds || 1);
       }
       if (el.backendStatus) el.backendStatus.textContent = "已保存";
       if (thenProbe) {
@@ -2955,6 +2965,7 @@
     api("/api/refine/backend", undefined, 10000).then(function (r) {
       var cfg = (r && r.config) || {};
       if (el.beMode) el.beMode.value = cfg.mode || "extract";
+      if (el.beRounds) el.beRounds.value = String(cfg.refine_rounds || 1);
       if (el.beAllowSupplement) {
         el.beAllowSupplement.checked = !!cfg.allow_suppplement;
       }

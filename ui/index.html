@@ -461,6 +461,17 @@
               <option value="llm">大模型提纯（LLM）</option>
             </select>
           </label>
+          <!-- S11：多轮自我迭代轮数。仅「可信提纯」生效；默认 1 轮 = 原行为。 -->
+          <label class="set-row" id="beRoundsRow">
+            <span class="set-text">
+              <b>迭代轮数</b>
+              <em>仅「可信提纯」生效。每轮以本轮核心为焦点重新审视全文，逐轮聚焦、提前收敛；
+              每一轮都只取原文原句、逐字可回溯，绝不生成新内容。默认 1 轮（不做迭代），上限 5 轮。</em>
+            </span>
+            <input id="beRounds" class="text-input set-wide" type="number"
+                   min="1" max="5" step="1" value="1" inputmode="numeric"
+                   aria-label="提纯迭代轮数">
+          </label>
           <!-- S8：AI 补写开关，默认关闭。开启即视为知情同意内容为模型生成。 -->
           <label class="set-row">
             <span class="set-text">

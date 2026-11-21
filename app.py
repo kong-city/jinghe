@@ -2842,6 +2842,8 @@ class Handler(BaseHTTPRequestHandler):
                     # 原样透传，由 backend._as_bool 保守判定：
                     # 字符串 "false" 必须判「关」，不能被 bool() 强转成 True。
                     "allow_suppplement": data.get("allow_suppplement", False),
+                    # S11：多轮自我迭代轮数，由 backend._as_rounds 收敛到 [1,5]
+                    "refine_rounds": data.get("refine_rounds", 1),
                 })
                 self._send_json({"ok": True, "config": backend.public_config()})
             elif path == "/api/refine/open":
