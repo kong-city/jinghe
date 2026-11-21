@@ -15,7 +15,8 @@
  */
 'use strict';
 
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -32,6 +33,141 @@ let adoptedBackendPid = null;  // 端口上已存在的精核后端 PID（上次
 let mainWindow = null;         // 主窗口
 let quitting = false;          // 退出流程防重入
 let cleanupDone = false;       // 子进程回收完成，before-quit 才放行
+
+/* -------------------------------------------------------------------------- */
+/* 自更新（方案 A）：electron-updater + GitHub latest.yml                       */
+/* -------------------------------------------------------------------------- */
+// 重要：关闭自动下载/自动安装，全部由网页经 IPC 显式驱动，避免「后台偷偷更新」
+// 与关窗回收进程树打架；检查到的版本只做展示，真正下载在用户点「立即更新」后。
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+let updateBusy = false;        // 更新任务门闩：下载/安装期间拒绝重复触发
+
+// 把后端进程树回收抽成可复用函数：正常关窗与「安装更新前」都要用。
+// 安装更新时若后端还在跑，NSIS 覆盖 resources/backend/Jinghe.exe 会因文件占用失败。
+async function stopBackendProcesses() {
+  try {
+    if (backend && backend.exitCode === null && !backend.killed) {
+      if (process.platform === 'win32') {
+        // onefile 的 Popen.pid 是 PyInstaller bootloader 父进程。必须先在父进程
+        // 还活着时按树杀，否则真正的 Python 子进程会脱离树、继续占端口几十秒。
+        console.log('[jinghe] 按进程树终止后端 pid=' + backendPid);
+        terminateProcessTree(backendPid);
+        await waitForExit(backend, 3000);
+        try { backend.kill(); } catch (_) { /* 已退出 */ }
+      } else {
+        // POSIX：发 SIGTERM 让 Python atexit 清子进程，超时再 SIGKILL。
+        try { backend.kill(); } catch (_) { /* 已退出 */ }
+        await waitForExit(backend, 2000);
+        if (backend.exitCode === null) {
+          try { backend.kill('SIGKILL'); } catch (_) { /* 已退出 */ }
+          await waitForExit(backend, 1000);
+        }
+      }
+    }
+    // 兜底一：父进程已退出时，按树补刀它派生过的 whisper / ffmpeg。
+    if (backendPid) terminateProcessTree(backendPid);
+    if (adoptedBackendPid && adoptedBackendPid !== backendPid) {
+      terminateProcessTree(adoptedBackendPid);
+    }
+    // 兜底二：onefile 的 Python 子进程若已脱离进程树，按完整路径再扫一次。
+    killStrayBackendProcesses();
+  } catch (err) {
+    console.error('[jinghe] 清理后端进程失败:', err);
+  }
+}
+
+// 版本号比较：只比三段数字，避免 "v1.2.0" / "1.2.0" 字符串比较出错。
+function compareVersion(a, b) {
+  const pa = String(a || '').replace(/^v/i, '').split('.').map(Number);
+  const pb = String(b || '').replace(/^v/i, '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = Number.isFinite(pa[i]) ? pa[i] : 0;
+    const y = Number.isFinite(pb[i]) ? pb[i] : 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+// 网页通过 preload 白名单调用；所有返回值都是纯数据，绝不回传 Electron 对象。
+function registerUpdateIPC() {
+  ipcMain.handle('update:check', async () => {
+    // dev 未打包：没有 app-update.yml，updater 无法工作。如实告知，不假装失败。
+    if (!app.isPackaged) {
+      return { ok: true, dev: true, current: app.getVersion(),
+               up_to_date: true, message: '开发模式不检查更新' };
+    }
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      const latest = (result && result.updateInfo && result.updateInfo.version) || '';
+      const upToDate = !latest || compareVersion(latest, app.getVersion()) <= 0;
+      return { ok: true, current: app.getVersion(), latest: latest,
+               up_to_date: upToDate, has_asset: !upToDate && Boolean(latest) };
+    } catch (err) {
+      // 断网 / GitHub 不可达：offline 让前端给出诚实降级提示。
+      console.warn('[jinghe] 检查更新失败:', String(err));
+      return { ok: false, offline: true, error: String(err && err.message || err) };
+    }
+  });
+
+  ipcMain.handle('update:download', async () => {
+    if (!app.isPackaged) return { ok: false, dev: true, error: '开发模式不下载更新' };
+    if (updateBusy) return { ok: false, error: '已有更新任务在运行' };
+    updateBusy = true;
+    try {
+      await autoUpdater.downloadUpdate();
+      return { ok: true, started: true };
+    } catch (err) {
+      console.error('[jinghe] 下载更新失败:', String(err));
+      return { ok: false, error: String(err && err.message || err) };
+    } finally {
+      updateBusy = false;
+    }
+  });
+
+  ipcMain.handle('update:install', async () => {
+    if (!app.isPackaged) return { ok: false, dev: true, error: '开发模式不安装更新' };
+    if (updateBusy) return { ok: false, error: '更新包尚未下载完成' };
+    // 关键时序：先把后端进程树杀干净，再让 NSIS 覆盖随包 exe，否则必因占用失败。
+    await stopBackendProcesses();
+    // 进程已由本处理器回收完毕：置位让 before-quit 守卫直接放行，既不重复清理，
+    // 也不 preventDefault 干扰 electron-updater 的退出后重启流程。
+    cleanupDone = true;
+    updateBusy = true;
+    autoUpdater.quitAndInstall(true, true);
+    return { ok: true, message: '正在安装更新，程序即将重启' };
+  });
+
+  ipcMain.handle('update:cancel', async () => {
+    // electron-updater 6.x 无官方取消下载 API；这里把门闩复位并如实告知。
+    // 真正在后台下载的分块无法被强制中断，但不会安装、也不会替换任何文件。
+    updateBusy = false;
+    return { ok: true, message: '已取消更新安装' };
+  });
+}
+
+// 把 updater 事件转成纯数据推给渲染进程；网页侧只认 update:* 这几个频道。
+function bindUpdaterEvents() {
+  autoUpdater.on('checking-for-update', () => pushUpdate('update:status', { state: 'checking' }));
+  autoUpdater.on('update-available', (info) =>
+    pushUpdate('update:status', { state: 'available', version: info && info.version }));
+  autoUpdater.on('update-not-available', () =>
+    pushUpdate('update:status', { state: 'up_to_date' }));
+  autoUpdater.on('download-progress', (p) =>
+    pushUpdate('update:progress', { percent: Number(p && p.percent) || 0,
+                                    transferred: Number(p && p.transferred) || 0,
+                                    total: Number(p && p.total) || 0 }));
+  autoUpdater.on('update-downloaded', () =>
+    pushUpdate('update:status', { state: 'downloaded' }));
+  autoUpdater.on('error', (err) =>
+    pushUpdate('update:status', { state: 'error', error: String(err && err.message || err) }));
+}
+
+function pushUpdate(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
 
 /* -------------------------------------------------------------------------- */
 /* 后端可执行文件定位                                                          */
@@ -187,6 +323,9 @@ async function startBackend() {
       windowsHide: true,
       detached: false,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // 标记后端「运行在桌面外壳内」：后端据此禁用自带的 exe 替换逻辑，
+      // 避免与外壳 electron-updater 形成双通道（版本错配 / 互相覆盖文件）。
+      env: Object.assign({}, process.env, { JINGHE_SHELL: 'electron' }),
     });
     backendPid = backend.pid || null;
   } catch (err) {
@@ -269,38 +408,9 @@ function createWindow() {
 async function shutdown() {
   if (quitting) return;
   quitting = true;
-  try {
-    if (backend && backend.exitCode === null && !backend.killed) {
-      if (process.platform === 'win32') {
-        // onefile 的 Popen.pid 是 PyInstaller bootloader 父进程。必须先在父进程
-        // 还活着时按树杀，否则真正的 Python 子进程会脱离树、继续占端口几十秒。
-        console.log('[jinghe] 按进程树终止后端 pid=' + backendPid);
-        terminateProcessTree(backendPid);
-        await waitForExit(backend, 3000);
-        try { backend.kill(); } catch (_) { /* 已退出 */ }
-      } else {
-        // POSIX：发 SIGTERM 让 Python atexit 清子进程，超时再 SIGKILL。
-        try { backend.kill(); } catch (_) { /* 已退出 */ }
-        await waitForExit(backend, 2000);
-        if (backend.exitCode === null) {
-          try { backend.kill('SIGKILL'); } catch (_) { /* 已退出 */ }
-          await waitForExit(backend, 1000);
-        }
-      }
-    }
-    // 兜底一：父进程已退出时，按树补刀它派生过的 whisper / ffmpeg。
-    if (backendPid) terminateProcessTree(backendPid);
-    if (adoptedBackendPid && adoptedBackendPid !== backendPid) {
-      terminateProcessTree(adoptedBackendPid);
-    }
-    // 兜底二：onefile 的 Python 子进程若已脱离进程树，按完整路径再扫一次。
-    killStrayBackendProcesses();
-  } catch (err) {
-    console.error('[jinghe] 清理后端进程失败:', err);
-  } finally {
-    cleanupDone = true;
-    app.quit();
-  }
+  await stopBackendProcesses();
+  cleanupDone = true;
+  app.quit();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -319,6 +429,8 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    registerUpdateIPC();   // 更新 IPC 白名单（update:check/download/install/cancel）
+    bindUpdaterEvents();   // updater 进度 → 网页 update:status / update:progress
     const r = await startBackend();
     if (r.aborted) return;
     createWindow();

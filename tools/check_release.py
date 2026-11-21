@@ -183,6 +183,26 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError) as exc:
         check(False, "CI Electron 链可查", str(exc))
 
+    # ⑥-c 外壳自更新 IPC 链（v1.2.0 方案 A）：产了 latest.yml 还必须有
+    # 消费它的代码。若只上传元数据却没接 updater，用户点「检查更新」仍是空的。
+    try:
+        main_js = _read("electron/main.js")
+        preload_js = _read("electron/preload.js")
+        app_js = _read("ui/app.js")
+        ipc_keys = ("ipcMain.handle('update:check'", "ipcMain.handle('update:install'",
+                    "require('electron-updater')", "autoUpdater.quitAndInstall")
+        miss_main = [k for k in ipc_keys if k not in main_js]
+        miss_pre = [k for k in ("desktopUpdater", "contextBridge", "ipcRenderer.invoke")
+                    if k not in preload_js]
+        miss_ui = [k for k in ("window.desktopUpdater", "shellCheckUpdate", "u.onProgress")
+                   if k not in app_js]
+        ok_ipc = not miss_main and not miss_pre and not miss_ui
+        detail_ipc = ("主进程缺:%s 桥缺:%s 前端缺:%s" % (miss_main, miss_pre, miss_ui)
+                      if not ok_ipc else "check/download/install + 白名单桥 + 进度回推")
+        check(ok_ipc, "Electron 自更新 IPC 链完整", detail_ipc)
+    except (OSError, UnicodeError) as exc:
+        check(False, "Electron 自更新 IPC 链可查", str(exc))
+
     # ⑥-b CI 必须覆盖仓库里**每一个** test_*.py（否则 CI 绿灯是假的）
     # 2026-11-20 实测缺口：test_v10_features 有 19 个用例（守护冻结内核、
     # host 检查安全边界、OCR 不自动下载、多组件 Job 独立性），却既不在 CI

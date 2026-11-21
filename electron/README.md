@@ -1,4 +1,4 @@
-# 精核 · Electron 桌面外壳（当前 v1.1.9；下述实测记录为 v1.1.1 时的产物）
+# 精核 · Electron 桌面外壳（当前 v1.2.0；下述实测记录为 v1.1.1 时的产物）
 
 > 本目录属于去浏览器内核开发线 `desktop/native-gui`，与已封存的 v1.0.9 基线物理隔离。
 
@@ -103,13 +103,13 @@ cd electron && npm run dist
 | C | 后端自更新照旧、外壳随安装包手动升级 | 双轨使 Chromium 安全补丁永远到不了终端，是技术债 |
 
 **已铺路（v1.1.2）**：`package.json` 配置 `publish.github`（kong-city/jinghe），CI 稳定产出 `latest.yml` 并随 Release 上传。
-**完整接入（待实施）**：`main.js` 引入 electron-updater 并绑定 `update-check`/`update-download` IPC；前端「检查更新」由 `/api/update/*` 迁移到外壳，或保留双通道但禁用后端替换运行 exe 的逻辑。
+**完整接入（v1.2.0 已实施）**：`main.js` 引入 electron-updater，`ipcMain.handle` 注册 `update:check/download/install/cancel`；`preload.js` 用 contextBridge 暴露具名 `desktopUpdater` 白名单；`ui/app.js` 运行时路由（外壳走 IPC、浏览器回落 HTTP）；后端注入 `JINGHE_SHELL=electron` 禁用替换入口实现双通道互斥；安装前先回收后端进程树再 `quitAndInstall`。详见 `docs/自更新方案A-IPC接入说明.md`。
 
 ## 六项未决 —— 裁决结果（2026-11-21）
 
 | # | 事项 | 裁决 |
 |---|---|---|
-| 1 | 自更新链路 | 采纳方案 A（见上），元数据已铺路、接入待实施 |
+| 1 | 自更新链路 | ✅ 方案 A（见上）v1.2.0 完整接入：updater IPC + 白名单桥 + 双通道互斥 |
 | 2 | CI 构建链 | ✅ 已创建：Node + npm ci + electron-builder，上传 setup.exe + latest.yml + 后端 exe |
 | 3 | SPEC 同步 | ✅ 已修改（非摒弃）：规格版本 v2.12，§6.4 限制 C / §8.1 / 新增 §8.2.1 |
 | 4 | 版本策略 | 一律 patch 小升级，已按 1.1.1 → 1.1.4 执行；7 个版本标记（真源 + 6 派生点）由升号工具同步、门禁校验 |

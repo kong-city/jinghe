@@ -1,20 +1,53 @@
 /*
  * 精核 · Electron preload
  * ---------------------------------------------------------------------------
- * 当前 UI 通过 fetch('/api/*') 与后端通信，全部走同源 HTTP，不需要任何
- * Electron 专用 API。此文件刻意保持最小：只暴露一个只读的 shell 标记，
- * 供前端/调试识别「正运行在 Electron 壳里」，不赋予任何额外权限。
+ * 安全边界：contextIsolation = true，页面拿不到 Node/require。
+ * 本文件通过 contextBridge 暴露两组**只读/具名** API：
+ *   1) JINGHE_SHELL —— 只读外壳标记，供前端识别「正运行在 Electron 壳里」；
+ *   2) desktopUpdater —— 自更新（方案 A）的白名单通道。
  *
- * 注意：contextIsolation = true，页面拿不到 Node/require，安全边界与
- * 浏览器一致；后端原有的 Origin 校验（只放行 127.0.0.1）在 Electron 下
- * 同样生效——Electron 加载的页面 Origin 仍是 http://127.0.0.1:PORT。
+ * 绝不暴露 ipcRenderer 本体：页面只能调用下面列出的固定方法，无法任意发
+ * channel。事件回调只回传 payload，不回传 event 对象——杜绝经 event.sender
+ * 反向操控主进程。后端原有的 Origin 校验在 Electron 下同样生效。
  */
 'use strict';
 
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
+
+// 固定的 channel 白名单：与 electron/main.js 的 ipcMain.handle 一一对应。
+const UPDATE_CHANNELS = Object.freeze({
+  check: 'update:check',
+  download: 'update:download',
+  install: 'update:install',
+  cancel: 'update:cancel',
+  status: 'update:status',
+  progress: 'update:progress',
+});
+
+// 把 event 剥掉，只把 data 交给页面回调；返回退订函数供页面清理监听器。
+function subscribe(channel, callback) {
+  if (typeof callback !== 'function') return function () {};
+  const listener = function (_event, data) { callback(data); };
+  ipcRenderer.on(channel, listener);
+  return function () { ipcRenderer.removeListener(channel, listener); };
+}
 
 contextBridge.exposeInMainWorld('JINGHE_SHELL', Object.freeze({
   name: 'electron',
   electron: process.versions.electron || '',
   chromium: process.versions.chrome || '',
+}));
+
+contextBridge.exposeInMainWorld('desktopUpdater', Object.freeze({
+  // 前端据此选择「IPC 通道」还是「后端 HTTP 兼容通道」。
+  available: true,
+
+  check: function () { return ipcRenderer.invoke(UPDATE_CHANNELS.check); },
+  download: function () { return ipcRenderer.invoke(UPDATE_CHANNELS.download); },
+  install: function () { return ipcRenderer.invoke(UPDATE_CHANNELS.install); },
+  cancel: function () { return ipcRenderer.invoke(UPDATE_CHANNELS.cancel); },
+
+  // 进度与状态事件：只回传纯数据 payload。
+  onStatus: function (cb) { return subscribe(UPDATE_CHANNELS.status, cb); },
+  onProgress: function (cb) { return subscribe(UPDATE_CHANNELS.progress, cb); },
 }));

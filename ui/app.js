@@ -514,6 +514,121 @@
     if (el.updateProgressBar) el.updateProgressBar.style.width = "0";
   }
 
+  /* ==================================================================== *
+   * v1.2.0：Electron 外壳自更新（方案 A）——经 preload 白名单走 IPC。
+   * 纯浏览器（源码调试）下 window.desktopUpdater 不存在，自动回落到下方
+   * 原有的 /api/update/* HTTP 通道；两条通道互斥，同一时刻只走一条。
+   * ==================================================================== */
+  function hasShellUpdater() {
+    return !!(window.desktopUpdater && window.desktopUpdater.available);
+  }
+
+  // Electron 外壳：检查更新 → 有新版本直接下载 → 下载完安装重启。
+  function shellCheckUpdate() {
+    var u = window.desktopUpdater;
+    if (!el.btnCheckUpdate) return;
+    if (updateRunning) { showToast("正在更新中，请稍候", false); return; }
+    var old = el.btnCheckUpdate.textContent;
+    el.btnCheckUpdate.disabled = true;
+    el.btnCheckUpdate.textContent = "检查中…";
+    setUpdateStatus("", "");
+    hideUpdateProgress();
+    u.check().then(function (r) {
+      if (!r) throw new Error("无响应");
+      if (r.dev) {
+        showToast("开发模式不检查更新", false);
+        return;
+      }
+      if (!r.ok) {
+        var why = r.error || "检查更新失败";
+        setUpdateStatus(why, "is-err");
+        showToast(why, true);
+        return;
+      }
+      var latest = r.latest || "—";
+      if (r.up_to_date !== false) {
+        setUpdateStatus("", "");
+        if (el.btnUpdateNow) el.btnUpdateNow.hidden = true;
+        showToast("当前是最新版本", false);
+        return;
+      }
+      // 有新版本：显示「立即更新」并直接进入下载流程。
+      if (el.btnUpdateNow) {
+        el.btnUpdateNow.hidden = false;
+        el.btnUpdateNow.textContent = "立即更新到 " + latest;
+      }
+      setUpdateStatus("发现新版本 " + latest + "，正在更新…", "is-new");
+      shellStartUpdate();
+    }).catch(function (err) {
+      var msg = "检查更新失败：" + (err.message || String(err));
+      setUpdateStatus(msg, "is-err");
+      showToast(msg, true);
+    }).finally(function () {
+      el.btnCheckUpdate.disabled = false;
+      el.btnCheckUpdate.textContent = old;
+    });
+  }
+
+  var shellUnsub = null;  // 退订函数，避免重复订阅造成进度回显多次触发
+
+  function shellStartUpdate() {
+    var u = window.desktopUpdater;
+    if (!el.btnUpdateNow || updateRunning) return;
+    updateRunning = true;
+    el.btnUpdateNow.disabled = true;
+    el.btnUpdateNow.textContent = "更新中…";
+    if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = false;
+    setUpdateStatus("正在下载更新包…", "is-new");
+    setUpdateProgress(0, "0%");
+
+    if (shellUnsub) { shellUnsub(); shellUnsub = null; }
+    shellUnsub = u.onProgress(function (p) {
+      if (p && typeof p.percent === "number") setUpdateProgress(p.percent, Math.round(p.percent) + "%");
+    });
+    // 下载完成事件：安装器接管前给一次明确回显。
+    var unsubStatus = u.onStatus(function (s) {
+      if (s && s.state === "downloaded") setUpdateStatus("更新包已下载，正在安装…", "is-new");
+      if (s && s.state === "error") {
+        updateRunning = false;
+        if (shellUnsub) { shellUnsub(); shellUnsub = null; }
+        if (unsubStatus) unsubStatus();
+        hideUpdateProgress();
+        setUpdateStatus("更新失败：" + (s.error || "未知错误"), "is-err");
+        if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = true;
+      }
+    });
+
+    u.download().then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.error) || "下载失败");
+      setUpdateProgress(100, "100%");
+      setUpdateStatus("正在安装，程序即将重启…", "is-new");
+      return u.install();
+    }).then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.error) || "安装失败");
+      setUpdateStatus("更新完成，程序即将重启…", "is-ok");
+    }).catch(function (err) {
+      updateRunning = false;
+      if (shellUnsub) { shellUnsub(); shellUnsub = null; }
+      if (unsubStatus) unsubStatus();
+      hideUpdateProgress();
+      setUpdateStatus("更新失败：" + (err.message || String(err)), "is-err");
+      if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = true;
+    });
+  }
+
+  function shellCancelUpdate() {
+    var u = window.desktopUpdater;
+    u.cancel().then(function () {
+      updateRunning = false;
+      if (shellUnsub) { shellUnsub(); shellUnsub = null; }
+      hideUpdateProgress();
+      setUpdateStatus("已取消更新安装", "is-new");
+      if (el.btnUpdateCancel) el.btnUpdateCancel.hidden = true;
+    }).catch(function (err) {
+      setUpdateStatus("取消失败：" + (err.message || String(err)), "is-err");
+    });
+  }
+
   /* v0.4.9：点击检查更新 →
        · 已是最新版本 → 弹「当前是最新版本」轻提示，3 秒自动消失；
        · 有新版本 → 直接进入更新流程（无需再点「立即更新」）；
@@ -522,6 +637,8 @@
      否则 api() 会把它当 POST 发出，命中「未知接口」404。*/
   function checkUpdate() {
     if (!el.btnCheckUpdate) return;
+    // 外壳环境优先走 IPC 白名单通道（方案 A）；浏览器调试回落 HTTP。
+    if (hasShellUpdater()) { shellCheckUpdate(); return; }
     // 更新进行中再次点击：只做一次轻提示，绝不重复启动更新任务。
     if (updateRunning) {
       showToast("正在更新中，请稍候", false);
@@ -587,6 +704,7 @@
      前端只轮询进度，绝不长时间阻塞在一次请求上。*/
   function startUpdate() {
     if (!el.btnUpdateNow) return;
+    if (hasShellUpdater()) { shellStartUpdate(); return; }
     if (updateRunning) return;
     updateRunning = true;
     el.btnUpdateNow.disabled = true;
@@ -654,6 +772,7 @@
   }
 
   function cancelUpdate() {
+    if (hasShellUpdater()) { shellCancelUpdate(); return; }
     api("/api/update/cancel", {}, 5000).then(function (r) {
       if (!r || !r.ok) setUpdateStatus((r && r.error) || "取消失败", "is-err");
       else setUpdateStatus("已请求取消更新", "is-new");

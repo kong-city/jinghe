@@ -4,6 +4,10 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [1.2.0] - 2026-11-21
+
+- 自更新方案A完整IPC接入：主进程 electron-updater + update:check/download/install/cancel 白名单，preload contextBridge 具名桥，网页运行时路由（外壳 IPC/浏览器 HTTP），后端 JINGHE_SHELL 互斥守卫，安装前回收后端进程树；新增 10 项 IPC 守护测试 + 门禁 IPC 链断言（patch 满 9 进位至 1.2.0）
+
 ## [1.1.9] - 2026-11-21
 
 - 卸载数据删除询问（交互弹窗/静默保留）+ 用户数据导出功能（设置/知识库/日志打包 zip）+ 7 项守护测试；所有版本派生点同步至 1.1.9

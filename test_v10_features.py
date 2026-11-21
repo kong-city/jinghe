@@ -314,5 +314,111 @@ class TestDataExport(unittest.TestCase):
         self.assertIn("btnExportData", js)
 
 
+class TestShellUpdateIPC(unittest.TestCase):
+    """v1.2.0 方案 A：Electron 外壳自更新的 IPC 接入守护。
+
+    只校验静态契约（频道对齐 / 白名单 / dev 守卫 / 双通道互斥 / 进程回收时序），
+    不启动真实 updater（依赖外网，不适合作单元测试）。
+    """
+
+    def test_main_registers_update_ipc(self):
+        js = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        for ch in ("update:check", "update:download", "update:install", "update:cancel"):
+            self.assertIn("ipcMain.handle('%s'" % ch, js,
+                          "主进程缺少 IPC handler：%s" % ch)
+        self.assertIn("require('electron-updater')", js, "未引入 electron-updater")
+        self.assertIn("autoUpdater.autoDownload = false", js,
+                      "必须关闭自动下载，下载时机由用户显式驱动")
+        self.assertIn("autoUpdater.autoInstallOnAppQuit = false", js,
+                      "必须关闭退出自动安装，避免与关窗回收打架")
+
+    def test_main_dev_guard(self):
+        js = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("if (!app.isPackaged)", js, "dev 环境缺少 isPackaged 守卫")
+        # 三个真实动作都必须有 dev 守卫；check 分支 dev 返回的是只读提示。
+        self.assertGreaterEqual(js.count("if (!app.isPackaged)"), 3,
+                                "检查/下载/安装应各有 dev 守卫")
+
+    def test_main_kills_backend_before_install(self):
+        js = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        install = js[js.index("ipcMain.handle('update:install'"):]
+        install = install[:install.index("ipcMain.handle('update:cancel'")]
+        self.assertIn("await stopBackendProcesses()", install,
+                      "安装前必须先回收后端进程树，否则 NSIS 覆盖 exe 会因占用失败")
+        self.assertIn("quitAndInstall", install, "安装入口未调用 quitAndInstall")
+        self.assertIn("cleanupDone = true", install,
+                      "回收后应放行 before-quit 守卫，避免重复清理")
+
+    def test_main_progress_events_to_renderer(self):
+        js = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("function bindUpdaterEvents", js)
+        self.assertIn("autoUpdater.on('download-progress'", js)
+        self.assertIn("mainWindow.webContents.send(channel, payload)", js,
+                      "进度必须经 webContents 回推渲染进程")
+
+    def test_preload_whitelist_no_raw_ipc(self):
+        js = (ROOT / "electron" / "preload.js").read_text(encoding="utf-8")
+        self.assertIn("contextBridge.exposeInMainWorld('desktopUpdater'", js)
+        for m in ("check", "download", "install", "cancel", "onStatus", "onProgress"):
+            self.assertIn("%s:" % m, js, "preload 白名单缺少方法：%s" % m)
+        # 安全红线：绝不把 ipcRenderer 本体交给页面。
+        self.assertNotIn("exposeInMainWorld('desktopUpdater', ipcRenderer", js)
+        self.assertNotIn("ipcRenderer: ipcRenderer", js)
+        # 回调只回传 payload，不回传 event 对象（防 event.sender 反向操控）。
+        self.assertIn("callback(data)", js)
+        self.assertIn("function (_event, data)", js)
+
+    def test_channels_aligned_between_preload_and_main(self):
+        preload = (ROOT / "electron" / "preload.js").read_text(encoding="utf-8")
+        main = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        for ch in ("update:check", "update:download", "update:install", "update:cancel",
+                   "update:status", "update:progress"):
+            self.assertIn("'%s'" % ch, preload, "preload 缺少频道 %s" % ch)
+            self.assertIn("'%s'" % ch, main, "主进程缺少频道 %s" % ch)
+
+    def test_frontend_routes_to_shell_updater(self):
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function hasShellUpdater()", js)
+        self.assertIn("window.desktopUpdater && window.desktopUpdater.available", js)
+        # 三个入口都优先走外壳通道，浏览器模式回落原 HTTP 通道（测试契约保留）。
+        cu = js[js.index("function checkUpdate()"):js.index("function startUpdate()")]
+        self.assertIn("hasShellUpdater()", cu, "检查更新未路由到外壳通道")
+        self.assertIn('api("/api/update/check", undefined, 20000)', cu,
+                      "浏览器回落通道被误删（破坏既有契约）")
+        su = js[js.index("function startUpdate()"):js.index("function pollUpdateStatus()")]
+        self.assertIn("hasShellUpdater()", su, "启动更新未路由到外壳通道")
+        self.assertIn('api("/api/update/start", {}, 20000)', su,
+                      "浏览器回落通道被误删")
+        self.assertIn("function shellStartUpdate()", js)
+        self.assertIn("u.onProgress", js, "前端未订阅下载进度事件")
+
+    def test_backend_shell_guard_disables_replacement(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("def _shell_owns_update()", src)
+        self.assertIn('os.environ.get("JINGHE_SHELL"', src)
+        start = src[src.index("def _api_update_start"):src.index("def _api_update_cancel")]
+        apply = src[src.index("def _api_update_apply"):src.index("def _api_update_status")]
+        self.assertIn("_shell_owns_update()", start, "更新启动入口缺少外壳守卫")
+        self.assertIn("_shell_owns_update()", apply, "替换入口缺少外壳守卫")
+
+    def test_main_injects_shell_env_to_backend(self):
+        js = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("JINGHE_SHELL: 'electron'", js,
+                      "主进程未向后端注入外壳标记，双通道互斥失效")
+
+    def test_electron_updater_dependency_pinned(self):
+        import json
+        import extract
+        pkg = json.loads((ROOT / "electron" / "package.json").read_text(encoding="utf-8"))
+        # 必须是生产依赖：electron-builder 只把 dependencies 打进 asar，
+        # 放 devDependencies 会导致打包后 require('electron-updater') 失败白屏。
+        self.assertIn("electron-updater", pkg.get("dependencies", {}),
+                      "electron-updater 必须在 dependencies（生产依赖），否则不进 asar")
+        self.assertNotIn("electron-updater", pkg.get("devDependencies", {}),
+                         "electron-updater 不应在 devDependencies")
+        self.assertEqual(pkg["version"], extract.__version__,
+                         "package.json 版本与真源不一致，latest.yml 会报错误版本")
+
+
 if __name__ == "__main__":
     unittest.main()

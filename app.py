@@ -165,6 +165,18 @@ DEFAULT_DESKTOP = _default_desktop()
 LOG_MAX_BYTES = 2 * 1024 * 1024
 
 
+def _shell_owns_update() -> bool:
+    """Electron 外壳是否接管自更新（v1.2.0 方案 A）。
+
+    桌面外壳拉起本后端时会注入 ``JINGHE_SHELL=electron``。此时真正的程序替换
+    由外壳主进程的 electron-updater 负责（它懂 NSIS 安装结构、能写 latest.yml），
+    后端自带的 self_update 只换 backend exe、换不掉外壳和 UI，若两套逻辑都跑会
+    互相覆盖文件、版本错配。故外壳环境下禁用「执行替换」类入口，只保留只读的
+    版本检查（/api/update/check）——浏览器直接跑源码时无此变量，行为完全不变。
+    """
+    return os.environ.get("JINGHE_SHELL", "").strip().lower() == "electron"
+
+
 def _current_version() -> str:
     """软件版本唯一来源 extract.py，且绝不返回 "unknown"。
 
@@ -3656,6 +3668,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_update_start(self) -> dict:
         """启动自更新后台任务（查版本 → 下载 → 替换 → 重启），立即返回。"""
+        if _shell_owns_update():
+            return {"ok": False, "shell_owned": True,
+                    "error": "桌面外壳已接管更新，请通过「检查更新」安装"}
         global _UPDATE_JOB
         with _UPDATE_LOCK:
             job = _UPDATE_JOB
@@ -3684,6 +3699,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_update_apply(self) -> dict:
         """手动触发替换（正常流程由后台任务自动完成，这里是补救入口）。"""
+        if _shell_owns_update():
+            return {"ok": False, "shell_owned": True,
+                    "error": "桌面外壳已接管更新，请通过「检查更新」安装"}
         with _UPDATE_LOCK:
             job = _UPDATE_JOB
         summary = job.summary if job is not None else None
