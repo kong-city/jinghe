@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """精核 · 本地图形界面（唯一入口，纯 Python 标准库）。
 
-用标准库 http.server 提供一个只监听 127.0.0.1 的本地服务，页面在 ui/ 下，
-用 Edge 的 --app 模式打开成无地址栏的独立窗口。
+用标准库 http.server 提供一个只监听 127.0.0.1 的本地服务，页面在 ui/ 下；
+窗口壳由随包分发的 Electron 提供（原 Edge --app 模式已弃用），--no-browser
+只起服务、不开窗口。
 
 用法：
     python app.py                  # 自动选端口并打开窗口
@@ -26,6 +27,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -753,6 +755,36 @@ atexit.register(_sweep_run_dirs)
 atexit.register(_sweep_drop_dirs)
 
 
+def _terminate_all_jobs_on_exit() -> None:
+    """进程退出前清掉所有在跑的外部工具进程树（whisper / ffmpeg / 转换器）。
+
+    Electron 关窗时会在 2 秒后强杀后端进程树，正常退出时由 atexit 兜底；
+    --no-browser 手动调试、看门狗退出等路径也走这里。任务对象的 children
+    由各 Job 自行登记，terminate_children 内部已按进程树终止。
+    """
+    for job in (_JOB, _AUDIO_JOB, _VIDEO_JOB, _UPDATE_JOB):
+        try:
+            if job is not None:
+                job.terminate_children()
+        except Exception:
+            pass
+
+
+def _on_exit_signal(signum, _frame) -> None:
+    """把 SIGTERM/SIGINT 转成正常退出，让 atexit 的进程/目录清扫有机会执行。"""
+    raise SystemExit(0)
+
+
+for _sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+    if _sig is not None:
+        try:
+            signal.signal(_sig, _on_exit_signal)
+        except (ValueError, OSError):
+            pass  # 非主线程 / 平台不支持时忽略，不强求
+
+atexit.register(_terminate_all_jobs_on_exit)
+
+
 def _child_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -1209,6 +1241,7 @@ def _start_window_watchdog(httpd: ThreadingHTTPServer) -> None:
             try:
                 httpd.shutdown()  # 看门狗线程调用，serve_forever 会正常返回
             except Exception:
+                _terminate_all_jobs_on_exit()  # os._exit 绕过 atexit，这里先清子进程
                 os._exit(0)  # shutdown 失败也不能留死进程
             return
 

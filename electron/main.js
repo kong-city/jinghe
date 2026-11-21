@@ -16,7 +16,7 @@
 'use strict';
 
 const { app, BrowserWindow, dialog, shell } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -26,9 +26,12 @@ const PORT = Number(process.env.JINGHE_PORT || 54321);
 const HOST = '127.0.0.1';
 const APP_URL = `http://${HOST}:${PORT}/`;
 
-let backend = null;      // 由本进程拉起的 Python 后端子进程
-let mainWindow = null;   // 主窗口
-let quitting = false;    // 退出流程防重入
+let backend = null;            // 由本进程拉起的 Python 后端子进程
+let backendPid = null;         // spawn 当即记下 PID（exit 后 ChildProcess.pid 可能清空）
+let adoptedBackendPid = null;  // 端口上已存在的精核后端 PID（上次崩溃遗留），关窗时需回收
+let mainWindow = null;         // 主窗口
+let quitting = false;          // 退出流程防重入
+let cleanupDone = false;       // 子进程回收完成，before-quit 才放行
 
 /* -------------------------------------------------------------------------- */
 /* 后端可执行文件定位                                                          */
@@ -89,13 +92,84 @@ function isJingheListening(port) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* 进程回收：Windows 下 backend.kill() 只杀直接子进程，whisper / ffmpeg 等        */
+/* 孙进程会变孤儿；必须按进程树终止。POSIX 用 SIGTERM（子进程自成进程组）。        */
+/* -------------------------------------------------------------------------- */
+function findListenerPid(port) {
+  if (process.platform === 'win32') {
+    const r = spawnSync('netstat', ['-ano', '-p', 'tcp'], {
+      encoding: 'utf8', windowsHide: true, timeout: 5000,
+    });
+    if (r.error || r.status !== 0) return null;
+    const re = new RegExp('127\\.0\\.0\\.1:' + port + '\\s+.*\\sLISTENING\\s+(\\d+)', 'i');
+    const m = (r.stdout || '').match(re);
+    return m ? Number(m[1]) : null;
+  }
+  // macOS / Linux：优先 lsof，退化到 ss。拿不到就返回 null（不猜 PID，避免误杀）。
+  const r = spawnSync('lsof', ['-nP', '-tiTCP:' + port, '-sTCP:LISTEN'], {
+    encoding: 'utf8', timeout: 5000,
+  });
+  if (!r.error && r.status === 0 && (r.stdout || '').trim()) {
+    const pid = Number((r.stdout || '').trim().split(/\s+/)[0]);
+    return Number.isFinite(pid) ? pid : null;
+  }
+  return null;
+}
+
+function terminateProcessTree(pid) {
+  if (pid === null || pid === undefined || !Number.isFinite(Number(pid))) return false;
+  const p = Number(pid);
+  if (process.platform === 'win32') {
+    const r = spawnSync('taskkill', ['/T', '/F', '/PID', String(p)], {
+      encoding: 'utf8', windowsHide: true, timeout: 8000,
+    });
+    const text = (r.stdout || '') + (r.stderr || '');
+    // 进程已经退出不算失败，其余情况如实返回 false 供日志排查。
+    return r.status === 0 || /not found|no process|找不到|没有找到|不存在/i.test(text);
+  }
+  try {
+    process.kill(p, 'SIGTERM');
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+function killStrayBackendProcesses() {
+  // PyInstaller onefile 的 Popen.pid 是 bootloader 父进程；它先死时，真正的
+  // Python 子进程会脱离进程树。按完整路径兜底扫一次，只匹配 backend 目录，
+  // 绝不误杀外壳自身（外壳 exe 在安装根目录，路径不同）。
+  if (process.platform !== 'win32') return;
+  const { cmd } = backendCommand();
+  if (path.extname(cmd).toLowerCase() !== '.exe') return;
+  const escaped = cmd.replace(/'/g, "''");
+  const script = "$_.ExecutablePath -eq '" + escaped + "'";
+  spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+    "Get-CimInstance Win32_Process | Where-Object { " + script +
+    " } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+    { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+}
+
+/* -------------------------------------------------------------------------- */
 /* 启动后端（尊重已有实例：端口上已有精核则直接复用，不再重复拉起）              */
 /* -------------------------------------------------------------------------- */
 async function startBackend() {
   if (await portReady(PORT, 800)) {
     const ours = await isJingheListening(PORT);
     if (ours) {
-      console.log('[jinghe] 复用已在运行的后端实例 port=' + PORT);
+      // 能应答 /api/state 说明这就是精核后端。记录 PID，关窗时一并回收，
+      // 否则上次崩溃遗留的后端会永久占着端口（僵尸宿主的典型形态）。
+      adoptedBackendPid = findListenerPid(PORT);
+      console.log('[jinghe] 复用已在运行的后端实例 port=' + PORT
+        + ' pid=' + (adoptedBackendPid || 'unknown'));
       return { reused: true };
     }
     // 端口被别的程序占用：明确报错，绝不劫持
@@ -114,6 +188,7 @@ async function startBackend() {
       detached: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    backendPid = backend.pid || null;
   } catch (err) {
     dialog.showErrorBox('精核无法启动', '无法启动后端进程：\n' + String(err));
     app.quit();
@@ -121,9 +196,21 @@ async function startBackend() {
   }
   backend.stdout.on('data', (d) => process.stdout.write('[backend] ' + d));
   backend.stderr.on('data', (d) => process.stderr.write('[backend] ' + d));
+  // spawn 失败是异步 error 事件；没有监听器会直接抛未捕获异常并崩溃。
+  backend.on('error', (err) => {
+    console.error('[jinghe] 后端进程启动失败:', err);
+    if (!quitting) {
+      dialog.showErrorBox('精核无法启动', '无法启动后端进程：\n' + String(err));
+      shutdown();
+    }
+  });
   backend.on('exit', (code) => {
     if (!quitting) {
       console.error('[jinghe] 后端意外退出 code=' + code);
+      // 父进程先死时，它派生的 whisper / ffmpeg 可能仍在跑，按树补刀；
+      // onefile 的 Python 子进程若已脱离树，再按完整路径扫一次。
+      terminateProcessTree(backendPid);
+      killStrayBackendProcesses();
       if (mainWindow && !mainWindow.isDestroyed()) {
         dialog.showErrorBox('精核后端已退出',
           `本地服务意外停止（退出码 ${code}）。程序即将关闭，请重新启动。`);
@@ -179,13 +266,41 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-function shutdown() {
+async function shutdown() {
   if (quitting) return;
   quitting = true;
-  if (backend && !backend.killed) {
-    try { backend.kill(); } catch (_) { /* 已退出 */ }
+  try {
+    if (backend && backend.exitCode === null && !backend.killed) {
+      if (process.platform === 'win32') {
+        // onefile 的 Popen.pid 是 PyInstaller bootloader 父进程。必须先在父进程
+        // 还活着时按树杀，否则真正的 Python 子进程会脱离树、继续占端口几十秒。
+        console.log('[jinghe] 按进程树终止后端 pid=' + backendPid);
+        terminateProcessTree(backendPid);
+        await waitForExit(backend, 3000);
+        try { backend.kill(); } catch (_) { /* 已退出 */ }
+      } else {
+        // POSIX：发 SIGTERM 让 Python atexit 清子进程，超时再 SIGKILL。
+        try { backend.kill(); } catch (_) { /* 已退出 */ }
+        await waitForExit(backend, 2000);
+        if (backend.exitCode === null) {
+          try { backend.kill('SIGKILL'); } catch (_) { /* 已退出 */ }
+          await waitForExit(backend, 1000);
+        }
+      }
+    }
+    // 兜底一：父进程已退出时，按树补刀它派生过的 whisper / ffmpeg。
+    if (backendPid) terminateProcessTree(backendPid);
+    if (adoptedBackendPid && adoptedBackendPid !== backendPid) {
+      terminateProcessTree(adoptedBackendPid);
+    }
+    // 兜底二：onefile 的 Python 子进程若已脱离进程树，按完整路径再扫一次。
+    killStrayBackendProcesses();
+  } catch (err) {
+    console.error('[jinghe] 清理后端进程失败:', err);
+  } finally {
+    cleanupDone = true;
+    app.quit();
   }
-  app.quit();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -210,9 +325,10 @@ if (!gotLock) {
   });
 
   app.on('window-all-closed', shutdown);
-  app.on('before-quit', () => {
-    if (backend && !backend.killed) {
-      try { backend.kill(); } catch (_) { /* noop */ }
-    }
+  // 任何退出路径（关窗 / 系统关机 / Cmd+Q）都先回收进程树再真正退出。
+  app.on('before-quit', (event) => {
+    if (cleanupDone) return;
+    event.preventDefault();
+    shutdown();
   });
 }

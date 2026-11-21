@@ -150,5 +150,64 @@ class TestRequestHardening(unittest.TestCase):
         self.assertIn("_check_host", m.group(0))
 
 
+class TestElectronProcessReaping(unittest.TestCase):
+    """Electron 外壳 + Python 后端的进程树回收（防僵尸 / 防孤儿）。"""
+
+    def setUp(self):
+        self.main_js = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        self.app_py = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    def test_tree_kill_helper_exists(self):
+        js = self.main_js
+        self.assertIn("function terminateProcessTree", js)
+        self.assertIn("taskkill", js)
+        for flag in ("/T", "/F", "/PID"):
+            self.assertIn(flag, js)
+        self.assertIn("terminateProcessTree(backendPid)", js)
+        # PyInstaller onefile 的 Python 子进程会脱离 bootloader 进程树，
+        # 必须有按完整路径的兜底清理，且只能匹配 backend 目录。
+        self.assertIn("function killStrayBackendProcesses", js)
+        self.assertIn("ExecutablePath", js)
+
+    def test_spawn_error_is_handled(self):
+        # 没有 error 监听器时，spawn 失败会变成未捕获异常直接崩掉外壳。
+        self.assertIn("backend.on('error'", self.main_js)
+
+    def test_adopted_backend_is_reaped(self):
+        # 端口上遗留的精核后端必须记录 PID 并在关窗时回收。
+        self.assertIn("adoptedBackendPid = findListenerPid", self.main_js)
+        self.assertIn("terminateProcessTree(adoptedBackendPid)", self.main_js)
+
+    def test_before_quit_defers_until_cleanup(self):
+        js = self.main_js
+        self.assertIn("app.on('before-quit'", js)
+        self.assertIn("event.preventDefault()", js)
+        self.assertIn("cleanupDone", js)
+
+    def test_backend_has_atexit_child_cleanup(self):
+        src = self.app_py
+        self.assertIn("def _terminate_all_jobs_on_exit", src)
+        self.assertIn("atexit.register(_terminate_all_jobs_on_exit)", src)
+        for name in ("_JOB", "_AUDIO_JOB", "_VIDEO_JOB", "_UPDATE_JOB"):
+            self.assertIn(name, src)
+
+    def test_backend_signal_handlers_registered(self):
+        src = self.app_py
+        self.assertIn("def _on_exit_signal", src)
+        self.assertIn("signal.signal(_sig, _on_exit_signal)", src)
+
+    def test_media_tools_tree_kill_kept(self):
+        src = (ROOT / "media_tools.py").read_text(encoding="utf-8")
+        self.assertIn("def terminate_process_tree", src)
+        self.assertIn('"taskkill"', src)
+
+    def test_uninstaller_removes_app_asar(self):
+        pkg = (ROOT / "electron" / "package.json").read_text(encoding="utf-8")
+        self.assertIn('"include": "installer.nsh"', pkg)
+        nsh = (ROOT / "electron" / "installer.nsh").read_text(encoding="utf-8")
+        self.assertIn("!macro customUnInstall", nsh)
+        self.assertIn("app.asar", nsh)
+
+
 if __name__ == "__main__":
     unittest.main()
