@@ -73,14 +73,22 @@ class TestSmokeHarness(unittest.TestCase):
 
     def test_06_ci_uses_job_level_version_var(self):
         """回归防护：GitHub Actions 每步是独立进程，步骤内定义的 $version
-        不会传给下一步——版本号必须放在 job 级 env 里。"""
+        不会传给下一步——版本号必须放在 job 级 env 里。
+
+        同时防护另一类错：VERSION 来自 tag 名（带 v，如 v1.2.8），而产物名
+        不带 v（Jinghe-1.2.8.exe）。凡拼产物路径处必须去前缀，否则
+        会出现「文件未找到」这种看着像产品问题、其实是拼错的失败。
+        """
         self.assertIn("VERSION: ${{ github.ref_name }}", self.ci,
                       "版本号必须提到 job 级 env")
-        self.assertIn("dist/Jinghe-$env:VERSION.exe", self.ci,
-                      "冒烟步骤必须用 job 级变量拼产物路径")
+        self.assertIn("dist/Jinghe-$ver.exe", self.ci,
+                      "冒烟步骤必须用去前缀后的版本拼产物路径")
         # 不允许在步骤里再各自定义 version（会误导后来人）
         self.assertNotIn('$version = $tag -replace', self.ci,
                          "步骤内定义的 version 不会跨步骤生效，应改用 job 级 env")
+        # 每处拼产物路径都应先去 v
+        self.assertIn("-replace '^v', ''", self.ci,
+                      "tag 名带 v 前缀，拼产物路径前必须去掉")
 
     def test_05_env_var_interference_stripped(self):
         """ELECTRON_RUN_AS_NODE 会让 Electron 变纯 Node 模式——那是环境干扰，

@@ -115,8 +115,10 @@ jobs:
       - name: 冒烟验证（构建产物能真的跑起来）
         run: |
           $log = "smoke.log"
+          # VERSION 来自 tag 名（带 v，如 v1.2.8），产物名不带 v —— 必须去前缀
+          $ver = $env:VERSION -replace '^v', ''
           python tools/smoke_test.py `
-            --backend "dist/Jinghe-$env:VERSION.exe" `
+            --backend "dist/Jinghe-$ver.exe" `
             --shell "electron/release/win-unpacked/Jinghe.exe" `
             --port 54987 --timeout 90 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) {
