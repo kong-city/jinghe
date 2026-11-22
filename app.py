@@ -62,6 +62,7 @@ import pdf_ocr  # 可选 OCR 增强：扫描件 PDF 图片页识别（独立后�
 import subscription_store  # S12a：订阅注册表（落盘，含 last_seen 指纹）
 import channel_discovery  # S12a：频道发现（yt-dlp flat-playlist，只枚举不下载）
 import subscription_engine  # S12a：订阅增量编排（发现→下载→转写→入库，调度无关）
+import subscription_scheduler  # S13：应用内订阅调度（daemon 线程，随后端启停）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -784,6 +785,11 @@ def _terminate_all_jobs_on_exit() -> None:
                 job.terminate_children()
         except Exception:
             pass
+    # S13：订阅调度线程随后端停止（daemon 属性是兜底，这里主动停更干净）
+    try:
+        subscription_scheduler.stop()
+    except Exception:
+        pass
 
 
 def _on_exit_signal(signum, _frame) -> None:
@@ -2422,6 +2428,12 @@ class Handler(BaseHTTPRequestHandler):
                 _touch_heartbeat()
                 self._send_json(subscription_engine.status(
                     int((parse_qs(parsed.query).get("since") or ["0"])[0])))
+                return
+            if path == "/api/sub/scheduler":
+                # S13：后台调度器状态（应用内轮询是否在运行）
+                _touch_heartbeat()
+                self._send_json({"ok": True,
+                                 "scheduler": subscription_scheduler.status()})
                 return
             if path == "/api/artifacts":
                 # v1.0.8（T3 接线）：本次产物清单，供精读/修订下拉直接选，
@@ -4150,6 +4162,13 @@ def main(argv: list[str] | None = None) -> int:
         open_window(url)
         # 关窗即退：窗口实例才有看门狗；--no-browser（测试/手动调试）永不自动退出
         _start_window_watchdog(httpd)
+    # S13：启动应用内订阅调度（daemon 线程，随后端进程存活）。
+    # 有到期订阅时按间隔自动拉取；启动时延迟补跑遗漏项（裁决③）。
+    try:
+        subscription_scheduler.start(
+            str(DEFAULT_OUTDIR), str(KB_DIR))
+    except Exception as exc:
+        _append_log("[WARN] 订阅调度器启动失败：%s" % type(exc).__name__)
     try:
         httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:

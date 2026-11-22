@@ -15,7 +15,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
@@ -31,8 +31,57 @@ let backend = null;            // 由本进程拉起的 Python 后端子进程
 let backendPid = null;         // spawn 当即记下 PID（exit 后 ChildProcess.pid 可能清空）
 let adoptedBackendPid = null;  // 端口上已存在的精核后端 PID（上次崩溃遗留），关窗时需回收
 let mainWindow = null;         // 主窗口
+let tray = null;               // 右下角托盘图标（关窗后程序在后台运行）
+let trayNotified = false;      // 「已最小化到托盘」提示只弹一次
 let quitting = false;          // 退出流程防重入
 let cleanupDone = false;       // 子进程回收完成，before-quit 才放行
+
+/* -------------------------------------------------------------------------- */
+/* 托盘（用户裁决 2026-11-22）：关窗不再退出，缩到右下角图标，后台继续同步订阅   */
+/* -------------------------------------------------------------------------- */
+// 内嵌 16x16 PNG（深蓝底 + 白色「精」字轮廓的极简标记），避免新增二进制资源文件、
+// 避免打包漏文件。Windows 托盘原生支持 PNG，无需 .ico。
+const TRAY_ICON_DATA_URL = 'data:image/png;base64,' +
+  // 经 Electron 31 实测 isEmpty()==false / 16x16（勿随意替换：手写 PNG 会解成空图）
+  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAO0lEQVR42mNggAI5h4r/pGAGZECqZhRDyNUMNwSXBDoYNYDeBmADA28ALkMYKPE/3kCkS36gKEfC9AEAzt4d153g+NgAAAAASUVORK5CYII=';
+
+function createTray() {
+  try {
+    let icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
+    if (icon.isEmpty()) {
+      // 极端环境下内嵌图解码失败：如实记日志，用空图仍可建托盘（菜单可用，
+      // 仅图标不可见）。不发 balloon——那是误导用户"一切正常"。
+      console.error('[jinghe] 托盘图标解码为空，托盘仅能通过菜单使用');
+      icon = nativeImage.createEmpty();
+    }
+    tray = new Tray(icon);
+    tray.setToolTip('精核 · 后台运行中');
+    const menu = Menu.buildFromTemplate([
+      { label: '显示主窗口', click: showWindow },
+      { type: 'separator' },
+      { label: '退出精核', click: () => shutdown() },
+    ]);
+    tray.setContextMenu(menu);
+    tray.on('double-click', showWindow);
+    console.log('[jinghe] 托盘已创建（关窗后后台运行）');
+    return true;
+  } catch (err) {
+    // 托盘不可用时降级为「关窗即退」旧行为，保证用户不会被困在关不掉的窗口里。
+    console.error('[jinghe] 托盘创建失败，降级为关窗即退:', err);
+    tray = null;
+    return false;
+  }
+}
+
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
 
 /* -------------------------------------------------------------------------- */
 /* 自更新（方案 A）：electron-updater + GitHub latest.yml                       */
@@ -402,6 +451,20 @@ function createWindow() {
     return { action: 'allow' };
   });
 
+  // 用户裁决 2026-11-22：关窗 = 隐藏到托盘，后端 + 订阅调度继续在后台跑。
+  // 只有托盘创建失败（降级模式）才回到旧行为真正关闭。
+  mainWindow.on('close', (event) => {
+    if (quitting || !tray || mainWindow.isDestroyed()) return;
+    event.preventDefault();
+    mainWindow.hide();
+    if (!trayNotified) {
+      trayNotified = true;
+      try {
+        tray.showBalloon('精核', '已最小化到右下角托盘，订阅仍在后台同步。');
+      } catch (_) { /* 气球提示不可用不影响隐藏行为 */ }
+    }
+  });
+
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
@@ -421,11 +484,8 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    // 再次双击：唤起已有窗口（后端由第一个实例托管）
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    // 再次双击：从托盘唤起已有窗口（后端由第一个实例托管）
+    showWindow();
   });
 
   app.whenReady().then(async () => {
@@ -433,10 +493,19 @@ if (!gotLock) {
     bindUpdaterEvents();   // updater 进度 → 网页 update:status / update:progress
     const r = await startBackend();
     if (r.aborted) return;
+    createTray();          // 托盘先于窗口创建，关窗时才能可靠 hide
     createWindow();
   });
 
-  app.on('window-all-closed', shutdown);
+  // 关窗走 hide 到托盘，不再因「所有窗口关闭」而退出后端。
+  // 真正退出只由托盘菜单「退出」或 before-quit（系统关机等）触发 shutdown。
+  app.on('window-all-closed', () => {
+    if (!tray && !quitting) shutdown();  // 降级模式（无托盘）仍保持关窗即退
+  });
+
+  app.on('will-quit', () => {
+    if (tray) { tray.destroy(); tray = null; }
+  });
   // 任何退出路径（关窗 / 系统关机 / Cmd+Q）都先回收进程树再真正退出。
   app.on('before-quit', (event) => {
     if (cleanupDone) return;

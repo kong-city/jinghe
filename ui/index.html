@@ -297,7 +297,8 @@
       <!-- S12a：订阅博主/频道——自动拉取新视频并沉淀进知识库 -->
       <section class="card">
         <div class="card-title">订阅博主 / 频道</div>
-        <p class="card-sub">粘贴博主主页或频道链接，定期把新视频转成笔记并入本知识库。软件运行时按间隔自动同步，关闭后停止、下次启动补上遗漏的内容；不会在后台常驻。</p>
+        <p class="card-sub">粘贴博主主页或频道链接，软件会按间隔自动把新视频转成笔记并入本知识库。关闭窗口后程序缩到右下角托盘、继续在后台同步；从托盘退出才真正结束，下次启动补上遗漏的内容。</p>
+        <div id="subSchedHint" class="bar" role="status">后台调度状态读取中…</div>
         <div id="subCapHint" class="bar bar-warn" role="status" hidden></div>
         <div class="row">
           <input id="subUrl" class="text-input" type="text" spellcheck="false"

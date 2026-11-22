@@ -67,6 +67,7 @@
     subName: $("subName"),
     subCookie: $("subCookie"),
     subInterval: $("subInterval"),
+    subSchedHint: $("subSchedHint"),
     subCapHint: $("subCapHint"),
     subStatus: $("subStatus"),
     subEvents: $("subEvents"),
@@ -2340,7 +2341,27 @@
     });
   }
 
+  function loadSubSchedStatus() {
+    api("/api/sub/scheduler", undefined, 10000).then(function (r) {
+      if (!el.subSchedHint) return;
+      var s = (r && r.scheduler) || {};
+      if (s.running) {
+        el.subSchedHint.textContent = "后台同步已开启：每 " +
+          Math.round((s.tick || 60)) + " 秒检查一次，已自动触发 " +
+          (s.triggers || 0) + " 次" +
+          (s.last_error ? "（最近错误：" + s.last_error.slice(0, 50) + "）" : "");
+        el.subSchedHint.className = "bar bar-ok";
+      } else {
+        el.subSchedHint.textContent = "后台同步未运行";
+        el.subSchedHint.className = "bar bar-warn";
+      }
+    }).catch(function () {
+      if (el.subSchedHint) el.subSchedHint.textContent = "后台调度状态读取失败";
+    });
+  }
+
   function loadSubList() {
+    loadSubSchedStatus();
     api("/api/sub/list", undefined, 10000).then(function (r) {
       if (!r || !r.ok) {
         if (el.subList) el.subList.textContent = "订阅列表读取失败";
