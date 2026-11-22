@@ -22,6 +22,9 @@
     </div>
 
     <nav class="nav" aria-label="主导航">
+      <!-- S14：导航按「用户任务流」归组，7 个入口本身不变（测试契约锁定 data-page）-->
+      <div class="nav-group" data-group="source">
+        <span class="nav-group-title">获取内容</span>
       <button class="nav-item active" type="button" data-page="home" title="首页">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M3.5 10.6L12 3.6l8.5 7v8.9a1 1 0 0 1-1 1h-4.6v-6H9.1v6H4.5a1 1 0 0 1-1-1z"/>
@@ -36,6 +39,9 @@
         </svg>
         <span class="nav-label">加工</span>
       </button>
+      </div>
+      <div class="nav-group" data-group="refine-flow">
+        <span class="nav-group-title">加工流水线</span>
       <!-- S7d：精读 / 修订入口（提纯核心 / 补写修改，本机可插拔后端） -->
       <button class="nav-item" type="button" data-page="refine" title="精读">
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -49,6 +55,9 @@
         </svg>
         <span class="nav-label">修订</span>
       </button>
+      </div>
+      <div class="nav-group" data-group="knowledge">
+        <span class="nav-group-title">知识沉淀</span>
       <!-- v1.1.0：知识库页——S9 后端端点已实现，此前首页按钮仍是「规划中」占位 -->
       <button class="nav-item" type="button" data-page="kb" title="知识库">
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -57,6 +66,9 @@
         </svg>
         <span class="nav-label">知识库</span>
       </button>
+      </div>
+      <div class="nav-group" data-group="system">
+        <span class="nav-group-title">系统</span>
       <button class="nav-item" type="button" data-page="settings" title="设置">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="3.2"/>
@@ -72,6 +84,7 @@
         </svg>
         <span class="nav-label">关于</span>
       </button>
+      </div>
     </nav>
 
     <div class="side-foot">
@@ -100,6 +113,22 @@
          加工/精读/修订/知识库 4 页的 showError/showNotice 全写进隐藏元素，
          失败时界面毫无反应）。放在页头下方，任何页切换后都可见。 -->
     <div id="errorBar" class="bar bar-error" role="status" aria-live="polite" hidden></div>
+
+    <!-- S14：全局任务步骤条——任何页面都能看到「获取→提纯→改写→沉淀」流水线 -->
+    <nav id="flowSteps" class="flow-steps" aria-label="工作流水线">
+      <button type="button" class="flow-step" data-step="home" title="选文件并提取成 md">
+        <span class="flow-num">1</span><span class="flow-name">获取内容</span>
+      </button>
+      <button type="button" class="flow-step" data-step="refine" title="对 md 提纯核心知识点">
+        <span class="flow-num">2</span><span class="flow-name">提纯核心</span>
+      </button>
+      <button type="button" class="flow-step" data-step="revise" title="改写与补充核心">
+        <span class="flow-num">3</span><span class="flow-name">改写补充</span>
+      </button>
+      <button type="button" class="flow-step" data-step="kb" title="入库并检索知识">
+        <span class="flow-num">4</span><span class="flow-name">沉淀检索</span>
+      </button>
+    </nav>
 
     <!-- ==================== 首页 ==================== -->
     <section class="page" id="page-home">
@@ -220,6 +249,15 @@
 
     <!-- ==================== 加工（v1.1.0：后处理与链接提取独立成页） ==================== -->
     <section class="page" id="page-process" hidden>
+      <section class="card" id="flowGuide">
+        <div class="card-title">加工流程指引</div>
+        <p class="card-sub">这里是把内容转成 md 的工具。拿到 md 之后，继续用顶部步骤条走后面两步；想让软件自动追更多内容，去「知识库」页订阅博主。</p>
+        <div class="row">
+          <button type="button" class="btn btn-ghost" data-goto="refine">去提纯核心 →</button>
+          <button type="button" class="btn btn-ghost" data-goto="revise">去改写补充 →</button>
+          <button type="button" class="btn btn-ghost" data-goto="kb">订阅博主 / 知识库 →</button>
+        </div>
+      </section>
       <section class="card features">
         <div class="card-title">文档加工</div>
         <p class="card-sub">基于已提取的 Markdown 做进一步加工；Word / 音频 / 视频产物落 out/derived/，不改动 MERGED.md 等对账文件。</p>

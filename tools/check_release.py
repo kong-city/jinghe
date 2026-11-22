@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 # S10 可选组件管理（用户裁决：必须有测试 + 门禁守护）
                 "components.py", "test_components.py",
                 # v1.0.0 特性测试（默认路径 / 多组件 Job / OCR / 安全边界）
-                "test_v10_features.py",
+                "test_v10_features.py", "test_ui_layout.py",
                 # 版本契约判定器 + 一键升号（双终端协作护栏）
                 "tools/version_check.py", "tools/bump_version.py"):
         try:

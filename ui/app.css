@@ -125,6 +125,19 @@ button, input { font-family: inherit; }
 
 .nav { display: flex; flex-direction: column; gap: 4px; }
 
+/* S14：任务流分组标题——把 7 个平级入口按「获取/加工/沉淀/系统」归组 */
+.nav-group { display: flex; flex-direction: column; gap: 4px; }
+.nav-group + .nav-group { margin-top: 10px; }
+.nav-group-title {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  color: #99978F;
+}
+.app.nav-collapsed .nav-group-title { display: none; }
+.app.nav-collapsed .nav-group + .nav-group { margin-top: 6px; }
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -482,6 +495,50 @@ button, input { font-family: inherit; }
   border-left: 3px solid #A32D2D;
   color: #A32D2D;
 }
+
+/* S14：全局任务步骤条——一眼看清流水线，点击直达对应页 */
+.flow-steps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px 12px;
+  overflow-x: auto;
+}
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 0 auto;
+  min-width: 108px;
+  padding: 8px 12px;
+  background: #FFFFFF;
+  border: 1px solid #E7E5DE;
+  border-radius: 10px;
+  cursor: pointer;
+  color: #5F5E5A;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.flow-step:hover { background: #F7F9FC; border-color: #C9D8EA; }
+.flow-step.active {
+  background: #EAF1F8;
+  border-color: #85B7EB;
+  color: #185FA5;
+}
+.flow-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #F1EFE8;
+  color: #6B6A65;
+  font-size: 12px;
+  font-weight: 500;
+}
+.flow-step.active .flow-num { background: #185FA5; color: #FFFFFF; }
+.flow-name { font-size: 13px; white-space: nowrap; }
 
 .bar-notice {
   background: #FAEEDA;
