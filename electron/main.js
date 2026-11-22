@@ -15,6 +15,18 @@
  */
 'use strict';
 
+// 打包态诊断：这一行必须放在所有 require 之前 —— 若它都没出现在 shell.log，
+// 说明 main.js 压根没被加载（app.asar 打包问题），而非业务逻辑异常。
+try {
+  const os = require('os');
+  const p = require('path');
+  const fsx = require('fs');
+  const dir = process.env.LOCALAPPDATA || os.homedir();
+  fsx.mkdirSync(p.join(dir, 'Jinghe'), { recursive: true });
+  fsx.appendFileSync(p.join(dir, 'Jinghe', 'shell.log'),
+    `[${new Date().toISOString()}] main.js 已加载\n`, 'utf8');
+} catch (_) { /* 诊断失败不影响主流程 */ }
+
 const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn, spawnSync } = require('child_process');
@@ -26,6 +38,24 @@ const net = require('net');
 const PORT = Number(process.env.JINGHE_PORT || 54321);
 const HOST = '127.0.0.1';
 const APP_URL = `http://${HOST}:${PORT}/`;
+
+/* --------------------------------------------------------------------------
+ * 打包态诊断日志：Windows GUI 程序没有控制台，stdout 全部丢弃 —— 外壳一旦
+ * 启动失败（如托盘创建抛错、后端 spawn 失败），用户只看到「双击没反应」，
+ * 无从判断原因。这里把关键节点落到 %LOCALAPPDATA%\Jinghe\shell.log，
+ * 与后端 app.log 并列，供「关于页 → 日志与数据」排查。
+ * -------------------------------------------------------------------------- */
+const SHELL_LOG = path.join(
+  process.env.LOCALAPPDATA || (process.env.HOME || process.env.USERPROFILE || '.'),
+  'Jinghe', 'shell.log');
+
+function shellLog(msg) {
+  try {
+    fs.mkdirSync(path.dirname(SHELL_LOG), { recursive: true });
+    fs.appendFileSync(SHELL_LOG,
+      `[${new Date().toISOString()}] ${msg}\n`, 'utf8');
+  } catch (err) { /* 日志写不进去也不能影响主流程 */ }
+}
 
 let backend = null;            // 由本进程拉起的 Python 后端子进程
 let backendPid = null;         // spawn 当即记下 PID（exit 后 ChildProcess.pid 可能清空）
@@ -51,7 +81,7 @@ function createTray() {
     if (icon.isEmpty()) {
       // 极端环境下内嵌图解码失败：如实记日志，用空图仍可建托盘（菜单可用，
       // 仅图标不可见）。不发 balloon——那是误导用户"一切正常"。
-      console.error('[jinghe] 托盘图标解码为空，托盘仅能通过菜单使用');
+      shellLog('托盘图标解码为空，托盘仅能通过菜单使用');
       icon = nativeImage.createEmpty();
     }
     tray = new Tray(icon);
@@ -63,10 +93,13 @@ function createTray() {
     ]);
     tray.setContextMenu(menu);
     tray.on('double-click', showWindow);
-    console.log('[jinghe] 托盘已创建（关窗后后台运行）');
+    shellLog('托盘已创建（关窗后后台运行）');
     return true;
   } catch (err) {
     // 托盘不可用时降级为「关窗即退」旧行为，保证用户不会被困在关不掉的窗口里。
+    // 关键：绝不让托盘失败阻断窗口/后端的启动（打包态无控制台，失败会表现为
+    // 「双击没反应」而用户无从得知原因）。
+    shellLog('托盘创建失败，降级为关窗即退：' + String(err));
     console.error('[jinghe] 托盘创建失败，降级为关窗即退:', err);
     tray = null;
     return false;
@@ -358,6 +391,7 @@ async function startBackend() {
       return { reused: true };
     }
     // 端口被别的程序占用：明确报错，绝不劫持
+    shellLog('端口 ' + PORT + ' 被非精核程序占用，无法启动');
     dialog.showErrorBox('精核无法启动',
       `端口 ${PORT} 已被其他程序占用（非精核）。\n\n请关闭占用该端口的程序后重试。`);
     app.quit();
@@ -366,6 +400,7 @@ async function startBackend() {
 
   const { cmd, args, cwd } = backendCommand();
   console.log('[jinghe] 启动后端:', cmd, args.join(' '));
+  shellLog('启动后端：' + cmd + ' ' + args.join(' '));
   try {
     backend = spawn(cmd, args, {
       cwd,
@@ -387,6 +422,7 @@ async function startBackend() {
   // spawn 失败是异步 error 事件；没有监听器会直接抛未捕获异常并崩溃。
   backend.on('error', (err) => {
     console.error('[jinghe] 后端进程启动失败:', err);
+    shellLog('后端进程启动失败：' + String(err));
     if (!quitting) {
       dialog.showErrorBox('精核无法启动', '无法启动后端进程：\n' + String(err));
       shutdown();
@@ -395,6 +431,7 @@ async function startBackend() {
   backend.on('exit', (code) => {
     if (!quitting) {
       console.error('[jinghe] 后端意外退出 code=' + code);
+      shellLog('后端意外退出 code=' + code);
       // 父进程先死时，它派生的 whisper / ffmpeg 可能仍在跑，按树补刀；
       // onefile 的 Python 子进程若已脱离树，再按完整路径扫一次。
       terminateProcessTree(backendPid);
@@ -489,12 +526,15 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    shellLog('外壳就绪 isPackaged=' + app.isPackaged + ' port=' + PORT);
     registerUpdateIPC();   // 更新 IPC 白名单（update:check/download/install/cancel）
     bindUpdaterEvents();   // updater 进度 → 网页 update:status / update:progress
     const r = await startBackend();
-    if (r.aborted) return;
-    createTray();          // 托盘先于窗口创建，关窗时才能可靠 hide
+    if (r.aborted) { shellLog('后端启动中止，外壳退出'); return; }
+    // 先出窗口再放托盘：托盘是增强（关窗后台运行），窗口与后端才是本体。
+    // 顺序颠倒时，托盘一旦抛错会连窗口都开不出来（打包态无提示＝双击没反应）。
     createWindow();
+    try { createTray(); } catch (err) { shellLog('托盘初始化异常（已忽略）：' + String(err)); }
   });
 
   // 关窗走 hide 到托盘，不再因「所有窗口关闭」而退出后端。

@@ -160,6 +160,26 @@ class TestTrayContract(unittest.TestCase):
         self.assertIn("subscription_scheduler.py", gate)
         self.assertIn("test_scheduler", ci)
 
+    def test_17_tray_never_blocks_main_startup(self):
+        """打包态可诊断性：托盘失败不得连窗口/后端都开不出来。
+
+        背景（实测）：打包态 Windows GUI 程序无控制台，一旦关键路径抛错，
+        用户只看到「双击没反应」。因此要求：
+        ① 先建窗口再放托盘；② 托盘整体包在 try/catch 内。
+        """
+        js = self.js
+        when = js[js.index("app.whenReady()"):]
+        when = when[:when.index("app.on('window-all-closed'")]
+        self.assertLess(when.index("createWindow()"), when.index("createTray()"),
+                        "必须先建窗口再建托盘：托盘抛错会连窗口都开不出来")
+        self.assertIn("try { createTray(); } catch", when,
+                      "托盘创建必须整体兜底，不能让它阻断主流程")
+        self.assertIn("function shellLog", js, "缺打包态诊断日志函数")
+        self.assertIn("shell.log", js, "诊断日志未落盘")
+        # 关键节点都要留痕，否则日志形同虚设
+        for node in ("main.js 已加载", "外壳就绪", "启动后端", "托盘已创建"):
+            self.assertIn(node, js, "诊断日志缺节点：%s" % node)
+
 
 if __name__ == "__main__":
     unittest.main()
