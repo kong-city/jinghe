@@ -231,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
                 "revise_engine.py", "extract_engine.py", "iterate_engine.py", "log_rotate.py",
                 "subscription_store.py", "channel_discovery.py", "subscription_engine.py",
                 "subscription_scheduler.py",
+                # S14a：打包产物冒烟脚本（CI 用来验证「包能构建」之外的真能跑）
+                "tools/smoke_test.py",
                 "link_guard.py", "link_downloader.py", "link_media.py",
                 # 验收工具（S5 外部体检 + UI 视觉判分层）
                 "tools/bench_office_check.py", "tools/visual_check.py",
