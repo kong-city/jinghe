@@ -67,10 +67,17 @@ def read_shell_log() -> str:
 
 
 def probe(port: int, timeout: float = 2.0) -> dict | None:
-    """探活 /api/state；后端起来了才返回 dict。"""
+    """探活 /api/state；后端起来了才返回 dict。
+
+    必须**绕过系统代理**：构建机（CI runner）常带 http_proxy/https_proxy 环境
+    变量，urllib 默认会读它们，导致访问 127.0.0.1 也走代理而失败——
+    那是环境问题不是产品问题，却会让冒烟误判为「后端起不来」。
+    这里显式使用一个不走代理的 opener。
+    """
     url = "http://127.0.0.1:%d/api/state" % port
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=timeout) as resp:
             body = resp.read(65536).decode("utf-8", "replace")
         return json.loads(body)
     except (urllib.error.URLError, OSError, ValueError):
@@ -205,14 +212,22 @@ def _last(text: str, limit: int = 200) -> str:
 
 
 def smoke_shell(exe: str, port: int, strict: bool, asar_ok: bool = False) -> tuple[bool, str]:
-    """外壳冒烟（尽力而为）：起得来算通过，起不来必须说清原因。"""
+    """外壳冒烟（尽力而为）：起得来算通过，起不来必须说清原因。
+
+    两处曾经的错误（本地复现抓到，已修）：
+    1. ``start()`` 失败时读的是**全局** shell.log（含上次运行的旧日志），
+       会把上次的结论当成本次判定 —— 现在只看本次新增的行。
+    2. 外壳二进制**根本无法执行**（如文件损坏）被当成环境限制放行 ——
+       那是打包缺陷，必须拦截。
+    """
     log("外壳冒烟：%s" % exe)
     before = read_shell_log()
     # 外壳拉起的后端端口由 JINGHE_PORT 决定，必须显式指定，否则探活找错端口
     proc = start(exe, [], env_extra={"JINGHE_PORT": str(port)})
     if proc is None:
-        kind, why = classify_shell_failure(read_shell_log(), asar_ok)
-        return (False, "外壳 exe 无法启动：%s" % why) if strict else (True, "WARN 外壳未启动（%s）" % why)
+        # 进程都没起来：连「起不来」这件事本身都不是环境问题，而是打包/执行失败。
+        # 本次没有任何新日志可依据，因此按缺陷处理（不放行）。
+        return False, "外壳 exe 无法启动（进程未创建）：打包产物损坏或无法执行"
     try:
         state = wait_ready(port, READY_TIMEOUT, proc)
         if state:

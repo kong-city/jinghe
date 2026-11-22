@@ -101,6 +101,31 @@ class TestSmokeHarness(unittest.TestCase):
         self.assertIn("tools/smoke_test.py", gate,
                       "门禁编译清单缺 smoke_test.py")
 
+    def test_08_probe_bypasses_proxy(self):
+        """回归防护：构建机常带 http_proxy，urllib 默认读环境变量会让
+        访问 127.0.0.1 也走代理 → 探活必然失败 → 误判「后端起不来」。"""
+        seg = self.script[self.script.index("def probe"):]
+        seg = seg[:seg.index("def wait_ready")]
+        self.assertIn("ProxyHandler({})", seg, "探活必须绕过系统代理")
+        self.assertIn("build_opener", seg)
+
+    def test_09_shell_launch_failure_is_defect(self):
+        """回归防护：外壳二进制无法执行（文件损坏）是打包缺陷，不能放行。"""
+        seg = self.script[self.script.index("def smoke_shell"):]
+        seg = seg[:seg.index("def main")]
+        self.assertIn("if proc is None:", seg)
+        none_branch = seg[seg.index("if proc is None:"):]
+        none_branch = none_branch[:none_branch.index("try:")]
+        self.assertIn("return False", none_branch,
+                      "外壳无法启动必须判缺陷；误放行会漏掉损坏的包")
+        self.assertNotIn("classify_shell_failure", none_branch,
+                         "启动失败时不得用全局 shell.log（含上次运行的旧日志）")
+
+    def test_10_ci_reports_failure_as_annotation(self):
+        """CI 失败必须把诊断打进 annotation，否则页面看不到原因、只能盲猜。"""
+        self.assertIn("::error title=冒烟验证失败::", self.ci)
+        self.assertIn("Tee-Object", self.ci, "冒烟输出需落盘以便回显")
+
 
 if __name__ == "__main__":
     unittest.main()

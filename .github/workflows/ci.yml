@@ -114,10 +114,17 @@ jobs:
       # （无桌面会话等环境限制 → 放行并说明；产品缺陷 → 阻塞）。
       - name: 冒烟验证（构建产物能真的跑起来）
         run: |
+          $log = "smoke.log"
           python tools/smoke_test.py `
             --backend "dist/Jinghe-$env:VERSION.exe" `
             --shell "electron/release/win-unpacked/Jinghe.exe" `
-            --port 54987 --timeout 90
+            --port 54987 --timeout 90 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) {
+            # 把完整诊断以 annotation 形式打进 run 页面（页面可读，便于排查）
+            $detail = (Get-Content $log -Raw) -replace "`r?`n", " | "
+            Write-Host "::error title=冒烟验证失败::${detail}"
+            exit 1
+          }
 
       - name: 创建 Release 并上传全部资产
         shell: pwsh
