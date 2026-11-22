@@ -128,6 +128,29 @@ def start(exe: str, args: list[str], env_extra: dict | None = None) -> subproces
         return None
 
 
+def check_asar(asar_path: str) -> tuple[bool, str]:
+    """**确定性**检查：打包产物里的 main.js 必须含有关键符号。
+
+    为什么需要这一步：GUI 外壳在**无交互桌面会话**的环境（如 CI runner）
+    可能根本起不来，此时「跑不起来」是环境限制而非缺陷，直接判失败会误杀。
+    但「asar 里缺关键符号」是**确定的打包缺陷**——例如 main.js 没被打进去、
+    或 asar 内容与源码脱节。这类问题无论有没有桌面都必须拦下。
+
+    本检查不依赖运行环境，因此在任何 CI/本地都稳定可复现。
+    """
+    required = ("app.whenReady", "startBackend", "createTray", "createWindow")
+    try:
+        data = Path(asar_path).read_bytes()
+    except OSError as exc:
+        return False, "读不到 app.asar：%s" % exc
+    # asar 是归档格式，main.js 内容以明文存在其中；用子串判定即可，
+    # 无需引入 asar 库（本项目要求零第三方依赖）。
+    missing = [sym for sym in required if sym.encode("utf-8") not in data]
+    if missing:
+        return False, "app.asar 内缺少关键符号：%s" % "、".join(missing)
+    return True, "app.asar 含全部关键符号（%s）" % "、".join(required)
+
+
 def smoke_backend(exe: str, port: int) -> tuple[bool, str]:
     """后端 exe 冒烟（严格）：起服务 → 探活 → 校验版本。"""
     log("后端冒烟：%s" % exe)
@@ -147,24 +170,32 @@ def smoke_backend(exe: str, port: int) -> tuple[bool, str]:
         kill_tree(proc.pid)
 
 
-def classify_shell_failure(text: str) -> tuple[str, str]:
+def classify_shell_failure(text: str, asar_ok: bool = False) -> tuple[str, str]:
     """把外壳启动失败归类为「环境限制」或「产品缺陷」。
 
-    取舍：**默认从严**。没有诊断信息时判为缺陷（而非静默放行）——
-    「外壳起不来且查不到原因」本身就是需要拦下的问题。只有明确命中
-    环境关键词（无桌面会话等）才放行。
+    判据（有先后，不能颠倒）：
+    1. **asar 检查通过** = main.js 完整且含关键符号 = 打包本身没问题。
+       此时起不来，最可能是运行环境没有交互桌面会话（CI runner 常见）——
+       归为环境限制，放行并说明（确定性缺陷已由 asar 检查覆盖）。
+    2. **asar 检查失败** = 打包本身坏了 → 缺陷，一律拦截。
+    3. 日志命中失败标志（托盘创建失败 / 后端启动失败 / 后端意外退出 …）
+       → 缺陷，一律拦截。
+    4. 其余情况 → 默认从严判缺陷（静默放过会漏掉真问题）。
     """
     low = text.lower()
     if not text.strip():
-        return ("defect", "无 shell.log 诊断信息：外壳既没就绪也没留下任何日志，"
-                          "说明 main.js 很可能根本没被执行（打包异常或环境变量干扰）")
-    # 缺陷关键词优先：产品缺陷不能被环境关键词掩盖
+        if asar_ok:
+            return ("env", "asar 校验通过但外壳未就绪：无交互桌面会话的构建机"
+                           "（CI runner 常见），main.js 无人执行")
+        return ("defect", "无 shell.log 诊断信息：外壳既没就绪也没留下任何日志")
     for kw in DEFECT_HINTS:
         if kw in text:
             return ("defect", "诊断日志命中缺陷关键词「%s」：%s" % (kw, _last(text)))
     for kw in ENV_HINTS:
         if kw in low:
             return ("env", "疑似环境限制（命中「%s」）：%s" % (kw, _last(text)))
+    if asar_ok:
+        return ("env", "asar 校验通过、外壳未就绪：疑似无交互桌面会话（CI runner）")
     return ("defect", "无法归类为环境限制，按缺陷处理：%s" % _last(text))
 
 
@@ -173,14 +204,14 @@ def _last(text: str, limit: int = 200) -> str:
     return lines[-1][:limit] if lines else ""
 
 
-def smoke_shell(exe: str, port: int, strict: bool) -> tuple[bool, str]:
+def smoke_shell(exe: str, port: int, strict: bool, asar_ok: bool = False) -> tuple[bool, str]:
     """外壳冒烟（尽力而为）：起得来算通过，起不来必须说清原因。"""
     log("外壳冒烟：%s" % exe)
     before = read_shell_log()
     # 外壳拉起的后端端口由 JINGHE_PORT 决定，必须显式指定，否则探活找错端口
     proc = start(exe, [], env_extra={"JINGHE_PORT": str(port)})
     if proc is None:
-        kind, why = classify_shell_failure(read_shell_log())
+        kind, why = classify_shell_failure(read_shell_log(), asar_ok)
         return (False, "外壳 exe 无法启动：%s" % why) if strict else (True, "WARN 外壳未启动（%s）" % why)
     try:
         state = wait_ready(port, READY_TIMEOUT, proc)
@@ -190,7 +221,7 @@ def smoke_shell(exe: str, port: int, strict: bool) -> tuple[bool, str]:
         text = read_shell_log()
         # 只看本次启动新增的日志行，避免拿上次的结论误判
         new_text = text[len(before):] if text.startswith(before) else text
-        kind, why = classify_shell_failure(new_text)
+        kind, why = classify_shell_failure(new_text, asar_ok)
         if kind == "defect":
             return False, "外壳启动失败（产品缺陷）：%s" % why
         return True, "WARN 外壳未就绪，按环境限制放行（%s）" % why
@@ -217,7 +248,19 @@ def main() -> int:
     ok = ok and b_ok
 
     if args.shell:
-        s_ok, s_msg = smoke_shell(args.shell, args.port + 1, args.strict_shell)
+        # ① 确定性检查：asar 内 main.js 必须含关键符号（与环境无关，必过）
+        shell_dir = Path(args.shell).parent
+        asar = shell_dir / "resources" / "app.asar"
+        asar_ok = False
+        if asar.is_file():
+            asar_ok, a_msg = check_asar(str(asar))
+            log(("asar 检查通过：%s" % a_msg) if asar_ok else ("asar 检查失败：%s" % a_msg))
+            ok = ok and asar_ok
+        else:
+            log("asar 检查跳过：未找到 %s" % asar)
+
+        # ② 运行时检查：外壳能不能真正起来（无桌面会话的 CI 上可能起不来）
+        s_ok, s_msg = smoke_shell(args.shell, args.port + 1, args.strict_shell, asar_ok)
         log(("外壳冒烟通过：%s" % s_msg) if s_ok else ("外壳冒烟失败：%s" % s_msg))
         ok = ok and s_ok
 

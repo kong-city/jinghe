@@ -48,12 +48,39 @@ class TestSmokeHarness(unittest.TestCase):
             self.assertIn(kw, seg, "缺陷关键词缺失：%s" % kw)
 
     def test_04_default_strict_on_unknown(self):
-        """没有诊断信息时必须判为缺陷（从严），不得静默放行。"""
+        """无法归类时必须判缺陷（从严），不得静默放行。
+
+        放行的唯一旁路是「asar 校验通过 + 明确命中环境关键词」——
+        因为 asar 通过已证明打包本身没问题，此时起不来只可能是运行环境
+        （CI runner 无交互桌面会话）。
+        """
         seg = self.script[self.script.index("def classify_shell_failure"):]
         seg = seg[:seg.index("def _last")]
         self.assertIn('return ("defect"', seg,
                       "无法归类时必须判缺陷；静默放行会漏掉真问题")
         self.assertIn('"env"', seg, "仅明确命中环境关键词才放行")
+        self.assertIn("asar_ok", seg, "分类必须依赖 asar 校验结果")
+
+    def test_05_asar_check_is_deterministic(self):
+        """asar 校验是与环境无关的确定性检查，必须存在且覆盖关键符号。"""
+        self.assertIn("def check_asar", self.script)
+        seg = self.script[self.script.index("def check_asar"):]
+        seg = seg[:seg.index("def smoke_backend")]
+        for sym in ("app.whenReady", "startBackend", "createTray", "createWindow"):
+            self.assertIn(sym, seg, "asar 校验缺关键符号 %s" % sym)
+        # 主流程必须真的调用它
+        self.assertIn("check_asar(str(asar))", self.script)
+
+    def test_06_ci_uses_job_level_version_var(self):
+        """回归防护：GitHub Actions 每步是独立进程，步骤内定义的 $version
+        不会传给下一步——版本号必须放在 job 级 env 里。"""
+        self.assertIn("VERSION: ${{ github.ref_name }}", self.ci,
+                      "版本号必须提到 job 级 env")
+        self.assertIn("dist/Jinghe-$env:VERSION.exe", self.ci,
+                      "冒烟步骤必须用 job 级变量拼产物路径")
+        # 不允许在步骤里再各自定义 version（会误导后来人）
+        self.assertNotIn('$version = $tag -replace', self.ci,
+                         "步骤内定义的 version 不会跨步骤生效，应改用 job 级 env")
 
     def test_05_env_var_interference_stripped(self):
         """ELECTRON_RUN_AS_NODE 会让 Electron 变纯 Node 模式——那是环境干扰，

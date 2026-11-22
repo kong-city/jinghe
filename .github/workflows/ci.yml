@@ -50,6 +50,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     timeout-minutes: 35
+    env:
+      # job 级变量：GitHub Actions 每步是独立进程，步骤内定义的 $version
+      # 不会传给下一步。冒烟步骤要用它拼出产物路径，故放这里全局可见。
+      TAG_NAME: ${{ github.ref_name }}
+      VERSION: ${{ github.ref_name }}
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
@@ -84,8 +89,7 @@ jobs:
       - name: 放置后端 exe 到打包目录
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
+          $version = $env:VERSION -replace '^v', ''
           $src = "dist/Jinghe-$version.exe"
           if (-not (Test-Path $src)) { throw "找不到后端产物 $src" }
           # electron/backend/ 里只有被 gitignore 的 exe，git 不跟踪空目录，
@@ -111,19 +115,17 @@ jobs:
       - name: 冒烟验证（构建产物能真的跑起来）
         run: |
           python tools/smoke_test.py `
-            --backend "dist/Jinghe-$version.exe" `
+            --backend "dist/Jinghe-$env:VERSION.exe" `
             --shell "electron/release/win-unpacked/Jinghe.exe" `
             --port 54987 --timeout 90
-        env:
-          JINGHE_PORT: "54988"
 
       - name: 创建 Release 并上传全部资产
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
+          $tag = $env:TAG_NAME
+          $version = $env:VERSION -replace '^v', ''
           # 三类资产：后端 exe（兼容旧版 / 门禁关键字）、Electron 安装包、
           # electron-updater 更新元数据（为外壳自更新方案 A 铺路）。
           $backend = "dist/Jinghe-$version.exe"
