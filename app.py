@@ -59,6 +59,9 @@ import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行
 import kb  # S9：阶段 4 知识库（独立后处理层，冻结内核 / SPEC 零改动）
 import components  # S10：设置页可选组件安装（ffmpeg / whisper / yt-dlp）
 import pdf_ocr  # 可选 OCR 增强：扫描件 PDF 图片页识别（独立后处理层）
+import subscription_store  # S12a：订阅注册表（落盘，含 last_seen 指纹）
+import channel_discovery  # S12a：频道发现（yt-dlp flat-playlist，只枚举不下载）
+import subscription_engine  # S12a：订阅增量编排（发现→下载→转写→入库，调度无关）
 
 HOST = "127.0.0.1"
 # 固定端口：界面只听本机，端口固定后用户好记、也避免「对着已退出的旧端口发请求」
@@ -2403,6 +2406,23 @@ class Handler(BaseHTTPRequestHandler):
                 _touch_heartbeat()
                 self._send_json(kb.kb_status(KB_DIR))
                 return
+            if path == "/api/sub/list":
+                # S12a：订阅列表（含 last_seen / 失败计数 / due 状态）
+                _touch_heartbeat()
+                subs = subscription_store.list_subs()
+                due_ids = {s["id"] for s in subscription_store.due_subs()}
+                for s in subs:
+                    s["due"] = s["id"] in due_ids
+                self._send_json({"ok": True, "subscriptions": subs,
+                                 "file": str(subscription_store.SUB_FILE),
+                                 "capability": channel_discovery.capability()})
+                return
+            if path == "/api/sub/status":
+                # S12a：订阅同步任务状态
+                _touch_heartbeat()
+                self._send_json(subscription_engine.status(
+                    int((parse_qs(parsed.query).get("since") or ["0"])[0])))
+                return
             if path == "/api/artifacts":
                 # v1.0.8（T3 接线）：本次产物清单，供精读/修订下拉直接选，
                 # 消掉「手填产物路径」环节（序号名会随批次漂移，手填易错）
@@ -2871,6 +2891,32 @@ class Handler(BaseHTTPRequestHandler):
                     KB_DIR, str(data.get("id") or "").strip(),
                     allowed_roots=kb_roots,
                 ))
+            # ---- S12a：订阅博主/频道内容提取（手动触发，调度无关）----
+            elif path == "/api/sub/add":
+                self._send_json(subscription_store.add_sub(
+                    str(data.get("url") or "").strip(),
+                    name=str(data.get("name") or "").strip(),
+                    cookie_file=str(data.get("cookie_file") or "").strip(),
+                    interval_hours=data.get("interval_hours", 24)))
+            elif path == "/api/sub/remove":
+                self._send_json(subscription_store.remove_sub(
+                    str(data.get("id") or "").strip()))
+            elif path == "/api/sub/enabled":
+                self._send_json(subscription_store.set_enabled(
+                    str(data.get("id") or "").strip(), bool(data.get("enabled"))))
+            elif path == "/api/sub/run-now":
+                # 手动同步指定订阅（ids 为空则同步所有到期项）
+                ids = data.get("ids")
+                ids = [str(x) for x in ids if str(x).strip()] \
+                    if isinstance(ids, list) else []
+                outdir = _note_outdir(str(data.get("outdir") or "").strip())
+                if ids:
+                    res = subscription_engine.start(ids, outdir, KB_DIR)
+                else:
+                    res = subscription_engine.start_due(outdir, KB_DIR)
+                self._send_json(res)
+            elif path == "/api/sub/cancel":
+                self._send_json(subscription_engine.cancel())
             elif path == "/api/components/install":
                 # S10：启用组件——只接受内置 id，下载源由 components.py 固定，杜绝任意 URL
                 self._send_json(components.install(str(data.get("id") or "").strip()))

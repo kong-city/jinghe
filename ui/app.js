@@ -62,6 +62,19 @@
     kbQuery: $("kbQuery"),
     btnKbQuery: $("btnKbQuery"),
     kbResults: $("kbResults"),
+    // S12a：订阅博主/频道
+    subUrl: $("subUrl"),
+    subName: $("subName"),
+    subCookie: $("subCookie"),
+    subInterval: $("subInterval"),
+    subCapHint: $("subCapHint"),
+    subStatus: $("subStatus"),
+    subEvents: $("subEvents"),
+    subList: $("subList"),
+    btnSubAdd: $("btnSubAdd"),
+    btnSubSyncAll: $("btnSubSyncAll"),
+    btnSubCancel: $("btnSubCancel"),
+    btnSubRefresh: $("btnSubRefresh"),
     toolStatus: $("toolStatus"),
     // 左侧导航与页面
     appShell: $("appShell"),
@@ -376,6 +389,7 @@
     if (name === "process") loadTools();
     // v1.1.0：进入知识库页时刷新真实状态（S9 端点早已实现）
     if (name === "kb") loadKbStatus();
+    if (name === "kb") loadSubList();
     // v1.0.8：进入精读页时刷新本次产物清单
     if (name === "refine") loadArtifacts();
   }
@@ -2317,6 +2331,107 @@
     }).catch(function () { el.kbStats.textContent = "知识库状态读取失败"; });
   }
 
+  // ------------------------------------------------------------------ //
+  // S12a：订阅博主 / 频道
+  // ------------------------------------------------------------------ //
+  function escHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function loadSubList() {
+    api("/api/sub/list", undefined, 10000).then(function (r) {
+      if (!r || !r.ok) {
+        if (el.subList) el.subList.textContent = "订阅列表读取失败";
+        return;
+      }
+      var cap = r.capability || {};
+      if (el.subCapHint) {
+        el.subCapHint.hidden = !!cap.enabled;
+        el.subCapHint.textContent = cap.enabled ? "" : (cap.reason || "订阅依赖 yt-dlp");
+        el.subCapHint.className = "bar bar-warn";
+      }
+      var subs = r.subscriptions || [];
+      if (!el.subList) return;
+      if (!subs.length) {
+        el.subList.textContent = "尚未添加订阅。粘贴博主主页或频道链接即可开始。";
+        return;
+      }
+      var html = "";
+      for (var i = 0; i < subs.length; i += 1) {
+        var s = subs[i];
+        var badges = [];
+        badges.push(s.enabled ? "已启用" : "已停用");
+        if (s.due) badges.push("待同步");
+        if (s.last_status === "failed") badges.push("上次失败");
+        if (s.last_status === "ok") badges.push("正常");
+        var detail = "已处理 " + (s.seen_ids ? s.seen_ids.length : 0) + " 个视频" +
+          (s.last_new ? " · 上次新增 " + s.last_new : "") +
+          (s.last_error ? " · " + s.last_error.slice(0, 60) : "");
+        html += '<div class="kb-hit">' +
+          '<div><strong>' + escHtml(s.name || s.url) + '</strong> ' +
+          '<span class="badge">' + escHtml(badges.join(" / ")) + '</span></div>' +
+          '<div class="hint">' + escHtml(detail) + '</div>' +
+          '<div class="row">' +
+          '<button class="btn btn-ghost" type="button" data-sub-sync="' + escHtml(s.id) + '">立即同步</button>' +
+          '<button class="btn btn-ghost" type="button" data-sub-toggle="' + escHtml(s.id) + '" data-on="' + (s.enabled ? "0" : "1") + '">' + (s.enabled ? "停用" : "启用") + '</button>' +
+          '<button class="btn btn-ghost" type="button" data-sub-del="' + escHtml(s.id) + '">删除</button>' +
+          '</div></div>';
+      }
+      el.subList.innerHTML = html;
+    }).catch(function () {
+      if (el.subList) el.subList.textContent = "订阅列表读取失败";
+    });
+  }
+
+  function doSubAdd() {
+    var url = (el.subUrl && el.subUrl.value || "").trim();
+    if (!url) { showError("请先粘贴频道 / 博主主页链接"); return; }
+    var payload = {
+      url: url,
+      name: (el.subName && el.subName.value || "").trim(),
+      cookie_file: (el.subCookie && el.subCookie.value || "").trim(),
+      interval_hours: (el.subInterval && el.subInterval.value) || "24"
+    };
+    api("/api/sub/add", payload, 10000).then(function (r) {
+      if (!r || !r.ok) { showError("添加订阅失败：" + ((r && r.error) || "未知")); return; }
+      showNotice("订阅已添加，可点「立即同步」拉取首批内容");
+      if (el.subUrl) el.subUrl.value = "";
+      if (el.subName) el.subName.value = "";
+      loadSubList();
+    }).catch(function (err) { showError("添加订阅失败：" + err.message); });
+  }
+
+  function doSubSync(ids) {
+    var list = ids || [];
+    api("/api/sub/run-now", { ids: list }, 15000).then(function (r) {
+      if (!r || !r.ok) { showError("启动同步失败：" + ((r && r.error) || "未知")); return; }
+      if (el.subStatus) el.subStatus.textContent = "同步中…";
+      pollSubStatus();
+    }).catch(function (err) { showError("启动同步失败：" + err.message); });
+  }
+
+  var subPolling = false;
+  function pollSubStatus() {
+    if (subPolling) return;
+    subPolling = true;
+    api("/api/sub/status", undefined, 10000).then(function (r) {
+      var running = !!(r && r.running);
+      if (el.subStatus) el.subStatus.textContent = running ? "同步中…" : "";
+      if (r && r.events && r.events.length && el.subEvents) {
+        el.subEvents.hidden = false;
+        el.subEvents.textContent = r.events.map(function (e) { return e.text; }).join(" ｜ ");
+      }
+      if (r && !running && r.state && r.state !== "idle") {
+        showNotice("订阅同步结束：" + r.state + (r.error ? "（" + r.error + "）" : ""));
+        loadSubList();
+      }
+      if (running) { setTimeout(pollSubStatus, 1000); }
+      else { subPolling = false; }
+    }).catch(function () { subPolling = false; });
+  }
+
   function doKbIngest() {
     var dir = (lastDoneOutdir || (el.outPath && el.outPath.value) || "").trim();
     if (!dir) { showError("请先完成一次提取，或填写输出目录"); return; }
@@ -2377,6 +2492,38 @@
   function bindKbEvents() {
     if (el.btnKbRefresh) el.btnKbRefresh.addEventListener("click", loadKbStatus);
     if (el.btnKbIngest) el.btnKbIngest.addEventListener("click", doKbIngest);
+    // S12a：订阅博主/频道
+    if (el.btnSubAdd) el.btnSubAdd.addEventListener("click", doSubAdd);
+    if (el.btnSubRefresh) el.btnSubRefresh.addEventListener("click", loadSubList);
+    if (el.btnSubSyncAll) el.btnSubSyncAll.addEventListener("click", function () { doSubSync([]); });
+    if (el.btnSubCancel) el.btnSubCancel.addEventListener("click", function () {
+      api("/api/sub/cancel", {}, 10000).then(function () {
+        if (el.subStatus) el.subStatus.textContent = "正在取消…";
+      });
+    });
+    // 订阅列表内的行内按钮（事件委托）
+    if (el.subList) el.subList.addEventListener("click", function (ev) {
+      var t = ev.target;
+      if (!t || !t.getAttribute) return;
+      var syncId = t.getAttribute("data-sub-sync");
+      var delId = t.getAttribute("data-sub-del");
+      var toggleId = t.getAttribute("data-sub-toggle");
+      if (syncId) { doSubSync([syncId]); return; }
+      if (delId) {
+        api("/api/sub/remove", { id: delId }, 10000).then(function (r) {
+          if (!r || !r.ok) { showError("删除失败：" + ((r && r.error) || "未知")); return; }
+          showNotice("订阅已删除"); loadSubList();
+        });
+        return;
+      }
+      if (toggleId) {
+        api("/api/sub/enabled", { id: toggleId, enabled: t.getAttribute("data-on") === "1" }, 10000)
+          .then(function (r) {
+            if (!r || !r.ok) { showError("操作失败：" + ((r && r.error) || "未知")); return; }
+            loadSubList();
+          });
+      }
+    });
     if (el.btnKbQuery) el.btnKbQuery.addEventListener("click", doKbQuery);
     if (el.kbQuery) el.kbQuery.addEventListener("keydown", function (e) {
       if (e.key === "Enter") { e.preventDefault(); doKbQuery(); }

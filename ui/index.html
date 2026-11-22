@@ -293,6 +293,38 @@
         </div>
         <div id="kbResults" class="hint">输入关键词后点击「检索」。</div>
       </section>
+
+      <!-- S12a：订阅博主/频道——自动拉取新视频并沉淀进知识库 -->
+      <section class="card">
+        <div class="card-title">订阅博主 / 频道</div>
+        <p class="card-sub">粘贴博主主页或频道链接，定期把新视频转成笔记并入本知识库。软件运行时按间隔自动同步，关闭后停止、下次启动补上遗漏的内容；不会在后台常驻。</p>
+        <div id="subCapHint" class="bar bar-warn" role="status" hidden></div>
+        <div class="row">
+          <input id="subUrl" class="text-input" type="text" spellcheck="false"
+                 aria-label="订阅频道地址" placeholder="粘贴博主主页 / 频道链接（如 B站、YouTube 频道）">
+        </div>
+        <div class="row">
+          <input id="subName" class="text-input" type="text" spellcheck="false"
+                 aria-label="订阅名称" placeholder="备注名称（可选）">
+          <input id="subCookie" class="text-input" type="text" spellcheck="false"
+                 aria-label="订阅 cookie 文件" placeholder="cookie 文件路径（可选，需登录的站点）">
+        </div>
+        <div class="row">
+          <label class="hint" for="subInterval">同步间隔（小时）</label>
+          <input id="subInterval" class="text-input" type="number" value="24"
+                 min="1" max="720" step="1" aria-label="同步间隔小时">
+          <button id="btnSubAdd" class="btn btn-primary" type="button">添加订阅</button>
+        </div>
+        <div class="row">
+          <button id="btnSubSyncAll" class="btn btn-ghost" type="button">同步全部到期</button>
+          <button id="btnSubCancel" class="btn btn-ghost" type="button">取消同步</button>
+          <button id="btnSubRefresh" class="btn btn-ghost" type="button">刷新列表</button>
+          <span id="subStatus" class="run-status"></span>
+        </div>
+        <div id="subEvents" class="hint" hidden></div>
+        <div id="subList" class="hint">尚未添加订阅。</div>
+        <p class="card-sub">能力边界：需本机已安装 yt-dlp（软件不打包、不下载）；仅处理你有权访问的公开内容，需登录的站点请自带本机 cookie 文件（只读引用、不入库不外传）。抖音等平台的反爬或视频号截图订阅暂不支持。</p>
+      </section>
     </section>
 
     <!-- ==================== 精读（提纯核心知识点） ==================== -->

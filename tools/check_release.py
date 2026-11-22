@@ -229,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 # 只会在运行时才暴露）
                 "backend.py", "refine.py", "refine_engine.py",
                 "revise_engine.py", "extract_engine.py", "iterate_engine.py", "log_rotate.py",
+                "subscription_store.py", "channel_discovery.py", "subscription_engine.py",
                 "link_guard.py", "link_downloader.py", "link_media.py",
                 # 验收工具（S5 外部体检 + UI 视觉判分层）
                 "tools/bench_office_check.py", "tools/visual_check.py",
