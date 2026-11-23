@@ -2045,6 +2045,49 @@ def _build_name_path_map(inputs: list[str]) -> dict[str, str]:
     return result
 
 
+# v1.3.10（SPEC §6.4 限制 B 的操作建议落地）：
+# >50MB 且**非 UTF-8** 的文本文件，建议用户先拆分再转。
+# 该档位必须整读原始字节才能生成 UTF-8 副本，峰值内存约为文件大小的 3–4 倍；
+# >100MB 本就会被判「需拆分」，**50–100MB 这一档此前既不降级也无任何提示**，
+# 用户只能硬扛。SPEC 写出的操作建议此前从未编码进实现。
+#
+# 落在 app.py 后处理层而**不是 extract.py**：冻结内核被 test_59 的
+# 「extract.py 只允许版本号变更」硬断言锁死，动它就破坏冻结契约。
+# 复用 extract.detect_encoding_of_file 做**流式**探测（只判编码、不留全文）。
+LARGE_TEXT_SPLIT_HINT_BYTES = 50 * 1024 * 1024
+
+
+def _annotate_large_text_hints(items: list[dict]) -> None:
+    """给「超大且非 UTF-8」的文本条目追加拆分建议（就地修改 items）。
+
+    只处理 ``kind == "文本类"``：富文档（pdf / docx / xlsx…）是二进制，
+    走的是另一条解析路径，不存在「整读生成 UTF-8 副本」这件事。
+    探测失败一律**跳过**（不报错、不阻断预览）——这是提示性增强，不是判据。
+    """
+    for it in items:
+        if it.get("kind") != "文本类":
+            continue
+        raw = str(it.get("path") or "").strip()
+        if not raw:
+            continue
+        try:
+            p = Path(raw)
+            size = p.stat().st_size
+        except OSError:
+            continue
+        if size <= LARGE_TEXT_SPLIT_HINT_BYTES:
+            continue
+        try:
+            enc = extract.detect_encoding_of_file(p)[0]
+        except Exception:
+            continue
+        if enc in ("utf-8", "", None):
+            continue
+        it["hint"] = ("%.0fMB 且非 UTF-8（%s），建议先拆分再转"
+                      "（整读生成 UTF-8 副本，峰值内存约为原文件的 3–4 倍）"
+                      % (size / 1048576.0, enc))
+
+
 def _dry_run(inputs: list[str]) -> dict:
     try:
         proc = subprocess.run(
@@ -2106,6 +2149,8 @@ def _dry_run(inputs: list[str]) -> dict:
     name_to_path = _build_name_path_map(inputs)
     for it in items:
         it["path"] = name_to_path.get(it.get("name", ""), "")
+    # v1.3.10：给「超大且非 UTF-8」的文本条目追加拆分建议（SPEC §6.4 限制 B）
+    _annotate_large_text_hints(items)
 
     _LAST_INPUTS = list(inputs)
     _LAST_INPUT = inputs[0] if len(inputs) == 1 else ""
@@ -2768,6 +2813,15 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/open-merged":
                 self._send_json(self._api_open_merged(
                     _note_outdir(str(data.get("outdir") or "").strip())))
+            elif path == "/api/artifacts/open":
+                # v1.3.10：打开**产物目录内**的 .md。
+                # 此前三套打开白名单互不相交（/api/open 只放行日志与设置、
+                # /api/open-merged 只认 MERGED.md、/api/refine/open 只认 derived/），
+                # 于是阶段 1 提取出的 out/md/*.md 在软件内一个都打不开。
+                # 这里新增独立端点，**不放宽 /api/open 的白名单**——
+                # 那条白名单是 v0.4.0 刻意堵死「启动任意程序」的收敛成果。
+                self._send_json(self._api_open_artifact(
+                    str(data.get("path") or "").strip()))
             elif path == "/api/update":
                 self._send_json(self._api_update())
             elif path == "/api/update/start":
@@ -2908,12 +2962,41 @@ class Handler(BaseHTTPRequestHandler):
                     limit=min(int(data.get("limit") or 20), 100),
                 ))
             elif path == "/api/kb/open-source":
-                # S9：回跳原文位置（只解析坐标，不执行打开；路径围栏）
+                # S9：回跳原文位置（路径围栏）
+                # v1.3.10：补上「最后一跳」——原来只解析坐标、**不执行打开**，
+                # 前端只能弹一条坐标字符串，用户点了却看不到任何文件。
+                # 现在可传 open=true 直接打开；围栏（allowed_roots）仍由
+                # kb.open_source 内部 _check_allowed 把关，打开动作复用
+                # _open_document（固定走系统记事本，避免 .md 单实例关联
+                # 让「打开」退化成静默切窗）。
                 kb_roots = _kb_allowed_roots()
-                self._send_json(kb.open_source(
+                res = kb.open_source(
                     KB_DIR, str(data.get("id") or "").strip(),
                     allowed_roots=kb_roots,
-                ))
+                )
+                if res.get("ok") and bool(data.get("open")):
+                    try:
+                        via = _open_document(Path(res["source_file"]))
+                        res["via"] = via
+                        res["opened"] = True
+                        _append_log("[INFO] 已打开知识库回跳原文（%s）：%s"
+                                    % (via, res["source_file"]))
+                    except Exception as exc:
+                        _log_error("API:/api/kb/open-source", "打开回跳原文失败",
+                                   exc, request="id=%s" % data.get("id"))
+                        res["ok"] = False
+                        res["opened"] = False
+                        res["error"] = "打开失败：%s" % exc
+                self._send_json(res)
+            elif path == "/api/kb/rebuild":
+                # v1.3.10：重建全文索引（entries_fts）。
+                # entries 是主数据、entries_fts 是派生索引，重建不丢条目。
+                # S9 风险 R3 承诺的维护入口，此前完全没落地。
+                self._send_json(kb.rebuild_index(KB_DIR))
+            elif path == "/api/kb/reset":
+                # v1.3.10：清空知识库条目（不删知识库目录本身）。
+                # **破坏性操作**，前端必须二次确认后才调用。
+                self._send_json(kb.reset_kb(KB_DIR))
             # ---- S12a：订阅博主/频道内容提取（手动触发，调度无关）----
             elif path == "/api/sub/add":
                 self._send_json(subscription_store.add_sub(
@@ -3054,6 +3137,52 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return {"ok": False, "error": "打开失败：%s" % exc}
         return {"ok": True, "path": str(target)}
+
+    def _api_open_artifact(self, raw: str) -> dict:
+        """v1.3.10：打开**产物目录内**的 .md 文件（阶段 1 提取产物 / 后处理产物）。
+
+        背景：v1.3.10 之前有三套互不相交的打开白名单——
+        ``/api/open`` 只放行日志与设置文件、``/api/open-merged`` 只认
+        ``MERGED.md``、``/api/refine/open`` 只认 ``derived/`` 内文件。
+        于是阶段 1 提取出的 ``out/md/*.md`` 在软件内**一个都打不开**，
+        用户只能自己去文件管理器里翻。
+
+        安全收敛（与既有三套保持同一强度，且**不放宽 /api/open**）：
+        1. 路径必须落在「软件写过产物的目录」白名单内（``_kb_allowed_roots()``，
+           与知识库回跳共用同一套围栏）；
+        2. 必须是真实存在的普通文件，且后缀限定为 ``.md``（不放行 exe / bat /
+           脚本，避免「打开」变成「启动任意程序」）；
+        3. 打开动作复用 ``_open_document``（固定系统记事本，避免 .md 的
+           单实例关联让「打开」退化成静默切窗）。
+        """
+        if not raw:
+            return {"ok": False, "error": "请提供要打开的产物路径"}
+        try:
+            target = Path(raw).expanduser().resolve()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": "路径无效：%s" % exc}
+        # ① 围栏：必须落在软件写过产物的目录内
+        roots = _kb_allowed_roots()
+        if not any(kb._is_within(target, Path(r)) for r in roots):
+            return {"ok": False, "error": "路径不在允许的产物目录内",
+                    "path": str(target)}
+        # ② 只放行 .md 普通文件
+        if target.suffix.lower() != ".md":
+            return {"ok": False, "error": "只允许打开 .md 产物文件",
+                    "path": str(target)}
+        if not target.is_file():
+            return {"ok": False, "error": "文件不存在：%s" % target,
+                    "path": str(target)}
+        # ③ 执行打开
+        try:
+            via = _open_document(target)
+        except Exception as exc:
+            _log_error("API:/api/artifacts/open", "打开产物失败", exc,
+                       request="path=%s" % target)
+            return {"ok": False, "error": "打开失败：%s" % exc,
+                    "path": str(target)}
+        _append_log("[INFO] 已打开产物（%s）：%s" % (via, target))
+        return {"ok": True, "path": str(target), "via": via}
 
     def _api_open_folder(self, raw: str) -> dict:
         """首页输出区「打开」：在系统文件管理器中浏览文件夹（**只接目录，不接文件**）。
@@ -3478,8 +3607,33 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "path": str(out_path), "chars": len(header) + len(summary)}
 
     def _api_transcribe(self, inputs: list[str]) -> dict:
+        """S1 预留的**通用音视频转写空心位**（契约锁死：恒诚实拒绝）。
+
+        v1.3.10 修掉一个被契约点名的真实隐患：
+        ``_STAGE3_AUDIO_EXT`` 是 ``MEDIA_EXT`` **并集**（含全部视频后缀），
+        原实现据此判定会把视频文件也认作「可转写音视频」，一旦将来有人
+        接线，就会把视频喂进音频路径——正是 CAPABILITY_CONTRACT v0.5 第 5 条
+        明令禁止的「红线 2」。
+
+        修法（不动被 test 锁死的常量与占位文案）：**在本方法内部先做
+        视频拒收**，视频逐条回「不支持」并指向 ``/api/video/transcribe``，
+        音频才继续走通用判定。端点本身仍恒返回 ok=False、绝不产出伪转写。
+
+        注意：真实音视频能力早已由独立端点承接——
+        音频走 ``/api/audio/transcribe``、视频走 ``/api/video/transcribe``，
+        两者互相独立且都不走本路径。
+        """
         if not inputs:
             return {"ok": False, "error": "请先选择音视频文件（阶段 3 预留格式）"}
+        # ① 视频拒收优先于存在性判定（红线 2）：视频绝不走音频路径。
+        videos = [p for p in inputs
+                  if Path(p).suffix.lower() in format_registry.MEDIA_VIDEO]
+        if videos:
+            return {"ok": False,
+                    "error": "不支持：视频不走通用音视频转写路径"
+                             "（红线 2），已识别 %d 个视频文件；"
+                             "请改用 /api/video/transcribe（独立 video handler）。"
+                             % len(videos)}
         found = [p for p in inputs
                  if Path(p).suffix.lower() in _STAGE3_AUDIO_EXT and os.path.exists(p)]
         if not found:
@@ -3488,7 +3642,9 @@ class Handler(BaseHTTPRequestHandler):
         # 此处只诚实标记、绝不产出伪转写；接入转写后端后在此调用。
         return {"ok": False, "error":
                 "阶段 3 音视频转写需专用转写器，当前零依赖运行环境未启用；"
-                "已识别 %d 个音视频文件，请在启用转写后端后重试。" % len(found)}
+                "已识别 %d 个音视频文件，请在启用转写后端后重试。"
+                "（提示：音视频转写能力已由独立端点承接——音频用 /api/audio/transcribe，"
+                "视频用 /api/video/transcribe。）" % len(found)}
 
     # ------------------- S2a · Word → .md 输入增强 ------------------- #
     def _api_word_inspect(self, inputs: list[str]) -> dict:

@@ -408,7 +408,18 @@ def capabilities() -> dict:
 
 
 def media_ready(tools: dict | None = None, caps: dict | None = None) -> bool:
-    """音视频转写是否真的可点：能力已接入 + 必需工具都可用。"""
+    """音视频转写是否真的可点：能力已接入 + 必需工具都可用。
+
+    v1.3.10 说明：**本函数恒返回 False**，且这是**契约锁死的已知状态**，
+    不是缺陷。原因是它依赖 ``capabilities()`` 这个 S1 占位清单，而该清单
+    被 ``test_33`` 的「全部未启用」断言锁死、后续阶段不得改写。
+
+    S3 / S4 早已把音视频能力真实落地，但走的是**顶层增量字段**
+    ``audio_transcribe`` / ``video_transcribe``（见 ``app.py::_tools_probe_body``）。
+    因此**本字段不得当就绪判据**——外部集成若要判断「音视频能力是否可用」，
+    请读顶层增量字段，不要读 ``media_ready``。CAPABILITY_CONTRACT v0.5 第 2 条
+    已写明同一口径，这里只是把警告落到代码里，避免调用方再次误用。
+    """
     caps = caps if caps is not None else capabilities()
     tools = tools if tools is not None else probe_all()
     if not caps.get("media_transcribe", {}).get("enabled"):
@@ -426,7 +437,9 @@ def payload(refresh: bool = False) -> dict:
         "tools": tools,
         "capabilities": caps,
         "media_ready": media_ready(tools, caps),
-        "note": "工具由本机提供，软件不下载 / 不打包 / 不自动安装",
+        "note": "工具由本机提供，软件不下载 / 不打包 / 不自动安装；"
+                "media_ready 是 S1 占位遗留字段、恒为 false，"
+                "音视频能力就绪状态请读顶层 audio_transcribe / video_transcribe",
     }
 
 

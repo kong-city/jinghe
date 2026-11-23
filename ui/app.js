@@ -57,6 +57,9 @@
     // v1.1.0：知识库页（S9 后端端点已实现，此前首页按钮仅是「规划中」占位）
     btnKbIngest: $("btnKbIngest"),
     btnKbRefresh: $("btnKbRefresh"),
+    btnKbRebuild: $("btnKbRebuild"),
+    btnKbReset: $("btnKbReset"),
+    kbMaintStatus: $("kbMaintStatus"),
     kbStatus: $("kbStatus"),
     kbStats: $("kbStats"),
     kbQuery: $("kbQuery"),
@@ -133,6 +136,7 @@
     reviseSyncCheck: $("reviseSyncCheck"),
     refineArtifactSel: $("refineArtifactSel"),
     btnReloadArtifacts: $("btnReloadArtifacts"),
+    btnOpenArtifact: $("btnOpenArtifact"),
     revisePreviewMdEl: $("revisePreviewMd"),
     beKind: $("beKind"),
     beMode: $("beMode"),
@@ -974,6 +978,15 @@
       name.title = it_path_title(item);
       li.appendChild(name);
 
+      // v1.3.10：超大非 UTF-8 文本的「建议先拆分」提示（SPEC §6.4 限制 B）
+      if (item.hint) {
+        var hint = document.createElement("span");
+        hint.className = "file-hint";
+        hint.textContent = "建议先拆分：" + item.hint;
+        hint.title = item.hint;
+        li.appendChild(hint);
+      }
+
       el.fileList.appendChild(li);
     });
 
@@ -1547,12 +1560,12 @@
   // S1：工具健康探测结果。缺工具 / 能力未接入时，按钮必须诚实显示「未启用」。
   var toolState = null;
 
-  function capabilityEnabled(name) {
-    return !!(toolState && toolState.capabilities &&
-              toolState.capabilities[name] &&
-              toolState.capabilities[name].enabled);
-  }
-
+  // v1.3.10：能力状态一律读 /api/tools/probe 的**顶层增量字段**。
+  // 旧实现读 toolState.capabilities.media_transcribe，那是 S1 时代的
+  // **占位清单**（被 test_33 锁死恒 enabled=false），与真实能力无关。
+  // 后果：状态条同一行出现「音视频转写：未启用（S3 阶段的历史占位文案）」
+  // 紧接「音频转写：已启用」——自相矛盾，且那句占位文案是**过时假信息**
+  // （S3/S4 早已落地）。此处只改**读取路径**，绝不回改 media_tools.capabilities()。
   function renderToolStatus() {
     if (!el.toolStatus) return;
     var tools = (toolState && toolState.tools) || {};
@@ -1562,9 +1575,6 @@
       return n + " " + (t.available ? "可用" : "未启用") +
              (t.version ? "（" + t.version + "）" : "");
     });
-    var cap = (toolState && toolState.capabilities &&
-               toolState.capabilities.media_transcribe) || {};
-    var why = cap.reason || "本机工具状态未知";
     var at = (toolState && toolState.audio_transcribe) || {};
     var vt = (toolState && toolState.video_transcribe) || {};
     var wi = (toolState && toolState.word_input) || {};
@@ -1576,9 +1586,10 @@
       el.linkCap.hidden = false;
     }
     var legacy = wi.legacy_doc || {};
+    // 旧版这里还有一段「音视频转写」，读的是占位清单、恒为「未启用」，
+    // 且与紧随其后的「音频转写」「视频提取」重复。v1.3.10 删除该重复段，
+    // 真实就绪状态由下面两段（顶层增量字段）唯一承载。
     el.toolStatus.textContent = "本机工具：" + parts.join(" · ") +
-      "；音视频转写：" +
-      (capabilityEnabled("media_transcribe") ? "已启用" : "未启用（" + why + "）") +
       "；Word 输入增强：" +
       (wi.enabled ? "已启用（.docx）" : "未启用") +
       "，.doc 旧格式：" +
@@ -2121,7 +2132,8 @@
   // 仅在「本次运行成功且有产物目录」时点亮后处理按钮；运行/预览中不点亮。
   function updateFeatureButtons() {
     var on = !!lastDoneOutdir && !running && !previewing;
-    var mediaOn = capabilityEnabled("media_transcribe");
+    // v1.3.10：删除死变量 mediaOn——它读的是 S1 占位清单（恒 false），
+    // 且赋值后全文再无引用；音频/视频按钮的真实判据是下面的顶层增量字段。
     el.btnSummarize.disabled = !on;
     // S2b：纯标准库导出恒可用；只需有输出目录（后端会自动只读收集 MERGED.md）。
     var we = ((toolState || {}).word_export) || {};
@@ -2281,6 +2293,25 @@
       });
   }
 
+  // v1.3.10：打开「本次产物」下拉里选中的文件。
+  // 后端 /api/artifacts/open 只放行**产物目录内的 .md**——
+  // 不放宽 /api/open 的白名单（那条是 v0.4.0 刻意堵死「启动任意程序」的收敛成果）。
+  function openSelectedArtifact() {
+    var sel = el.refineArtifactSel;
+    var path = ((sel && sel.value) || "").trim();
+    if (!path) {
+      showNotice("请先在「本次产物」里选择一个文件");
+      return;
+    }
+    api("/api/artifacts/open", { path: path }, 15000).then(function (r) {
+      if (!r || !r.ok) {
+        showError("打开失败：" + ((r && r.error) || "未知错误"));
+        return;
+      }
+      showNotice("已打开：" + (r.path || path));
+    }).catch(function (err) { showError("打开失败：" + (err.message || err)); });
+  }
+
   // v1.0.8（T3 接线）：精读完成 → 一键送往修订（自动填路径并切页）
   function sendRefineToRevise() {
     var path = (el.refineResult && el.refineResult.dataset.path) || "";
@@ -2306,6 +2337,10 @@
     }
     if (el.btnReloadArtifacts) {
       el.btnReloadArtifacts.addEventListener("click", loadArtifacts);
+    }
+    // v1.3.10：打开本次选中的产物（阶段 1 md / 后处理 derived）
+    if (el.btnOpenArtifact) {
+      el.btnOpenArtifact.addEventListener("click", openSelectedArtifact);
     }
     if (el.btnSendToRevise) {
       el.btnSendToRevise.addEventListener("click", sendRefineToRevise);
@@ -2504,14 +2539,17 @@
           "[" + item.block + "] " + (item.locator || item.doc_id) +
           " — " + (item.snippet || "").replace(/\s+/g, " ") + " "));
         // S9：回跳原文位置（后端只解析坐标、不执行打开；路径围栏）
+        // v1.3.10：补上最后一跳——传 open=true 让后端直接打开原文文件。
         var jump = document.createElement("button");
         jump.className = "link-btn";
         jump.type = "button";
         jump.textContent = "回跳原文";
         jump.addEventListener("click", function () {
-          api("/api/kb/open-source", { id: item.id }, 10000).then(function (j) {
+          api("/api/kb/open-source", { id: item.id, open: true }, 10000).then(function (j) {
             if (!j || !j.ok) { showError("回跳失败：" + ((j && j.error) || "未知错误")); return; }
-            showNotice("原文位置：" + (j.locator || j.source_file || "已定位"));
+            showNotice(j.opened
+              ? "已打开原文：" + (j.source_file || j.locator || "")
+              : "原文位置：" + (j.locator || j.source_file || "已定位"));
           }).catch(function (err) { showError("回跳失败：" + (err.message || err)); });
         });
         row.appendChild(jump);
@@ -2520,9 +2558,75 @@
     }).catch(function (err) { el.kbResults.textContent = "检索失败：" + (err.message || err); });
   }
 
+  // ------------------------------------------------------------------ //
+  // v1.3.10：知识库维护——重建索引 / 清空条目
+  // S9 风险登记 R3 明确承诺的缓解措施（提供「重建索引」与手动清理入口），
+  // 此前**完全没有落地**：条目只增不减、索引损坏后检索静默漏条目且无自愈手段。
+  // ------------------------------------------------------------------ //
+  var kbResetArmed = false;
+  var kbResetTimer = null;
+
+  function doKbRebuild() {
+    if (el.kbMaintStatus) el.kbMaintStatus.textContent = "重建中…";
+    api("/api/kb/rebuild", {}, 30000).then(function (r) {
+      if (!r || !r.ok) {
+        var why = (r && r.error) || "未知错误";
+        if (el.kbMaintStatus) el.kbMaintStatus.textContent = "重建失败：" + why;
+        showError("重建索引失败：" + why);
+        return;
+      }
+      if (el.kbMaintStatus) el.kbMaintStatus.textContent = "索引已重建（" + (r.indexed || 0) + " 条）";
+      showNotice("索引已重建：" + (r.indexed || 0) + " 条");
+      loadKbStatus();
+    }).catch(function (err) {
+      if (el.kbMaintStatus) el.kbMaintStatus.textContent = "重建失败";
+      showError("重建索引失败：" + (err.message || err));
+    });
+  }
+
+  function doKbReset() {
+    // 破坏性且**不可撤销**（只清条目，不删知识库目录），走两段式确认：
+    // 第一次点击只「上膛」（按钮换文案），第二次点击才真执行。
+    // 不用 window.confirm：Electron 的同步弹窗会阻塞渲染进程，
+    // 且与项目既有的 toast / notice 交互风格不一致。
+    if (!kbResetArmed) {
+      kbResetArmed = true;
+      if (el.btnKbReset) el.btnKbReset.textContent = "再点一次确认清空";
+      if (el.kbMaintStatus) el.kbMaintStatus.textContent = "请再次点击确认（5 秒内有效）";
+      if (kbResetTimer) clearTimeout(kbResetTimer);
+      kbResetTimer = setTimeout(function () {
+        kbResetArmed = false;
+        if (el.btnKbReset) el.btnKbReset.textContent = "清空条目";
+        if (el.kbMaintStatus) el.kbMaintStatus.textContent = "";
+      }, 5000);
+      return;
+    }
+    kbResetArmed = false;
+    if (kbResetTimer) clearTimeout(kbResetTimer);
+    if (el.btnKbReset) el.btnKbReset.textContent = "清空条目";
+    if (el.kbMaintStatus) el.kbMaintStatus.textContent = "清空中…";
+    api("/api/kb/reset", {}, 30000).then(function (r) {
+      if (!r || !r.ok) {
+        var why = (r && r.error) || "未知错误";
+        if (el.kbMaintStatus) el.kbMaintStatus.textContent = "清空失败：" + why;
+        showError("清空失败：" + why);
+        return;
+      }
+      if (el.kbMaintStatus) el.kbMaintStatus.textContent = "已清空";
+      showNotice("知识库条目已清空");
+      loadKbStatus();
+    }).catch(function (err) {
+      if (el.kbMaintStatus) el.kbMaintStatus.textContent = "清空失败";
+      showError("清空失败：" + (err.message || err));
+    });
+  }
+
   function bindKbEvents() {
     if (el.btnKbRefresh) el.btnKbRefresh.addEventListener("click", loadKbStatus);
     if (el.btnKbIngest) el.btnKbIngest.addEventListener("click", doKbIngest);
+    // v1.3.10：知识库维护入口
+    if (el.btnKbRebuild) el.btnKbRebuild.addEventListener("click", doKbRebuild);
+    if (el.btnKbReset) el.btnKbReset.addEventListener("click", doKbReset);
     // S12a：订阅博主/频道
     if (el.btnSubAdd) el.btnSubAdd.addEventListener("click", doSubAdd);
     if (el.btnSubRefresh) el.btnSubRefresh.addEventListener("click", loadSubList);

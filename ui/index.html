@@ -306,6 +306,19 @@
         <div id="kbStats" class="meta">尚未探测知识库状态</div>
       </section>
 
+      <!-- v1.3.10：知识库维护入口（S9 风险 R3 承诺的缓解措施，此前完全没落地） -->
+      <section class="card">
+        <div class="card-title">知识库维护</div>
+        <p class="card-sub">条目只增不减、长期使用会让库单调增长；全文索引一旦损坏，检索会静默漏条目。此处提供自愈与回收入口。</p>
+        <div class="row">
+          <button id="btnKbRebuild" class="btn btn-ghost" type="button"
+                  title="从主数据全量重建全文索引，不丢任何条目">重建索引</button>
+          <button id="btnKbReset" class="btn btn-ghost" type="button"
+                  title="清空全部知识条目（不删除知识库目录）——不可撤销，会二次确认">清空条目</button>
+          <span id="kbMaintStatus" class="run-status"></span>
+        </div>
+      </section>
+
       <section class="card">
         <div class="card-title">检索</div>
         <div class="row">
@@ -371,6 +384,9 @@
             <option value="">（尚未提取 / 无产物）</option>
           </select>
           <button id="btnReloadArtifacts" class="btn btn-ghost" type="button" title="重新读取本次产物">刷新</button>
+          <!-- v1.3.10：阶段 1 的 out/md/*.md 此前在软件内无法打开（打开白名单互不相交），此处补上入口 -->
+          <button id="btnOpenArtifact" class="btn btn-ghost" type="button"
+                  title="在系统记事本中打开选中的产物（阶段 1 md / 后处理 derived 产物）">打开产物</button>
         </div>
         <div class="row">
           <label class="check" for="refineModelWrap">模型

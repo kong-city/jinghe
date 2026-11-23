@@ -917,6 +917,19 @@ button, input { font-family: inherit; }
 .kind-unsupported { color: #5F5E5A; background: #F1EFE8; }
 .kind-other { color: #6B6A65; background: #F6F6F4; }
 
+/* v1.3.10：超大非 UTF-8 文本的「建议先拆分」提示（SPEC §6.4 限制 B）。
+   真实可见文本，用 #854F0B（琥珀深色）配 #FAEEDA 底，对比度达 AA。 */
+.file-hint {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: #854F0B;
+  background: #FAEEDA;
+}
+
 .file-more {
   padding: 6px 0;
   font-size:12px;

@@ -567,11 +567,20 @@ def _run_revise_inner(path: str, model: str, outdir: str, backend_obj,
     * ``extract``（默认）：**B 档原文内改写**（术语归一 / 合并去重 / 结构重排），
       只用原文素材，零依赖，架构级不造假；
     * ``llm``：沿用 S7 的补写 + 修改双产物路径（补写仍需开关开启）。
+
+    v1.3.10：``extract`` 模式下**不支持自定义修订指令**（B 档只有上述三种
+    原文内机械改写，没有指令入口）。此前 ``instruction`` 在该分支被
+    **静默丢弃**——UI 已把指令框置灰兜住了普通用户，但 API 直调会拿到
+    「以为指令生效了、实际只做了固定改写」的产物且无任何提示。
+    现在显式回显一条日志，不让用户误判。
     """
     global _TASK
     try:
         mode = backend.load_config().get("mode", backend.MODE_EXTRACT)
         if mode == backend.MODE_EXTRACT:
+            if (instruction or "").strip():
+                _task_add("log", "当前为抽取式（extract）模式，不支持自定义修订指令；"
+                                 "本次只做术语归一 / 合并去重 / 结构重排。", 0.05)
             _run_revise_extract(path, outdir, cap)
             return
         _run_revise_llm(path, model, outdir, backend_obj, cap, instruction)

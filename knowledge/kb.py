@@ -182,6 +182,45 @@ def reset_kb(kb_dir) -> dict:
         conn.close()
 
 
+def rebuild_index(kb_dir) -> dict:
+    """重建全文索引（``entries_fts``）——S9 风险 R3 承诺的维护入口。
+
+    v1.3.10 新增。此前 ``entries`` 表（主数据）与 ``entries_fts``
+    （派生索引）**没有任何维护入口**：一旦二者不一致（分词器换了、
+    索引损坏、中途写入失败），检索就会静默漏条目，而用户既查不出原因、
+    也没有自救手段——S9 风险登记 R3 明确承诺的「提供『重建索引』与手动清理
+    入口」此前完全没落地。
+
+    ``entries`` 是主数据、``entries_fts`` 是纯派生视图，因此可以安全地
+    全量重建：清空 FTS 再从 ``entries`` 逐条回填，**不丢任何条目**。
+    """
+    conn = _connect(kb_dir)
+    try:
+        tokenizer = _fts_available(conn)
+        if not tokenizer:
+            return {"ok": False, "fts": False,
+                    "error": "当前 SQLite 不支持 FTS5，无法重建全文索引"
+                             "（检索将降级为 LIKE 匹配）"}
+        total = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+        conn.execute("DROP TABLE IF EXISTS entries_fts")
+        conn.execute(
+            "CREATE VIRTUAL TABLE entries_fts "
+            "USING fts5(id UNINDEXED, body, tokenize='%s')" % tokenizer
+        )
+        rows = conn.execute("SELECT id, body FROM entries").fetchall()
+        conn.executemany("INSERT INTO entries_fts(id, body) VALUES(?,?)",
+                         [(r["id"], r["body"]) for r in rows])
+        conn.commit()
+        indexed = conn.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+        return {"ok": True, "entries": total, "indexed": indexed,
+                "tokenizer": tokenizer}
+    except sqlite3.Error as e:
+        conn.rollback()
+        return {"ok": False, "error": "重建索引失败: %s" % e}
+    finally:
+        conn.close()
+
+
 def kb_status(kb_dir) -> dict:
     db = _db_path(kb_dir)
     if not db.exists():
