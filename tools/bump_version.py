@@ -275,7 +275,15 @@ def main(argv=None) -> int:
     set_guide(new_ver, dry=False)
     set_electron_and_devline(new_ver, dry=False)
     print("[OK] 已升号 %s → %s，真源 + 6 个派生点已同步" % (current, new_ver))
-    print("下一步：跑门禁 python tools/check_release.py --no-exe，再上传前跑 for-upload")
+    # 发版约定（用户 2026-11-23 裁决）：本地包只用于本地验证/自用，不上传 GitHub；
+    # GitHub Release 上的资产一律由 CI 在远端构建。旧提示「上传前跑 for-upload」
+    # 属于已废弃的手动上传流程，会误导调用方，故改为 tag → CI 远端打包。
+    print("下一步（远端打包约定：本地包不上传，Release 由 CI 产出）：")
+    print("  1. 本地验证：python tools/check_release.py --no-exe")
+    print("  2. 一键发版：python tools/release.py --reason \"本次改动说明\"")
+    print("     或手动：git add -A && git commit -m \"...\" && git push origin main")
+    print("            git tag -a v%s -m \"...\" && git push origin v%s" % (new_ver, new_ver))
+    print("  3. CI 收到 v* tag 后自动在远端构建 exe + 安装包 + 上传 Release")
     return 0
 
 
