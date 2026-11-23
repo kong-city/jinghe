@@ -52,6 +52,49 @@ def _read(rel: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def evaluate_exe(version: str, dist_dir: Path, *, require_exe: bool,
+                 no_exe: bool) -> tuple[bool, str, str]:
+    """判定 exe 产物校验项，返回 (ok, 检查项名称, 详情)。
+
+    抽成纯函数便于隔离单测（可传临时 dist 目录构造「只有旧版 exe」等场景）。
+    发布阶段（require_exe）只认当前版本的精确产物 dist/Jinghe-<version>.exe，
+    否则「代码升到新版但包还是旧的」会静默通过 —— 2026-11-23 实测缺陷。
+    """
+    if no_exe:
+        return True, "exe 产物", "CI 测试阶段按 --no-exe 跳过"
+
+    exact_exe = dist_dir / ("Jinghe-%s.exe" % version)
+    legacy_exe = dist_dir / "Jinghe.exe"
+    # 保留 glob：test_64 断言门禁识别带版本号产物命名
+    versioned = sorted(dist_dir.glob("Jinghe-*.exe"))
+
+    if require_exe:
+        if exact_exe.is_file():
+            size = exact_exe.stat().st_size
+            return (size > 1024 * 1024, "exe 产物版本匹配",
+                    "%s · %d 字节" % (exact_exe.name, size))
+        found = [p.name for p in versioned]
+        if legacy_exe.is_file():
+            found.append(legacy_exe.name)
+        return (False, "exe 产物版本匹配",
+                "缺 dist/Jinghe-%s.exe（现有: %s）"
+                % (version, ", ".join(found) or "无"))
+
+    # 本地开发阶段：优先当前版本；无则容忍任意 exe 但提示重建，不静默放过。
+    if exact_exe.is_file():
+        size = exact_exe.stat().st_size
+        return (size > 1024 * 1024, "exe 产物可用",
+                "%s · %d 字节" % (exact_exe.name, size))
+    fallback = legacy_exe if legacy_exe.is_file() else (
+        versioned[0] if versioned else None)
+    if fallback is not None and fallback.is_file():
+        size = fallback.stat().st_size
+        return (size > 1024 * 1024, "exe 产物可用（非当前版本）",
+                "%s · %d 字节；当前版本 %s 尚未构建，建议先 python build.py"
+                % (fallback.name, size, version))
+    return True, "exe 产物", "尚未构建，本地开发阶段跳过"
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()
     ap = argparse.ArgumentParser(description="精核发版一致性门禁")
@@ -251,20 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     check(not bad, "关键源文件语法可编译", "; ".join(bad))
 
     # ⑧ exe 产物（发布阶段强制；本地构建后可选）
-    # 对外产物名带版本号（dist/Jinghe-<version>.exe，用户 2026-11-19 裁决），
-    # 兼容旧的 Jinghe.exe（过渡期）。两者都没有才算缺失。
-    exe = next(iter(sorted((ROOT / "dist").glob("Jinghe-*.exe"))), None)
-    if exe is None:
-        exe = ROOT / "dist" / "Jinghe.exe"
-    if args.no_exe:
-        check(True, "exe 产物", "CI 测试阶段按 --no-exe 跳过")
-    elif exe.is_file():
-        size = exe.stat().st_size
-        check(size > 1024 * 1024, "exe 产物可用", "%d 字节" % size)
-    elif args.require_exe:
-        check(False, "exe 产物必须存在", str(exe))
-    else:
-        check(True, "exe 产物", "尚未构建，本地开发阶段跳过")
+    # 对外产物名带版本号（dist/Jinghe-<version>.exe，用户 2026-11-19 裁决）。
+    # 判定逻辑抽成纯函数 evaluate_exe，便于隔离单测「只有旧版 exe」等场景；
+    # 原 sorted(glob)[0] 缺陷见该函数文档（2026-11-23 修）。
+    check(*evaluate_exe(version, ROOT / "dist",
+                        require_exe=bool(args.require_exe),
+                        no_exe=bool(args.no_exe)))
 
     failed = 0
     for ok, name, detail in results:

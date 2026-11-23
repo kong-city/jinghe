@@ -5243,6 +5243,39 @@ class AppContractTest(unittest.TestCase):
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("sideVersion", js)
 
+        # ⑤ 门禁只认当前版本 exe（2026-11-23 缺陷修复的行为守护）
+        # 原实现 sorted(glob)[0] 取最旧 exe，代码升版但包没重建时仍绿灯。
+        import importlib.util, tempfile as _tf
+        spec = importlib.util.spec_from_file_location(
+            "_release_gate", ROOT / "tools" / "check_release.py")
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        with _tf.TemporaryDirectory() as td:
+            d = Path(td)
+            big = b"x" * (2 * 1024 * 1024)  # >1MB，模拟合法 exe 体积
+            # 场景 A：只有旧版 exe，发布阶段必须判失败（核心回归点）
+            (d / ("Jinghe-1.1.0.exe")).write_bytes(big)
+            ok, name, detail = gate.evaluate_exe(
+                "1.2.9", d, require_exe=True, no_exe=False)
+            self.assertFalse(ok, "只有旧版 exe 时 --require-exe 不应通过：%s" % detail)
+            self.assertIn("1.2.9", detail, "失败信息应指出缺失的当前版本")
+            # 场景 B：当前版本 exe 存在，发布阶段应通过
+            (d / "Jinghe-1.2.9.exe").write_bytes(big)
+            ok, name, detail = gate.evaluate_exe(
+                "1.2.9", d, require_exe=True, no_exe=False)
+            self.assertTrue(ok, "当前版本 exe 存在时 --require-exe 应通过：%s" % detail)
+            self.assertIn("Jinghe-1.2.9.exe", detail)
+            # 场景 C：--no-exe 一律跳过
+            ok, name, detail = gate.evaluate_exe(
+                "1.2.9", d, require_exe=False, no_exe=True)
+            self.assertTrue(ok and "跳过" in detail)
+            # 场景 D：本地模式只有旧版 exe，容忍但标记「非当前版本」
+            (d / "Jinghe-1.2.9.exe").unlink()
+            ok, name, detail = gate.evaluate_exe(
+                "1.2.9", d, require_exe=False, no_exe=False)
+            self.assertTrue(ok)
+            self.assertIn("非当前版本", name)
+
     # ------------------------------------------------------------------ #
     # 65) 侧栏无横向滚动条（overflow-x 陷阱回归）
     # ------------------------------------------------------------------ #
