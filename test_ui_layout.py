@@ -59,26 +59,24 @@ class TestUILayout(unittest.TestCase):
         self.assertIn(".nav-group-title", self.css)
         self.assertIn(".app.nav-collapsed .nav-group-title", self.css)
 
-    def test_04_flow_steps_present(self):
-        self.assertIn('id="flowSteps"', self.html)
+    def test_04_flow_steps_removed(self):
+        # 用户 2026-11-23 裁决：每个功能页都删除全局任务步骤条。
+        self.assertNotIn('id="flowSteps"', self.html)
+        self.assertNotIn('class="flow-steps"', self.html)
         for step in ("home", "refine", "revise", "kb"):
-            self.assertIn('data-step="%s"' % step, self.html, "步骤条缺 %s" % step)
-            self.assertIn('"%s"' % step, self.js)
-        for sym in (".flow-steps", ".flow-step", ".flow-step.active", ".flow-num"):
-            self.assertIn(sym, self.css, "步骤条样式缺 %s" % sym)
+            self.assertNotIn('data-step="%s"' % step, self.html, "步骤条未删净 %s" % step)
+        # CSS 里只允许注释里提及，不允许残留真实选择器规则
+        for sym in (".flow-steps {", ".flow-step {", ".flow-step.active {", ".flow-num {"):
+            self.assertNotIn(sym, self.css, "步骤条样式未删净 %s" % sym)
 
-    def test_05_step_mapping(self):
-        self.assertIn("function stepOfPage", self.js)
-        seg = self.js[self.js.index("function stepOfPage"):]
-        seg = seg[:seg.index("function setNavCollapsed")]
-        self.assertIn('name === "home" || name === "process"', seg)
-        self.assertIn('return "home"', seg)
-        self.assertIn('name === "kb") return "kb"', seg)
+    def test_05_step_mapping_removed(self):
+        self.assertNotIn("function stepOfPage", self.js)
+        self.assertNotIn("stepOfPage(name)", self.js)
 
-    def test_06_steps_highlight_and_click(self):
-        self.assertIn("var activeStep = stepOfPage(name)", self.js)
-        self.assertIn('steps[si].getAttribute("data-step") === activeStep', self.js)
-        self.assertIn('flowBtns[fi].addEventListener("click"', self.js)
+    def test_06_steps_highlight_and_click_removed(self):
+        self.assertNotIn("el.flowSteps", self.js)
+        self.assertNotIn("flowBtns", self.js)
+        self.assertNotIn("getAttribute(\"data-step\")", self.js)
 
     def test_07_process_guide_links(self):
         self.assertIn('id="flowGuide"', self.html)
@@ -96,6 +94,15 @@ class TestUILayout(unittest.TestCase):
         proc = self.html[self.html.index('id="page-process"'):self.html.index('id="page-kb"')]
         self.assertNotIn("规划中", proc)
         self.assertNotIn("btnTranscribe", proc)
+
+    def test_09_nav_icon_colors_expand_vs_collapse(self):
+        # 用户 2026-11-23 裁决：展开态每个功能图标专属色，折叠态统一深色
+        pages = ("home", "process", "refine", "revise", "kb", "settings", "about")
+        for p in pages:
+            self.assertIn(".app:not(.nav-collapsed) .nav-item[data-page=\"%s\"] svg" % p,
+                          self.css, "展开态缺 %s 专属图标色" % p)
+        # 折叠态必须统一深色，且规则存在
+        self.assertIn(".app.nav-collapsed .nav-item svg { stroke: #1F1F1D; }", self.css)
 
 
 if __name__ == "__main__":

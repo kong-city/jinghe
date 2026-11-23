@@ -111,21 +111,8 @@
          失败时界面毫无反应）。放在页头下方，任何页切换后都可见。 -->
     <div id="errorBar" class="bar bar-error" role="status" aria-live="polite" hidden></div>
 
-    <!-- S14：全局任务步骤条——任何页面都能看到「获取→提纯→改写→沉淀」流水线 -->
-    <nav id="flowSteps" class="flow-steps" aria-label="工作流水线">
-      <button type="button" class="flow-step" data-step="home" title="选文件并提取成 md">
-        <span class="flow-num">1</span><span class="flow-name">获取内容</span>
-      </button>
-      <button type="button" class="flow-step" data-step="refine" title="对 md 提纯核心知识点">
-        <span class="flow-num">2</span><span class="flow-name">提纯核心</span>
-      </button>
-      <button type="button" class="flow-step" data-step="revise" title="改写与补充核心">
-        <span class="flow-num">3</span><span class="flow-name">改写补充</span>
-      </button>
-      <button type="button" class="flow-step" data-step="kb" title="入库并检索知识">
-        <span class="flow-num">4</span><span class="flow-name">沉淀检索</span>
-      </button>
-    </nav>
+    <!-- S14 全局任务步骤条已移除（用户 2026-11-23 裁决：每个功能页都不显示）。
+         导航分组与页面内流程指引卡片保留，仍可跨页跳转。 -->
 
     <!-- ==================== 首页 ==================== -->
     <section class="page" id="page-home">

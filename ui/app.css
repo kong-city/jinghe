@@ -137,8 +137,18 @@ button, input { font-family: inherit; }
   stroke-linejoin: round;
 }
 
-/* 折叠态：文字隐藏后图标是唯一线索，统一加深到近黑，提升辨识度
-   （用户 2026-11-23 裁决：双击折叠后每个功能按钮图标变深色；展开恢复原色） */
+/* 导航图标配色（用户 2026-11-23 裁决：折叠态统一深色，展开态每个功能各自彩色）
+   - 展开：7 个功能图标各有专属色，一眼区分入口
+   - 折叠：文字隐藏后图标是唯一线索，统一加深到近黑提升辨识度
+   用 :not(.nav-collapsed) 限定展开态，与折叠态规则天然互斥，不依赖优先级覆盖。 */
+.app:not(.nav-collapsed) .nav-item[data-page="home"] svg { stroke: #185FA5; }
+.app:not(.nav-collapsed) .nav-item[data-page="process"] svg { stroke: #0F8A8A; }
+.app:not(.nav-collapsed) .nav-item[data-page="refine"] svg { stroke: #8257A8; }
+.app:not(.nav-collapsed) .nav-item[data-page="revise"] svg { stroke: #C2701C; }
+.app:not(.nav-collapsed) .nav-item[data-page="kb"] svg { stroke: #2E7D52; }
+.app:not(.nav-collapsed) .nav-item[data-page="settings"] svg { stroke: #5C6B7A; }
+.app:not(.nav-collapsed) .nav-item[data-page="about"] svg { stroke: #9A3F3F; }
+
 .app.nav-collapsed .nav-item svg { stroke: #1F1F1D; }
 .app.nav-collapsed .nav-item { color: #1F1F1D; }
 
@@ -454,49 +464,8 @@ button, input { font-family: inherit; }
   color: #A32D2D;
 }
 
-/* S14：全局任务步骤条——一眼看清流水线，点击直达对应页 */
-.flow-steps {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 4px 12px;
-  overflow-x: auto;
-}
-.flow-step {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 0 auto;
-  min-width: 108px;
-  padding: 8px 12px;
-  background: #FFFFFF;
-  border: 1px solid #E7E5DE;
-  border-radius: 10px;
-  cursor: pointer;
-  color: #5F5E5A;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
-}
-.flow-step:hover { background: #F7F9FC; border-color: #C9D8EA; }
-.flow-step.active {
-  background: #EAF1F8;
-  border-color: #85B7EB;
-  color: #185FA5;
-}
-.flow-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #F1EFE8;
-  color: #6B6A65;
-  font-size: 12px;
-  font-weight: 500;
-}
-.flow-step.active .flow-num { background: #185FA5; color: #FFFFFF; }
-.flow-name { font-size: 13px; white-space: nowrap; }
+/* S14 全局任务步骤条样式已移除（用户 2026-11-23 裁决：每个功能页都不显示）。
+   页面内的流程指引卡片 .flow-guide / data-goto 与导航分组保留不变。 */
 
 .bar-notice {
   background: #FAEEDA;

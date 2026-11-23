@@ -17,7 +17,6 @@
     btnOpenMerged: $("btnOpenMerged"),
     optOpenMerged: $("optOpenMerged"),
     errorBar: $("errorBar"),
-    flowSteps: $("flowSteps"),
     runStatus: $("runStatus"),
     progressBar: $("progressBar"),
     inputMeta: $("inputMeta"),
@@ -314,14 +313,7 @@
     about: { title: "系统 · 关于", sub: "版本、路线与隐私说明" }
   };
 
-  // S14：步骤条高亮映射——多个页面归到同一步（获取=home/process，沉淀=kb）
-  function stepOfPage(name) {
-    if (name === "home" || name === "process") return "home";
-    if (name === "refine") return "refine";
-    if (name === "revise") return "revise";
-    if (name === "kb") return "kb";
-    return "";
-  }
+  // S14 步骤条映射函数已移除（用户 2026-11-23 裁决：删除全局步骤条）。
 
   function setNavCollapsed(collapsed) {
     if (!el.appShell) return;
@@ -392,15 +384,6 @@
     var meta = PAGE_META[name] || PAGE_META.home;
     if (el.pageTitle) el.pageTitle.textContent = meta.title;
     if (el.pageSub) el.pageSub.textContent = meta.sub;
-    // S14：同步高亮任务步骤条（任何页面都能看到自己在流水线的哪一步）
-    var activeStep = stepOfPage(name);
-    if (el.flowSteps) {
-      var steps = el.flowSteps.querySelectorAll(".flow-step");
-      for (var si = 0; si < steps.length; si += 1) {
-        steps[si].classList.toggle("active",
-          steps[si].getAttribute("data-step") === activeStep);
-      }
-    }
     if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); loadComponents(); }
     if (name === "about") loadAbout();
     if (name === "refine" || name === "revise") refreshRefineCap();
@@ -2953,17 +2936,6 @@
       navItems[n].addEventListener("dblclick", function () {
         setNavCollapsed(!el.appShell.classList.contains("nav-collapsed"));
       });
-    }
-    // S14：任务步骤条点击直达（获取步落到首页，其余落到对应加工页）
-    if (el.flowSteps) {
-      var flowBtns = el.flowSteps.querySelectorAll(".flow-step");
-      for (var fi = 0; fi < flowBtns.length; fi += 1) {
-        flowBtns[fi].addEventListener("click", function () {
-          var step = this.getAttribute("data-step");
-          var target = step === "home" ? "home" : step;
-          activatePage(target);
-        });
-      }
     }
     // S14：流程指引卡片的跨页跳转
     var gotoBtns = document.querySelectorAll("[data-goto]");
