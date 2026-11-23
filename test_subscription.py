@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """S12a 订阅博主/频道内容提取 · 回归测试。
@@ -10,6 +11,17 @@
 
 全部用注入 fn + 临时目录，不依赖真实网络 / yt-dlp / whisper。
 """
+
+
+# JINGHE_LAYOUT_BOOTSTRAP
+import sys as _jinghe_sys
+from pathlib import Path as _jinghe_Path
+_jinghe_root = _jinghe_Path(__file__).resolve().parent
+for _jinghe_sub in ("core", "media", "knowledge", "link", "subs"):
+    _jinghe_p = str(_jinghe_root / _jinghe_sub)
+    if _jinghe_p not in _jinghe_sys.path:
+        _jinghe_sys.path.insert(0, _jinghe_p)
+# END JINGHE_LAYOUT_BOOTSTRAP
 import json
 import os
 import tempfile
@@ -208,8 +220,8 @@ class TestSubscription(unittest.TestCase):
 
     # ---------------- 契约 ---------------- #
     def test_09_zero_third_party_and_no_frozen_touch(self):
-        for name in ("subscription_store.py", "channel_discovery.py",
-                     "subscription_engine.py"):
+        for name in ("subs/subscription_store.py", "subs/channel_discovery.py",
+                     "subs/subscription_engine.py"):
             src = (ROOT / name).read_text(encoding="utf-8")
             self.assertNotIn("import requests", src)
             self.assertNotIn("import yaml", src)

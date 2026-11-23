@@ -7,6 +7,16 @@
 2. 托盘改造：关窗 hide 到托盘、真正退出才回收、旧进程回收符号全保留；
 3. 接线（app/UI/build/CI/门禁）完整。
 """
+
+# JINGHE_LAYOUT_BOOTSTRAP
+import sys as _jinghe_sys
+from pathlib import Path as _jinghe_Path
+_jinghe_root = _jinghe_Path(__file__).resolve().parent
+for _jinghe_sub in ("core", "media", "knowledge", "link", "subs"):
+    _jinghe_p = str(_jinghe_root / _jinghe_sub)
+    if _jinghe_p not in _jinghe_sys.path:
+        _jinghe_sys.path.insert(0, _jinghe_p)
+# END JINGHE_LAYOUT_BOOTSTRAP
 import tempfile
 import threading
 import time

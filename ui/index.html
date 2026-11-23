@@ -12,14 +12,9 @@
 
   <!-- 左侧可折叠导航：折叠时只显图标，展开显示图标 + 文字 -->
   <aside class="sidebar" id="sidebar">
-    <div class="side-top">
-      <button id="btnToggleNav" class="nav-toggle" type="button"
-              title="展开 / 收起导航栏" aria-label="展开或收起导航栏">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 7h16M4 12h16M4 17h16"/>
-        </svg>
-      </button>
-    </div>
+    <!-- 顶部折叠按钮已取消（用户 2026-11-23 裁决）：改为双击任意导航项折叠/展开。
+         保留空的 .side-top 占位，维持导航项与内容区顶部的对齐基准线不跳动。 -->
+    <div class="side-top" aria-hidden="true"></div>
 
     <nav class="nav" aria-label="主导航">
       <!-- S14：导航按「用户任务流」归组，7 个入口本身不变（测试契约锁定 data-page）-->
@@ -88,7 +83,9 @@
     </nav>
 
     <div class="side-foot">
-      <div class="brand-mark" title="精核">精核</div>
+      <!-- 底部品牌文字/蓝块已去掉（用户 2026-11-23 裁决）：保留空 div 占位，
+           尺寸/布局基准不变，将来可直接往这里放其它文字或标记。 -->
+      <div class="brand-slot" aria-hidden="true"></div>
     </div>
 
     <!-- 拖拽右边缘调节侧栏宽度；折叠态隐藏，双击复位默认宽度 -->

@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """一键打源码包：python pack.py
@@ -14,6 +15,7 @@
 """
 
 from __future__ import annotations
+
 
 import datetime
 import hashlib
@@ -38,7 +40,9 @@ TOP_FILES = [
     "使用说明.md",
 ]
 # 整目录递归收录（白名单）
-TOP_DIRS = ["ui", "vendor", "samples", "out"]
+# 2026-11-23 源码分层：5 个业务模块子目录必须收录，否则源码包缺 24 个模块
+TOP_DIRS = ["ui", "vendor", "samples", "out",
+            "core", "media", "knowledge", "link", "subs"]
 # 兜底排除（即使是白名单目录内也跳过）
 SKIP_NAMES = {"__pycache__", ".DS_Store", "Thumbs.db"}
 

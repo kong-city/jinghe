@@ -1,6 +1,18 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """v0.10 新功能契约测试：默认路径设置 / 组件并发 / OCR 可选增强 / 请求来源校验。"""
+
+
+# JINGHE_LAYOUT_BOOTSTRAP
+import sys as _jinghe_sys
+from pathlib import Path as _jinghe_Path
+_jinghe_root = _jinghe_Path(__file__).resolve().parent
+for _jinghe_sub in ("core", "media", "knowledge", "link", "subs"):
+    _jinghe_p = str(_jinghe_root / _jinghe_sub)
+    if _jinghe_p not in _jinghe_sys.path:
+        _jinghe_sys.path.insert(0, _jinghe_p)
+# END JINGHE_LAYOUT_BOOTSTRAP
 import re
 import unittest
 from pathlib import Path
@@ -90,7 +102,7 @@ class TestOptionalOCR(unittest.TestCase):
         self.m = pdf_ocr
 
     def test_module_is_standalone(self):
-        src = (ROOT / "pdf_ocr.py").read_text(encoding="utf-8")
+        src = (ROOT / "media" / "pdf_ocr.py").read_text(encoding="utf-8")
         self.assertIn("def status", src)
         self.assertIn("def ocr_pdf", src)
 
@@ -113,7 +125,7 @@ class TestOptionalOCR(unittest.TestCase):
 
     def test_no_auto_download_ocr_tool(self):
         # OCR 模块绝不下载工具，只探测本机
-        src = (ROOT / "pdf_ocr.py").read_text(encoding="utf-8")
+        src = (ROOT / "media" / "pdf_ocr.py").read_text(encoding="utf-8")
         self.assertNotIn("pip install", src)
         self.assertNotIn("urlopen", src)
 
@@ -197,7 +209,7 @@ class TestElectronProcessReaping(unittest.TestCase):
         self.assertIn("signal.signal(_sig, _on_exit_signal)", src)
 
     def test_media_tools_tree_kill_kept(self):
-        src = (ROOT / "media_tools.py").read_text(encoding="utf-8")
+        src = (ROOT / "media" / "media_tools.py").read_text(encoding="utf-8")
         self.assertIn("def terminate_process_tree", src)
         self.assertIn('"taskkill"', src)
 
@@ -418,6 +430,30 @@ class TestShellUpdateIPC(unittest.TestCase):
                          "electron-updater 不应在 devDependencies")
         self.assertEqual(pkg["version"], extract.__version__,
                          "package.json 版本与真源不一致，latest.yml 会报错误版本")
+
+    def test_app_icon_single_source_for_install_desktop_tray(self):
+        """安装包/桌面/exe/托盘图标三者同源（用户 2026-11-23 裁决）。"""
+        import json
+        pkg = json.loads((ROOT / "electron" / "package.json").read_text(encoding="utf-8"))
+        build = pkg.get("build", {})
+        # ① 安装包与桌面快捷方式图标由 electron-builder 从 build/icon.png 生成 ICO
+        self.assertEqual(build.get("win", {}).get("icon"), "build/icon.png",
+                         "win.icon 应指向品牌图标真源")
+        self.assertTrue((ROOT / "electron" / "build" / "icon.png").is_file(),
+                        "图标真源 icon.png 必须存在")
+        # ② 桌面快捷方式仍开启（图标即上面 ICO）
+        self.assertTrue(build.get("nsis", {}).get("createDesktopShortcut"),
+                        "桌面快捷方式应保留，才能看到统一图标")
+        # ③ 托盘从同一张图运行时缩放（extraResources 带到 resources/icon.png）
+        extra = build.get("extraResources", [])
+        self.assertTrue(any(e.get("from") == "build/icon.png" for e in extra),
+                        "icon.png 须随 extraResources 发布，供托盘同源加载")
+        js = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("loadTrayIcon", js, "托盘应从品牌真源加载图标")
+        self.assertIn("process.resourcesPath", js, "打包态应从 resources 读图标")
+        self.assertIn("resize({ width: 16, height: 16 })", js,
+                      "托盘图应从真源缩放到 16x16")
+        self.assertIn("TRAY_ICON_DATA_URL", js, "内嵌小图兜底应保留")
 
 
 if __name__ == "__main__":

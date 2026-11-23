@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """S11 多轮自我迭代提纯 · 回归测试。
@@ -8,6 +9,16 @@
 3. 焦点重排真的发生（有中间轮 jaccard < 1），且能收敛早停；
 4. 配置 / UI / 构建清单贯通，取消与脏配置不崩。
 """
+
+# JINGHE_LAYOUT_BOOTSTRAP
+import sys as _jinghe_sys
+from pathlib import Path as _jinghe_Path
+_jinghe_root = _jinghe_Path(__file__).resolve().parent
+for _jinghe_sub in ("core", "media", "knowledge", "link", "subs"):
+    _jinghe_p = str(_jinghe_root / _jinghe_sub)
+    if _jinghe_p not in _jinghe_sys.path:
+        _jinghe_sys.path.insert(0, _jinghe_p)
+# END JINGHE_LAYOUT_BOOTSTRAP
 import unittest
 from pathlib import Path
 
@@ -99,7 +110,7 @@ class TestIterateEngine(unittest.TestCase):
 
     def test_07_zero_third_party_dependency(self):
         """新引擎仅用标准库 + 冻结引擎，不许引入第三方/冻结内核。"""
-        src = (ROOT / "iterate_engine.py").read_text(encoding="utf-8")
+        src = (ROOT / "core" / "iterate_engine.py").read_text(encoding="utf-8")
         self.assertNotIn("import numpy", src)
         self.assertNotIn("import jieba", src)
         self.assertNotIn("from extract import", src, "不得改/依赖冻结内核的业务函数")
@@ -154,7 +165,7 @@ class TestIterateEngine(unittest.TestCase):
         for name, path in (
             ("backend.py", ROOT / "backend.py"),
             ("app.py", ROOT / "app.py"),
-            ("refine.py", ROOT / "refine.py"),
+            ("refine.py", ROOT / "knowledge" / "refine.py"),
         ):
             self.assertIn("refine_rounds", path.read_text(encoding="utf-8"),
                           "%s 未贯通迭代轮数" % name)

@@ -31,9 +31,11 @@ class TestUILayout(unittest.TestCase):
             self.assertIn("%s: $(" % p, self.js, "el.pages 缺 %s" % p)
             self.assertIn("%s: { title:" % p, self.js, "PAGE_META 缺 %s" % p)
         self.assertEqual(positions, sorted(positions), "页面物理顺序被破坏")
-        for sym in ('class="sidebar"', 'id="btnToggleNav"', 'id="navResizer"',
+        for sym in ('class="sidebar"', 'id="navResizer"',
                     'class="card card-input"', 'class="card card-output"'):
             self.assertIn(sym, self.html, "骨架元素缺失 %s" % sym)
+        # 横杠按钮已取消（用户 2026-11-23 裁决），改为双击导航项折叠
+        self.assertNotIn('id="btnToggleNav"', self.html, "横杠按钮应已取消")
 
     def test_02_page_button_ownership_unchanged(self):
         home = self.html[self.html.index('id="page-home"'):self.html.index('id="page-process"')]

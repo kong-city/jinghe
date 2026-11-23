@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """S10 · 可选组件管理契约测试（修复「假绿灯」）。
@@ -9,6 +10,17 @@
 
 本测试锁死上述红线，任何绕过都会变红。
 """
+
+
+# JINGHE_LAYOUT_BOOTSTRAP
+import sys as _jinghe_sys
+from pathlib import Path as _jinghe_Path
+_jinghe_root = _jinghe_Path(__file__).resolve().parent
+for _jinghe_sub in ("core", "media", "knowledge", "link", "subs"):
+    _jinghe_p = str(_jinghe_root / _jinghe_sub)
+    if _jinghe_p not in _jinghe_sys.path:
+        _jinghe_sys.path.insert(0, _jinghe_p)
+# END JINGHE_LAYOUT_BOOTSTRAP
 import io
 import json
 import os
@@ -89,7 +101,7 @@ class TestComponentNoBundling(unittest.TestCase):
             self.assertNotIn(bad, spec, "工具二进制不得进 build.spec：%s" % bad)
 
     def test_components_install_outside_repo(self):
-        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
         self.assertIn("LOCALAPPDATA", src,
                       "组件必须装到 %LOCALAPPDATA%，不进仓库/产物目录")
         self.assertIn("COMPONENT_DIR", src)
@@ -116,7 +128,7 @@ class TestComponentContractSource(unittest.TestCase):
         self.assertIn("test_components", ci, "CI 未纳入 test_components")
 
     def test_docstring_states_no_auto_download(self):
-        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
         self.assertIn("绝不主动下载", src)
         self.assertIn("手动点击", src)
 
@@ -277,7 +289,7 @@ class TestPipProbeSameSource(unittest.TestCase):
 
     def test_install_error_carries_diagnostics(self):
         """安装后探测失败的报错必须带诊断信息，不能只有一句谜语。"""
-        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
         self.assertIn("诊断：pip 使用 Python", src)
         self.assertIn("探测查找目录", src)
         self.assertIn("目标文件是否存在", src)
@@ -294,7 +306,7 @@ class TestNoConsolePopup(unittest.TestCase):
 
     def test_components_subprocess_all_hide_window(self):
         import re
-        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
         bad = []
         # 用括号配平切出完整调用块，再看是否带 creationflags
         for m in re.finditer(r"subprocess\.(run|Popen|call)\(", src):
@@ -314,7 +326,7 @@ class TestNoConsolePopup(unittest.TestCase):
         self.assertEqual(bad, [], "components.py 存在会弹终端窗的子进程调用，行号 %s" % bad)
 
     def test_pip_scripts_dir_hides_window(self):
-        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
         blk = src[src.index("def _pip_scripts_dir"):src.index("def _python_for_pip")]
         self.assertIn("creationflags=_CREATE_NO_WINDOW", blk,
                       "_pip_scripts_dir 必须隐藏控制台窗口，否则桌面弹黑框")
@@ -340,7 +352,7 @@ class TestConsoleScriptRecovery(unittest.TestCase):
         self.c._PIP_PYTHON_FP = ""
 
     def test_ensure_console_script_uses_distlib_scriptmaker(self):
-        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
         self.assertIn("def _ensure_console_script", src)
         # 必须用 pip 自带的 distlib ScriptMaker（离线、不重装）
         self.assertIn("ScriptMaker", src)
@@ -353,7 +365,7 @@ class TestConsoleScriptRecovery(unittest.TestCase):
                          "不得用 force-reinstall：需重下 640MB 且可能不可达")
 
     def test_install_worker_calls_recovery_when_exe_missing(self):
-        src = (ROOT / "components.py").read_text(encoding="utf-8")
+        src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
         blk = src[src.index("def _install_worker"):]
         blk = blk[:blk.index("def ", 10)]
         self.assertIn("_ensure_console_script", blk,
@@ -391,7 +403,7 @@ class TestFastProbePath(unittest.TestCase):
     def test_light_check_requires_three_evidence(self):
         """轻量检查必须三重校验：dist-info + 包目录 + entry point。"""
         import media_tools
-        src = (ROOT / "media_tools.py").read_text(encoding="utf-8")
+        src = (ROOT / "media" / "media_tools.py").read_text(encoding="utf-8")
         # 三重校验在通用实现 _light_check_package 里
         blk = src[src.index("def _light_check_package"):
                   src.index("def _light_check_whisper")]
@@ -485,7 +497,7 @@ class TestProbeRefreshWindow(unittest.TestCase):
 
     def test_probe_now_not_called_under_lock(self):
         """_probe_now 绝不能在持有 _LOCK 时调用（非重入锁 → 死锁）。"""
-        src = (ROOT / "media_tools.py").read_text(encoding="utf-8")
+        src = (ROOT / "media" / "media_tools.py").read_text(encoding="utf-8")
         fn = src[src.index("def probe_all"):src.index("def begin_refresh")]
         # probe_all 的函数体里，with _LOCK 块之后才调 _probe_now
         lock_idx = fn.index("with _LOCK:")

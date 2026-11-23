@@ -263,28 +263,37 @@ def main(argv: list[str] | None = None) -> int:
         check(False, "CI 测试覆盖可查", str(exc))
 
     # ⑦ 关键 Python 文件语法可编译（不落 __pycache__）
+    # 2026-11-23 源码分层：24 个业务模块移入 core/media/knowledge/link/subs，
+    # 路径随之更新（模块名不变，裸 import 靠各入口 sys.path 引导）。
     bad = []
     for rel in ("app.py", "extract.py", "test_app.py", "test_extract.py",
-                "format_registry.py", "media_tools.py", "media_runtime.py",
-                "word_input.py", "word_export.py", "audio_transcribe.py",
-                "video_transcribe.py", "self_update.py",
+                # core：内核/引擎/基础设施
+                "core/format_registry.py", "core/extract_engine.py",
+                "core/refine_engine.py", "core/revise_engine.py",
+                "core/iterate_engine.py", "core/log_rotate.py",
+                # media：音视频/文档转换
+                "media/media_tools.py", "media/media_runtime.py",
+                "media/word_input.py", "media/word_export.py",
+                "media/audio_transcribe.py", "media/video_transcribe.py",
+                "media/pdf_ocr.py",
+                "self_update.py",  # 保留根目录：自更新被 app/extract 直接引用
                 # S7/S8 新增模块同样纳入编译校验（此前漏检，新模块语法错误
                 # 只会在运行时才暴露）
-                "backend.py", "refine.py", "refine_engine.py",
-                "revise_engine.py", "extract_engine.py", "iterate_engine.py", "log_rotate.py",
-                "subscription_store.py", "channel_discovery.py", "subscription_engine.py",
-                "subscription_scheduler.py",
+                "backend.py", "knowledge/refine.py",
                 # S14a：打包产物冒烟脚本（CI 用来验证「包能构建」之外的真能跑）
                 "tools/smoke_test.py",
-                "link_guard.py", "link_downloader.py", "link_media.py",
+                "link/link_guard.py", "link/link_downloader.py", "link/link_media.py",
                 # 验收工具（S5 外部体检 + UI 视觉判分层）
                 "tools/bench_office_check.py", "tools/visual_check.py",
                 # S9 阶段 4 知识库（远端 85feb75 合并进来）
-                "kb.py",
+                "knowledge/kb.py",
                 # S10 可选组件管理（用户裁决：必须有测试 + 门禁守护）
-                "components.py", "test_components.py",
+                "knowledge/components.py", "test_components.py",
                 # v1.0.0 特性测试（默认路径 / 多组件 Job / OCR / 安全边界）
                 "test_v10_features.py", "test_ui_layout.py",
+                # subs：订阅（S12a/S13）
+                "subs/subscription_store.py", "subs/channel_discovery.py",
+                "subs/subscription_engine.py", "subs/subscription_scheduler.py",
                 # 版本契约判定器 + 一键升号（双终端协作护栏）
                 "tools/version_check.py", "tools/bump_version.py"):
         try:

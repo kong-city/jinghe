@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """精核 v0.2.0「本地网页界面」的 API / 界面契约回归测试。
@@ -48,6 +49,17 @@ MessageBoxW 兜底、/api/pick-folder 的原生文件夹对话框、以及「只
 """
 from __future__ import annotations
 
+
+
+# JINGHE_LAYOUT_BOOTSTRAP
+import sys as _jinghe_sys
+from pathlib import Path as _jinghe_Path
+_jinghe_root = _jinghe_Path(__file__).resolve().parent
+for _jinghe_sub in ("core", "media", "knowledge", "link", "subs"):
+    _jinghe_p = str(_jinghe_root / _jinghe_sub)
+    if _jinghe_p not in _jinghe_sys.path:
+        _jinghe_sys.path.insert(0, _jinghe_p)
+# END JINGHE_LAYOUT_BOOTSTRAP
 import io
 import gc
 import json
@@ -1197,8 +1209,10 @@ class AppContractTest(unittest.TestCase):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
 
         # ① 左侧导航栏结构：首页 / 设置 / 关于三个入口
+        # 折叠交互 2026-11-23 改为双击导航项，横杠按钮已取消
         self.assertIn('class="sidebar"', html, "index.html 缺少左侧导航栏")
-        self.assertIn('id="btnToggleNav"', html, "缺少折叠/展开按钮")
+        self.assertNotIn('id="btnToggleNav"', html, "横杠折叠按钮应已取消")
+        self.assertIn('dblclick', js, "导航项应绑定双击折叠")
         for page in ("home", "settings", "about"):
             self.assertIn('data-page="%s"' % page, html,
                           "导航栏缺少 %s 入口" % page)
@@ -2035,9 +2049,9 @@ class AppContractTest(unittest.TestCase):
         self.assertIs(reg.is_word_input(".xlsx"), False)
         self.assertEqual(reg.word_kind(".doc"), "legacy")
         self.assertEqual(reg.word_kind(".docx"), "ooxml")
-        self.assertIn("import extract", (ROOT / "format_registry.py").read_text(
+        self.assertIn("import extract", (ROOT / "core" / "format_registry.py").read_text(
             encoding="utf-8"))
-        self.assertNotIn("import extract", (ROOT / "word_input.py").read_text(
+        self.assertNotIn("import extract", (ROOT / "media" / "word_input.py").read_text(
             encoding="utf-8"), "S2a 不得回写 / 依赖冻结内核的解析流水线")
         frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
         self.assertIn("def test_06_deferred_media", frozen_tests)
@@ -2254,7 +2268,7 @@ class AppContractTest(unittest.TestCase):
         self.assertEqual(reg.WORD_EXPORT_SUFFIX, ".docx")
         self.assertIs(reg.is_word_export_input(".md"), True)
         self.assertIs(reg.is_word_export_input(".docx"), False)
-        self.assertNotIn("import extract", (ROOT / "word_export.py").read_text(
+        self.assertNotIn("import extract", (ROOT / "media" / "word_export.py").read_text(
             encoding="utf-8"), "S2b 不得依赖冻结内核的提取流水线")
         frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
         self.assertIn("def test_06_deferred_media", frozen_tests)
@@ -2530,7 +2544,7 @@ class AppContractTest(unittest.TestCase):
         frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
         self.assertIn("def test_06_deferred_media", frozen_tests)
         self.assertIn("def test_11_video_redline", frozen_tests)
-        asr_src = (ROOT / "audio_transcribe.py").read_text(encoding="utf-8")
+        asr_src = (ROOT / "media" / "audio_transcribe.py").read_text(encoding="utf-8")
         self.assertNotIn("import extract", asr_src,
                          "S3 不得依赖冻结内核的解析流水线")
         self.assertIn("format_registry.MEDIA_AUDIO", asr_src,
@@ -2880,8 +2894,8 @@ class AppContractTest(unittest.TestCase):
         frozen_tests = (ROOT / "test_extract.py").read_text(encoding="utf-8")
         self.assertIn("def test_06_deferred_media", frozen_tests)
         self.assertIn("def test_11_video_redline", frozen_tests)
-        v_src = (ROOT / "video_transcribe.py").read_text(encoding="utf-8")
-        a_src = (ROOT / "audio_transcribe.py").read_text(encoding="utf-8")
+        v_src = (ROOT / "media" / "video_transcribe.py").read_text(encoding="utf-8")
+        a_src = (ROOT / "media" / "audio_transcribe.py").read_text(encoding="utf-8")
         self.assertNotIn("import audio_transcribe", v_src,
                          "S4 绝不复用音频转写路径（红线 2）")
         self.assertNotIn("import extract", v_src)
@@ -3516,7 +3530,7 @@ class AppContractTest(unittest.TestCase):
         import media_tools
 
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        refine_src = (ROOT / "refine.py").read_text(encoding="utf-8")
+        refine_src = (ROOT / "knowledge" / "refine.py").read_text(encoding="utf-8")
 
         # ① 独立 handler + 冻结内核零改动
         self.assertIn("import refine", app_src, "app.py 未挂接 refine handler")
@@ -4083,7 +4097,7 @@ class AppContractTest(unittest.TestCase):
         self.assertNotIn("关键约束", heads, "纯标题被当作核心条目")
 
         # ③ 零第三方依赖：抽取引擎不得引入第三方模块
-        src = (ROOT / "extract_engine.py").read_text(encoding="utf-8")
+        src = (ROOT / "core" / "extract_engine.py").read_text(encoding="utf-8")
         for bad_mod in ("import numpy", "import scipy", "import jieba",
                         "import networkx", "import sklearn", "import torch"):
             self.assertNotIn(bad_mod, src, "抽取引擎引入了第三方依赖：%s" % bad_mod)
@@ -4417,7 +4431,7 @@ class AppContractTest(unittest.TestCase):
         # ⑥ 契约一致性：配置键名贯通 backend / app / refine
         bsrc = (ROOT / "backend.py").read_text(encoding="utf-8")
         asrc = (ROOT / "app.py").read_text(encoding="utf-8")
-        rsrc = (ROOT / "refine.py").read_text(encoding="utf-8")
+        rsrc = (ROOT / "knowledge" / "refine.py").read_text(encoding="utf-8")
         for name, src in (("backend", bsrc), ("app", asrc), ("refine", rsrc)):
             self.assertIn("allow_suppplement", src,
                           "%s 未贯通补写开关" % name)
@@ -4655,16 +4669,21 @@ class AppContractTest(unittest.TestCase):
         self.assertFalse(bad.get("ok"), "文件必须被拒绝")
         self.assertIn("只能打开文件夹", bad.get("error", ""))
 
-        # ---------- ⑧ 左侧导航：精图标在底部、汉堡键、精读换图标 ----------
+        # ---------- ⑧ 左侧导航：底部空占位、双击折叠、精读换图标 ----------
+        # 用户 2026-11-23 裁决：底部品牌蓝块与「精核」文字均去掉，只留空占位 div；
+        # 顶部横杠按钮取消，改为双击任意导航项折叠/展开。
         side_foot = html[html.index('<div class="side-foot">'):
                          html.index('</aside>', html.index('<div class="side-foot">'))]
-        self.assertIn('class="brand-mark"', side_foot, "精核品牌标记未在底部")
-        self.assertIn('>精核<', side_foot, "底部品牌文字应为「精核」")
+        self.assertIn('class="brand-slot"', side_foot, "底部应保留空占位 div")
+        self.assertNotIn('brand-mark', side_foot, "底部品牌蓝块应已去掉")
+        self.assertNotIn('>精核<', side_foot, "底部「精核」文字应已去掉")
         self.assertNotIn('id="sideVersion"', side_foot, "底部版本号应已取消")
-        top = html[html.index('<div class="side-top">'):
+        top = html[html.index('<div class="side-top"'):
                    html.index('<nav class="nav"')]
         self.assertNotIn("brand-mark", top, "顶部导航栏仍残留精图标")
-        self.assertIn("M4 7h16M4 12h16M4 17h16", html, "折叠按钮未换成三条横杠")
+        self.assertNotIn("btnToggleNav", top, "顶部横杠折叠按钮应已取消")
+        js8 = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('addEventListener("dblclick"', js8, "导航项应绑定双击折叠")
         refine_btn = html[html.index('data-page="refine"'):
                           html.index('data-page="revise"')]
         self.assertNotIn("M4 5.5h11", refine_btn, "精读图标仍是旧列表箭头")
@@ -4853,7 +4872,7 @@ class AppContractTest(unittest.TestCase):
             "http://127.0.0.1/admin", hops=1).ok, "重定向到内网未被拒")
 
         # ⑦ 契约声明：域名不设限但 SSRF 保留（源码注释/user 裁决留痕）
-        src = (ROOT / "link_guard.py").read_text(encoding="utf-8")
+        src = (ROOT / "link" / "link_guard.py").read_text(encoding="utf-8")
         self.assertIn("域名不设限", src)
         self.assertIn("DNS 重绑定", src)
         doc = (ROOT / "docs" / "S5-视频链接立项与契约对账.md").read_text(
@@ -4932,12 +4951,22 @@ class AppContractTest(unittest.TestCase):
         # ⑧ 冻结契约不变量：S5 不碰冻结文件与既有 handler 红线。
         # extract.py 的「冻结」指主流水线行为，不含发版升号（__version__ 是
         # 版本唯一真源，每次发版都要改；v0.7.0 实测踩到过这个误判）。
-        for rel in ("SPEC.md", "test_extract.py",
-                    "audio_transcribe.py", "video_transcribe.py"):
+        for rel in ("SPEC.md", "test_extract.py"):
             self.assertEqual(
                 subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel],
                                cwd=str(ROOT), capture_output=True).returncode, 0,
                 "%s 被 S5 改动" % rel)
+        # 迁移到 media/ 的两个 handler：内容与 HEAD 中旧路径逐字一致才算未改动。
+        # 换行符归一化：git 的 autocrlf 会让工作区变 CRLF、HEAD 存 LF，属环境差异。
+        def _norm(data: bytes) -> str:
+            return data.decode("utf-8").replace("\r\n", "\n")
+
+        for old_rel, new_rel in (("audio_transcribe.py", "media/audio_transcribe.py"),
+                                 ("video_transcribe.py", "media/video_transcribe.py")):
+            head_bytes = subprocess.run(["git", "show", "HEAD:" + old_rel],
+                                        cwd=str(ROOT), capture_output=True).stdout
+            self.assertEqual(_norm((ROOT / new_rel).read_bytes()), _norm(head_bytes),
+                             "%s 迁移后内容被改动" % new_rel)
         diff = subprocess.run(["git", "diff", "--unified=0", "HEAD", "--", "extract.py"],
                               cwd=str(ROOT), capture_output=True, text=True).stdout
         changed = [ln for ln in diff.splitlines()
@@ -4951,7 +4980,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('path == "/api/media/run"', asrc)
         self.assertIn('path == "/api/media/status"', asrc)
         self.assertIn('data["link_resolve"]', asrc, "probe 顶层字段未挂")
-        self.assertNotIn("/api/media/run", (ROOT / "media_tools.py").read_text(
+        self.assertNotIn("/api/media/run", (ROOT / "media" / "media_tools.py").read_text(
             encoding="utf-8"), "编排端点不应塞进 S1 工具模块")
         # 新模块纳入门禁语法校验
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
@@ -5231,12 +5260,13 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("Jinghe-*.exe", gate)
         su = (ROOT / "self_update.py").read_text(encoding="utf-8")
         self.assertIn('startswith("jinghe")', su, "自更新须兼容 Jinghe* 前缀")
-        # ④ 导航栏底部：无版本号、品牌为精核、侧栏无滚动条
+        # ④ 导航栏底部：无版本号、品牌文字已清空只留空占位、侧栏无滚动条
         html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("sideVersion", html, "底部版本号应已取消")
         side_foot = html[html.index('<div class="side-foot">'):
                          html.index('</aside>')]
-        self.assertIn(">精核<", side_foot)
+        self.assertIn("brand-slot", side_foot, "底部应为空占位 div")
+        self.assertNotIn(">精核<", side_foot, "底部品牌文字应已去掉")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         side_block = css[css.index(".sidebar {"):css.index(".app.nav-resizing")]
         self.assertIn("overflow-y: hidden", side_block, "侧栏不应有滚动条")
@@ -5293,21 +5323,25 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("right: 0", rz)
 
     # ------------------------------------------------------------------ #
-    # 66) 折叠按钮位置固定，与导航图标左缘对齐（展开/折叠不跳位）
+    # 66) 折叠交互改为双击导航项；折叠态图标变深色（展开恢复原色）
     # ------------------------------------------------------------------ #
     def test_66_toggle_button_fixed_alignment(self):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
-        # 折叠态不得再覆盖为居中（否则按钮左右跳位）
-        self.assertNotIn(".app.nav-collapsed .side-top", css,
-                         "折叠态 side-top 居中覆盖会导致按钮跳位")
-        # side-top 固定左内边距，与 nav-item 图标左缘同一基准
-        top = css[css.index(".side-top {"):css.index(".nav-toggle {")]
-        self.assertIn("padding-left: 10px", top,
-                      "side-top 需固定左内边距对齐图标")
-        self.assertIn("justify-content: flex-start", top)
-        # CDP 实测锁定（若环境支持）：两态按钮左缘均为 20px、位移 0
-        probe = ROOT / "tools" / "_cdp_nav_probe.py"
-        self.assertTrue(probe.is_file(), "CDP 探测脚本应保留供实测")
+        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        # 横杠按钮已取消：CSS/HTML 均不得残留
+        self.assertNotIn(".nav-toggle", css, "横杠按钮样式应已移除")
+        self.assertNotIn("btnToggleNav", html, "横杠按钮应已从 HTML 移除")
+        # 双击任意导航项折叠/展开
+        self.assertIn('addEventListener("dblclick"', js, "应绑定双击折叠")
+        self.assertIn("setNavCollapsed", js, "双击应触发折叠切换")
+        # 折叠态图标变深色（用户 2026-11-23 裁决）
+        self.assertIn(".app.nav-collapsed .nav-item svg", css,
+                      "折叠态缺图标变深规则")
+        self.assertIn("#1F1F1D", css, "折叠态图标深色调缺失")
+        # side-top 保留占位（min-height 维持基准线，不跳动）
+        top = css[css.index(".side-top {"):css.index(".nav {")]
+        self.assertIn("min-height: 40px", top, "side-top 占位高度应保留")
 
     # ------------------------------------------------------------------ #
     # 67) 版本号进位规则：每段上限 9，满 9 进位归零（用户 2026-11-19 裁决）
@@ -5700,7 +5734,7 @@ class AppContractTest(unittest.TestCase):
     # ------------------------------------------------------------------ #
     def test_75_t2_refine_artifact_location(self):
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-        refine_src = (ROOT / "refine.py").read_text(encoding="utf-8")
+        refine_src = (ROOT / "knowledge" / "refine.py").read_text(encoding="utf-8")
         import refine as refine_mod
         import media_runtime as mr
         import time as _t

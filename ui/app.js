@@ -82,7 +82,6 @@
     appShell: $("appShell"),
     sidebar: $("sidebar"),
     navResizer: $("navResizer"),
-    btnToggleNav: $("btnToggleNav"),
     pageTitle: $("pageTitle"),
     pageSub: $("pageSub"),
     headerTag: $("headerTag"),
@@ -2943,16 +2942,16 @@
     el.outPath.addEventListener("input", rememberPaths);
     el.outPath.addEventListener("change", refreshMergedButton);
 
-    // 左侧导航：折叠/展开 + 页面切换（点开才显示对应内容）
-    if (el.btnToggleNav) {
-      el.btnToggleNav.addEventListener("click", function () {
-        setNavCollapsed(!el.appShell.classList.contains("nav-collapsed"));
-      });
-    }
+    // 左侧导航：页面切换（单击）+ 折叠/展开（双击任意导航项）
+    // 用户裁决 2026-11-23：取消顶部横杠按钮，改为双击导航项折叠/展开。
+    // 单击仍切页、双击仍会顺带切页（已确认接受），折叠切换是额外的 dblclick 行为。
     var navItems = document.querySelectorAll(".nav-item");
     for (var n = 0; n < navItems.length; n += 1) {
       navItems[n].addEventListener("click", function () {
         activatePage(this.getAttribute("data-page"));
+      });
+      navItems[n].addEventListener("dblclick", function () {
+        setNavCollapsed(!el.appShell.classList.contains("nav-collapsed"));
       });
     }
     // S14：任务步骤条点击直达（获取步落到首页，其余落到对应加工页）

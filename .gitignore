@@ -1,5 +1,8 @@
 # ---- build artifacts ----
 build/
+# 例外：electron/build/ 是应用图标真源（icon.png），不是构建产物，必须入库
+!electron/build/
+!electron/build/icon.png
 dist/
 # 并行构建目录（旧实例占用 dist/Jinghe.exe 时使用）
 dist_v*/

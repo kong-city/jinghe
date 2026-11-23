@@ -82,45 +82,13 @@ button, input { font-family: inherit; }
 .app.nav-collapsed .sidebar { width: 58px; }
 .app.nav-collapsed .nav-label { display: none; }
 .app.nav-collapsed .nav-item { justify-content: center; padding: 0; }
-/* 折叠后顶部只剩汉堡键；不改为居中，保持与下方导航图标同一水平基准线，
-   避免展开/折叠时按钮左右跳位（用户 2026-11-19 要求按钮位置固定）。 */
+/* 顶部折叠按钮已取消（用户 2026-11-23 裁决）：保留空的 .side-top 占位，
+   min-height 维持导航项的垂直基准线，避免展开/折叠时上下跳动。 */
 .side-top {
   position: relative;
   display: flex;
   align-items: center;
-  /* 左内边距 10px + 侧栏自身 10px = 20px，与 .nav-item 图标左缘对齐；
-     展开/折叠两态都不变，按钮绝不动。 */
-  padding-left: 10px;
-  justify-content: flex-start;
-  gap: 6px;
   min-height: 40px;
-}
-
-.nav-toggle {
-  flex: none;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #6B6A65;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-/* 折叠按钮：三条横杠（汉堡），折叠态不旋转，保持「菜单」语义 */
-.nav-toggle:hover { background: #F4F6F8; border-color: #E5E3DC; }
-.nav-toggle svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .nav { display: flex; flex-direction: column; gap: 4px; }
@@ -169,6 +137,11 @@ button, input { font-family: inherit; }
   stroke-linejoin: round;
 }
 
+/* 折叠态：文字隐藏后图标是唯一线索，统一加深到近黑，提升辨识度
+   （用户 2026-11-23 裁决：双击折叠后每个功能按钮图标变深色；展开恢复原色） */
+.app.nav-collapsed .nav-item svg { stroke: #1F1F1D; }
+.app.nav-collapsed .nav-item { color: #1F1F1D; }
+
 .nav-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .side-foot {
@@ -184,12 +157,11 @@ button, input { font-family: inherit; }
   color: #6F6D66;
   text-align: center;
 }
-/* 精核「精」图标从顶部移到底部版本号旁（仍用同一品牌样式，缩小适配侧栏） */
-.side-foot .brand-mark {
+/* 底部品牌位（用户 2026-11-23 裁决）：蓝块与「精核」文字均去掉，
+   只保留一个与原先同尺寸的透明占位 div，布局基准不变，将来可直接放其它文字 */
+.side-foot .brand-slot {
   width: 34px;
   height: 30px;
-  border-radius: 8px;
-  font-size: 12px;
 }
 
 .content {
@@ -228,19 +200,6 @@ button, input { font-family: inherit; }
 }
 
 .brand { display: flex; align-items: center; gap: 12px; }
-
-.brand-mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: #185FA5;
-  color: #fff;
-  font-size: 20px;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 
 .brand-text h1 {
   margin: 0;
@@ -421,7 +380,6 @@ button, input { font-family: inherit; }
 .nav-item:focus-visible,
 .link-btn:focus-visible,
 .feature-btn:focus-visible,
-.nav-toggle:focus-visible,
 .text-input:focus-visible,
 .drop-zone:focus-visible,
 .check input:focus-visible,

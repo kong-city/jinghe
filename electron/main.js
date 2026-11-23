@@ -69,17 +69,46 @@ let cleanupDone = false;       // 子进程回收完成，before-quit 才放行
 /* -------------------------------------------------------------------------- */
 /* 托盘（用户裁决 2026-11-22）：关窗不再退出，缩到右下角图标，后台继续同步订阅   */
 /* -------------------------------------------------------------------------- */
-// 内嵌 16x16 PNG（深蓝底 + 白色「精」字轮廓的极简标记），避免新增二进制资源文件、
-// 避免打包漏文件。Windows 托盘原生支持 PNG，无需 .ico。
+// 图标真源：build/icon.png（与安装包/桌面/exe 同一张图，electron-builder 由它生成 ICO）。
+// 托盘优先从该图运行时缩放到 16x16 —— 保证「托盘图标 == 桌面图标」；
+// 内嵌 16x16 base64 仅作兜底（开发态/资源缺失时），避免托盘因资源问题建不起来。
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,' +
   // 经 Electron 31 实测 isEmpty()==false / 16x16（勿随意替换：手写 PNG 会解成空图）
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAO0lEQVR42mNggAI5h4r/pGAGZECqZhRDyNUMNwSXBDoYNYDeBmADA28ALkMYKPE/3kCkS36gKEfC9AEAzt4d153g+NgAAAAASUVORK5CYII=';
 
+// 解析图标真源路径：打包态在 resources/icon.png（extraResources 复制），
+// 开发态在 __dirname/build/icon.png。两处都由 package.json 配置保证存在。
+function trayIconPath() {
+  if (app.isPackaged) return path.join(process.resourcesPath || '', 'icon.png');
+  return path.join(__dirname, 'build', 'icon.png');
+}
+
+function loadTrayIcon() {
+  // 优先用真源图缩放到 16x16，与桌面图标同源
+  try {
+    const p = trayIconPath();
+    const fs = require('fs');
+    if (fs.existsSync(p)) {
+      const big = nativeImage.createFromPath(p);
+      if (!big.isEmpty()) {
+        const small = big.resize({ width: 16, height: 16 });
+        if (!small.isEmpty()) {
+          shellLog('托盘图标使用品牌真源 icon.png（与桌面图标同源）');
+          return small;
+        }
+      }
+    }
+  } catch (err) {
+    shellLog('品牌图标加载失败，回退内嵌小图：' + String(err));
+  }
+  return nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
+}
+
 function createTray() {
   try {
-    let icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
+    let icon = loadTrayIcon();
     if (icon.isEmpty()) {
-      // 极端环境下内嵌图解码失败：如实记日志，用空图仍可建托盘（菜单可用，
+      // 极端环境下图像解码失败：如实记日志，用空图仍可建托盘（菜单可用，
       // 仅图标不可见）。不发 balloon——那是误导用户"一切正常"。
       shellLog('托盘图标解码为空，托盘仅能通过菜单使用');
       icon = nativeImage.createEmpty();
