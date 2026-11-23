@@ -4965,8 +4965,18 @@ class AppContractTest(unittest.TestCase):
                                  ("video_transcribe.py", "media/video_transcribe.py")):
             head_bytes = subprocess.run(["git", "show", "HEAD:" + old_rel],
                                         cwd=str(ROOT), capture_output=True).stdout
-            self.assertEqual(_norm((ROOT / new_rel).read_bytes()), _norm(head_bytes),
-                             "%s 迁移后内容被改动" % new_rel)
+            if head_bytes.strip():
+                # 重构尚未提交进 HEAD：旧路径还在，逐字比对确保迁移零改动。
+                self.assertEqual(_norm((ROOT / new_rel).read_bytes()), _norm(head_bytes),
+                                 "%s 迁移后内容被改动" % new_rel)
+            else:
+                # 重构已提交进 HEAD（CI fresh checkout / 发版后）：旧路径已从 HEAD 删除，
+                # git show 返回空，逐字对比会假失败。退化为 sanity check：目标文件存在、
+                # 非空、且能被 Python 解析（内容未被破坏）。
+                import ast
+                moved = (ROOT / new_rel).read_bytes()
+                self.assertTrue(moved.strip(), "%s 迁移后文件为空" % new_rel)
+                ast.parse(moved.decode("utf-8"), filename=new_rel)
         diff = subprocess.run(["git", "diff", "--unified=0", "HEAD", "--", "extract.py"],
                               cwd=str(ROOT), capture_output=True, text=True).stdout
         changed = [ln for ln in diff.splitlines()
