@@ -1664,6 +1664,15 @@
       if (installing && j.message) msg.textContent = j.message;
       info.appendChild(msg);
 
+      // v1.4.0 收口迁移提示：检测到系统 Python 里已有该组件时如实说明，
+      // 让用户自己决定是否装到精核目录（不强制重装，不影响继续使用）。
+      if (!installing && c.migration_hint) {
+        var hint = makeEl("div", "component-hint");
+        hint.setAttribute("data-role", "hint");
+        hint.textContent = c.migration_hint;
+        info.appendChild(hint);
+      }
+
       // 绿色进度条：每个组件独立，正在装时显示
       var prog = makeEl("div", "component-progress" + (installing ? " is-active" : ""));
       prog.setAttribute("data-role", "progress");

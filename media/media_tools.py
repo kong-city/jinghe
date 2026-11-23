@@ -46,6 +46,40 @@ _LOCK = threading.Lock()
 
 
 # --------------------------------------------------------------------------- #
+# 组件数据目录（v1.4.0 收口）
+# --------------------------------------------------------------------------- #
+def component_dir() -> str:
+    """软件管理的组件数据根目录（``%LOCALAPPDATA%\\Jinghe\\components``）。
+
+    与 :mod:`components` 模块的 ``COMPONENT_DIR`` 同源，但**在此独立实现**
+    （不反向 import）——``media_tools`` 是底层探测模块，被多个模块依赖；
+    让它 import ``components`` 会形成循环依赖。
+
+    两处都用同一套规则（``LOCALAPPDATA`` 优先，回落家目录），
+    因此取值必然一致。
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "Jinghe", "components")
+
+
+def whisper_model_dir() -> str:
+    """whisper 模型权重的存放目录（``components\\models``）。
+
+    **为什么要指定（v1.4.0 收口）**：whisper CLI 默认把权重下到
+    ``~/.cache/whisper/`` —— 那是**用户家目录**，不受软件管理、卸载清不掉，
+    且与其它组件分散在两处。指定 ``--model_dir`` 后，权重统一收口到
+    软件自己的目录，卸载时可一并清理。
+
+    对应 whisper CLI 参数（``whisper/transcribe.py``）::
+
+        parser.add_argument("--model_dir", type=str, default=None,
+                            help="the path to save model files; uses ~/.cache/whisper by default")
+        model = load_model(model_name, device=device, download_root=model_dir)
+    """
+    return os.path.join(component_dir(), "models")
+
+
+# --------------------------------------------------------------------------- #
 # 轻量存在性检查（快路径）
 # --------------------------------------------------------------------------- #
 # 为什么需要（用户 2026-11-19 实测踩坑）：

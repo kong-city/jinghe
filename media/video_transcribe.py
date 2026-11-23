@@ -599,6 +599,9 @@ def _whisper_argv(wav: Path, tmp: Path, cap: dict, model: str,
             "--verbose", "False"]
     if language:
         argv += ["--language", language]
+    # v1.4.0 收口：模型权重落到软件自己的 components\models\，
+    # 不再散落到用户家目录 ~/.cache/whisper\（那处不受软件管理、卸载清不掉）。
+    argv += ["--model_dir", media_tools.whisper_model_dir()]
     return argv
 
 

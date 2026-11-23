@@ -143,6 +143,14 @@ class TestPipInterpreter(unittest.TestCase):
         # 清冻结态 Python 选择缓存（否则跨用例污染）
         self.c._PIP_PYTHON = ""
         self.c._PIP_PYTHON_FP = ""
+        # **隔离本机真实 venv 状态**（v1.4.0）：本组测试验证的是
+        # 「venv 尚未建立」时的回退逻辑；若不隔离，测试机上若存在
+        # %LOCALAPPDATA%\Jinghe\components\venv，则 _python_for_pip /
+        # _scripts_dir 会优先返回 venv，把本组断言全部带偏（实测 7 例假失败）。
+        self._venv_patch = mock.patch.object(
+            self.c, "_venv_python_usable", return_value=False)
+        self._venv_patch.start()
+        self.addCleanup(self._venv_patch.stop)
 
     def tearDown(self):
         self.c._PIP_PYTHON = ""
@@ -243,6 +251,11 @@ class TestPipProbeSameSource(unittest.TestCase):
         self.c = components
         self.c._PIP_PYTHON = ""
         self.c._PIP_PYTHON_FP = ""
+        # 隔离本机真实 venv 状态（v1.4.0）：本组验证「venv 未建立」时的同源逻辑
+        self._venv_patch = mock.patch.object(
+            self.c, "_venv_python_usable", return_value=False)
+        self._venv_patch.start()
+        self.addCleanup(self._venv_patch.stop)
 
     def tearDown(self):
         self.c._PIP_PYTHON = ""
@@ -276,12 +289,21 @@ class TestPipProbeSameSource(unittest.TestCase):
             self.assertEqual(got, scripts)
 
     def test_candidate_dirs_include_all_scripts(self):
-        """候选目录必须包含 PATH 里所有 Scripts（多 Python 共存场景）。"""
+        """候选目录必须包含 PATH 里所有 Scripts（多 Python 共存场景）。
+
+        **v1.4.0 适配**：候选目录的第 ② 项现在直接问**系统 Python**
+        （``_find_python_for_pip`` + ``_pip_scripts_dir``）而不再经
+        ``_scripts_dir``（后者在 venv 可用时返回 venv），
+        故 mock 对象同步更新；测试意图（所有 Scripts 都要被纳入）不变。
+        """
         with tempfile.TemporaryDirectory() as td:
             a = Path(td) / "A" / "Scripts"
             b = Path(td) / "B" / "Scripts"
             a.mkdir(parents=True); b.mkdir(parents=True)
-            with mock.patch.object(self.c, "_scripts_dir", return_value=a), \
+            with mock.patch.object(self.c, "_find_python_for_pip",
+                                   return_value=r"C://fake//python.exe"), \
+                 mock.patch.object(self.c, "_pip_scripts_dir",
+                                   return_value=a), \
                  mock.patch.dict(os.environ, {"PATH": str(b)}, clear=False):
                 dirs = [str(x) for x in self.c._candidate_scripts_dirs()]
             self.assertIn(str(a), dirs)
@@ -327,7 +349,11 @@ class TestNoConsolePopup(unittest.TestCase):
 
     def test_pip_scripts_dir_hides_window(self):
         src = (ROOT / "knowledge" / "components.py").read_text(encoding="utf-8")
-        blk = src[src.index("def _pip_scripts_dir"):src.index("def _python_for_pip")]
+        # **按函数边界切片，不依赖定义顺序**（v1.4.0 把 _pip_scripts_dir
+        # 移到了 _python_for_pip 之后，原先的 index 切片会变成空串）
+        start = src.index("def _pip_scripts_dir")
+        end = src.index("\ndef ", start + 1)
+        blk = src[start:end]
         self.assertIn("creationflags=_CREATE_NO_WINDOW", blk,
                       "_pip_scripts_dir 必须隐藏控制台窗口，否则桌面弹黑框")
 
@@ -513,6 +539,539 @@ class TestProbeRefreshWindow(unittest.TestCase):
         self.assertIn("yt-dlp", media_tools._LIGHT_CHECKS)
         self.assertNotIn("ffmpeg", media_tools._LIGHT_CHECKS,
                          "ffmpeg 是独立二进制，无 Python 包，不走轻量路径")
+
+
+# --------------------------------------------------------------------------- #
+# 缺陷 1：.part 残留清理（用户 2026-11-23 实测本机残留 13.6MB）
+# --------------------------------------------------------------------------- #
+class TestPartCleanup(unittest.TestCase):
+    """.part 半截文件在任何失败路径都必须被清理。"""
+
+    def setUp(self):
+        import components
+        self.c = components
+        self._optin = dict(self.c._USER_OPT_IN)
+        self.c._USER_OPT_IN.update({"granted": True, "component_id": "ffmpeg"})
+        self.tmp = tempfile.mkdtemp(prefix="jinghe-part-")
+        self.dest = Path(self.tmp) / "pkg.zip"
+
+    def tearDown(self):
+        self.c._USER_OPT_IN.update(self._optin)
+        try:
+            for p in Path(self.tmp).glob("*"):
+                p.unlink(missing_ok=True)
+            Path(self.tmp).rmdir()
+        except OSError:
+            pass
+
+    def test_part_removed_on_network_failure(self):
+        """网络中断（urlopen 抛异常）→ .part 不得残留。"""
+        part = self.dest.with_name(self.dest.name + ".part")
+
+        class _Resp:
+            headers = {"Content-Length": "100"}
+
+            def read(self, n):
+                return b"x" * 10
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _boom(req, timeout=None):
+            # 先写一半再抛错，模拟「下载中断」
+            part.write_bytes(b"partial")
+            raise OSError("网络中断")
+
+        with mock.patch.object(self.c.urllib.request, "urlopen", _boom):
+            with self.assertRaises(OSError):
+                self.c._download("https://example.com/x.zip", self.dest, "ffmpeg")
+        self.assertFalse(part.exists(),
+                         "网络中断后 .part 必须被清理，实际残留 %d 字节"
+                         % (part.stat().st_size if part.exists() else 0))
+
+    def test_part_removed_on_cancel(self):
+        """主动取消 → .part 必须被清理（原有行为不能退化）。"""
+        part = self.dest.with_name(self.dest.name + ".part")
+
+        class _Resp:
+            headers = {"Content-Length": "100"}
+
+            def read(self, n):
+                part.write_bytes(b"partial")
+                return b"x" * 10
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch.object(self.c.urllib.request, "urlopen",
+                               lambda req, timeout=None: _Resp()):
+            with mock.patch.object(self.c, "_cancelled", return_value=True):
+                with self.assertRaises(RuntimeError):
+                    self.c._download("https://example.com/x.zip", self.dest, "ffmpeg")
+        self.assertFalse(part.exists(), "取消后 .part 必须被清理")
+
+    def test_cleanup_stale_parts_removes_only_part_files(self):
+        """兜底清理：只删 *.part 文件，不动其它文件、不动目录。"""
+        with mock.patch.object(self.c, "COMPONENT_DIR", Path(self.tmp)):
+            (Path(self.tmp) / "a.zip.part").write_bytes(b"x")
+            (Path(self.tmp) / "b.zip.part").write_bytes(b"x")
+            (Path(self.tmp) / "keep.zip").write_bytes(b"x")
+            (Path(self.tmp) / "keep.txt").write_bytes(b"x")
+            sub = Path(self.tmp) / "sub.part"
+            sub.mkdir()
+            removed = self.c._cleanup_stale_parts()
+            self.assertEqual(sorted(removed), ["a.zip.part", "b.zip.part"],
+                             "只应清理顶层 .part 文件")
+            self.assertTrue((Path(self.tmp) / "keep.zip").exists(),
+                            "非 .part 文件不得被删")
+            self.assertTrue((Path(self.tmp) / "keep.txt").exists(),
+                            "非 .part 文件不得被删")
+            self.assertTrue(sub.exists(), "目录不得被删")
+
+
+# --------------------------------------------------------------------------- #
+# 缺陷 4：轻量探测假绿灯（包在 ≠ 能用）
+# --------------------------------------------------------------------------- #
+class TestImportAvailabilityCheck(unittest.TestCase):
+    """外部位置的组件必须做导入可用性校验，受控目录的可跳过。"""
+
+    def setUp(self):
+        import components
+        self.c = components
+        self.c._IMPORT_CHECK_CACHE.clear()
+
+    def tearDown(self):
+        self.c._IMPORT_CHECK_CACHE.clear()
+
+    def test_import_check_detects_broken_package(self):
+        """import 失败 → 结论为不可用，且 reason 带真实错误。"""
+        exe = r"C:\fake\python\Scripts\whisper.exe"
+        py = r"C:\fake\python\python.exe"
+
+        def _fake_run(cmd, **kw):
+            self.assertIn("import whisper", cmd[-1])
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="OSError: [WinError 126] 找不到指定的模块",
+                stderr=None)
+
+        with mock.patch.object(self.c, "_interpreter_for", return_value=py), \
+             mock.patch.object(self.c.subprocess, "run", _fake_run):
+            ok, reason = self.c._import_check(exe, "whisper")
+        self.assertFalse(ok, "import 失败必须判为不可用")
+        self.assertIn("WinError 126", reason, "reason 必须带真实错误")
+
+    def test_import_check_passes_for_healthy_package(self):
+        """import 成功 → 判为可用。"""
+        exe = r"C:\fake\python\Scripts\yt-dlp.exe"
+        py = r"C:\fake\python\python.exe"
+
+        def _fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr=None)
+
+        with mock.patch.object(self.c, "_interpreter_for", return_value=py), \
+             mock.patch.object(self.c.subprocess, "run", _fake_run):
+            ok, _ = self.c._import_check(exe, "yt_dlp")
+        self.assertTrue(ok)
+
+    def test_import_check_not_false_negative_when_no_interpreter(self):
+        """找不到解释器 → 不误判为坏（宁可不校验，不冤枉好组件）。"""
+        with mock.patch.object(self.c, "_interpreter_for", return_value=""):
+            ok, _ = self.c._import_check(r"C:\x\Scripts\whisper.exe", "whisper")
+        self.assertTrue(ok, "找不到解释器时不得误判为不可用")
+
+    def test_import_check_result_is_cached(self):
+        """校验结果必须缓存，避免每次刷新都起解释器（实测省 3 秒）。"""
+        exe = r"C:\fake\python\Scripts\whisper.exe"
+        py = r"C:\fake\python\python.exe"
+        calls = []
+
+        def _fake_run(cmd, **kw):
+            calls.append(1)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr=None)
+
+        with mock.patch.object(self.c, "_interpreter_for", return_value=py), \
+             mock.patch.object(self.c.subprocess, "run", _fake_run):
+            for _ in range(3):
+                self.c._import_check(exe, "whisper")
+        self.assertEqual(len(calls), 1,
+                         "同一解释器+模块应只真跑一次，实测 %d 次" % len(calls))
+
+    def test_probe_reports_broken_external_component_as_error(self):
+        """探测层集成：外部位置的坏组件必须报 error，不得显示已安装。"""
+        # 模拟：轻量探测判为可用，但导入校验失败
+        fake = {"available": True, "version": "20250625", "reason": "",
+                "path": r"C:\system\python\Scripts\whisper.exe", "state": "ok"}
+        with mock.patch.object(self.c.media_tools.ToolAdapter, "probe",
+                               return_value=fake), \
+             mock.patch.object(self.c, "_is_managed_path", return_value=False), \
+             mock.patch.object(self.c, "_import_check",
+                               return_value=(False, "WinError 126 DLL 缺失")):
+            got = self.c._probe_one("whisper")
+        self.assertFalse(got["available"], "不可用的组件不得报 available")
+        self.assertEqual(got["state"], "error", "必须报 error 而非 missing/ok")
+        self.assertIn("WinError 126", got["reason"])
+
+    def test_managed_path_skips_import_check(self):
+        """受控目录内的组件跳过导入校验（装完已深验过，省时间）。"""
+        fake = {"available": True, "version": "20250625", "reason": "",
+                "path": r"C:\Jinghe\components\venv\Scripts\whisper.exe",
+                "state": "ok"}
+        with mock.patch.object(self.c.media_tools.ToolAdapter, "probe",
+                               return_value=fake), \
+             mock.patch.object(self.c, "_is_managed_path", return_value=True), \
+             mock.patch.object(self.c, "_import_check") as m:
+            got = self.c._probe_one("whisper")
+        m.assert_not_called()
+        self.assertTrue(got["available"])
+
+    def test_is_managed_path_detects_component_dir(self):
+        """受控目录判定：组件目录内的路径应为 True，外部应为 False。"""
+        with mock.patch.object(self.c, "COMPONENT_DIR", Path(self.tmpdir())):
+            inside = str(Path(self.tmpdir()) / "venv" / "Scripts" / "whisper.exe")
+            outside = r"C:\Windows\System32\whisper.exe"
+            self.assertTrue(self.c._is_managed_path(inside))
+            self.assertFalse(self.c._is_managed_path(outside))
+
+    def tmpdir(self):
+        d = getattr(self, "_d", None)
+        if d is None:
+            d = tempfile.mkdtemp(prefix="jinghe-managed-")
+            self._d = d
+        return d
+
+
+# --------------------------------------------------------------------------- #
+# v1.4.0 组件收口：venv 优先 + 兼容回退 + 模型目录
+# --------------------------------------------------------------------------- #
+class TestVenvCollapse(unittest.TestCase):
+    """组件统一收口到 %LOCALAPPDATA%\\Jinghe\\components\\venv 的契约。"""
+
+    def setUp(self):
+        import components
+        self.c = components
+
+    def test_component_paths_are_under_component_dir(self):
+        """bin / models / venv 必须都在组件目录下（收口的根本前提）。"""
+        root = self.c.COMPONENT_DIR
+        for p in (self.c.BIN_DIR, self.c.MODELS_DIR, self.c.VENV_DIR):
+            self.assertTrue(str(p).startswith(str(root)),
+                            "%s 必须位于组件目录 %s 内" % (p, root))
+
+    def test_venv_layout(self):
+        """venv 内部路径：Scripts\\python.exe 与 Scripts 目录。"""
+        self.assertEqual(self.c.VENV_PYTHON,
+                         self.c.VENV_DIR / "Scripts" / "python.exe")
+        self.assertEqual(self.c.VENV_SCRIPTS, self.c.VENV_DIR / "Scripts")
+
+    def test_python_for_pip_prefers_venv(self):
+        """venv 可用时，pip 目标解释器必须是 venv 内的 python（装探同源）。"""
+        with mock.patch.object(self.c, "_venv_python_usable", return_value=True), \
+             mock.patch.object(self.c, "VENV_PYTHON",
+                               Path(r"C:\Jinghe\components\venv\Scripts\python.exe")):
+            got = self.c._python_for_pip()
+        self.assertEqual(got, str(Path(r"C:\Jinghe\components\venv\Scripts\python.exe")))
+
+    def test_scripts_dir_prefers_venv(self):
+        """venv 可用时，_scripts_dir 必须返回 venv\\Scripts。"""
+        with mock.patch.object(self.c, "_venv_python_usable", return_value=True), \
+             mock.patch.object(self.c, "VENV_SCRIPTS",
+                               Path(r"C:\Jinghe\components\venv\Scripts")):
+            got = self.c._scripts_dir()
+        self.assertEqual(got, Path(r"C:\Jinghe\components\venv\Scripts"))
+
+    def test_candidate_dirs_venv_first(self):
+        """候选目录优先级：venv 必须排第一。"""
+        with mock.patch.object(self.c, "_venv_python_usable", return_value=True), \
+             mock.patch.object(self.c, "VENV_SCRIPTS",
+                               Path(r"C:\Jinghe\components\venv\Scripts")), \
+             mock.patch.object(self.c, "_find_python_for_pip",
+                               return_value=r"C://sys//python.exe"), \
+             mock.patch.object(self.c, "_pip_scripts_dir",
+                               return_value=Path(r"C:\sys\Scripts")):
+            dirs = self.c._candidate_scripts_dirs()
+        self.assertTrue(dirs)
+        self.assertEqual(dirs[0], Path(r"C:\Jinghe\components\venv\Scripts"))
+
+    def test_candidate_dirs_keep_system_python_fallback(self):
+        """**兼容回退不可丢**：系统 Python 的 Scripts 必须仍在候选里。
+
+        用户 2026-11-23 实测踩坑：本机系统 Python 的 Scripts **不在 PATH**，
+        若只靠 PATH 扫描，venv 优先后系统那份 whisper/yt-dlp 就探测不到 →
+        直接违背「兼容用户已有组件、不强制重装」的承诺。
+        """
+        with mock.patch.object(self.c, "_venv_python_usable", return_value=True), \
+             mock.patch.object(self.c, "VENV_SCRIPTS",
+                               Path(r"C:\Jinghe\components\venv\Scripts")), \
+             mock.patch.object(self.c, "_find_python_for_pip",
+                               return_value=r"C://sys//python.exe"), \
+             mock.patch.object(self.c, "_pip_scripts_dir",
+                               return_value=Path(r"C:\sys\Scripts")):
+            dirs = [str(d) for d in self.c._candidate_scripts_dirs()]
+        self.assertIn(str(Path(r"C:\sys\Scripts")), dirs,
+                      "系统 Python 的 Scripts 必须保留在候选目录中")
+
+    def test_ensure_path_reorders_venv_to_front(self):
+        """PATH 必须按优先级**重排**（不能「已存在就跳过」）。
+
+        实测踩坑：本机系统 Python 的 Scripts 本来就在 PATH 首位，
+        旧实现见「已存在」就跳过 → venv 虽有 yt-dlp，which 仍命中系统那份。
+
+        用**真实临时目录**（不存在的目录本就不该进 PATH）。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            venv_s = Path(td) / "venv" / "Scripts"
+            sys_s = Path(td) / "sys" / "Scripts"
+            venv_s.mkdir(parents=True)
+            sys_s.mkdir(parents=True)
+            with mock.patch.object(self.c, "_cleanup_stale_parts", return_value=[]), \
+                 mock.patch.object(self.c, "_candidate_scripts_dirs",
+                                   return_value=[venv_s, sys_s]), \
+                 mock.patch.object(self.c, "BIN_DIR", Path(td) / "bin"), \
+                 mock.patch.dict(os.environ,
+                                 {"PATH": os.pathsep.join([str(sys_s), r"C:\other"])},
+                                 clear=False):
+                self.c.ensure_component_path()
+                got = os.environ.get("PATH", "").split(os.pathsep)
+            self.assertEqual(got[0], str(venv_s),
+                             "venv 必须被排到 PATH 最前，实测 %s" % got[0])
+
+    def test_venv_usable_requires_pyvenv_cfg(self):
+        """venv 有效性：缺 pyvenv.cfg 不算可用（防只剩 Scripts 的残废 venv）。"""
+        with tempfile.TemporaryDirectory() as td:
+            vdir = Path(td) / "venv"
+            (vdir / "Scripts").mkdir(parents=True)
+            (vdir / "Scripts" / "python.exe").write_bytes(b"")
+            with mock.patch.object(self.c, "VENV_DIR", vdir), \
+                 mock.patch.object(self.c, "VENV_PYTHON",
+                                   vdir / "Scripts" / "python.exe"), \
+                 mock.patch.object(self.c.subprocess, "run",
+                                   return_value=subprocess.CompletedProcess([], 0)):
+                self.assertFalse(self.c._venv_python_usable(),
+                                 "缺 pyvenv.cfg 的残废 venv 不得判为可用")
+
+    def test_pip_cmd_targets_venv(self):
+        """pip 安装命令的解释器必须是 venv 内的 python。"""
+        with mock.patch.object(self.c, "_venv_python_usable", return_value=True), \
+             mock.patch.object(self.c, "VENV_PYTHON",
+                               Path(r"C:\Jinghe\components\venv\Scripts\python.exe")):
+            cmd = self.c._pip_cmd_install("yt-dlp")
+        self.assertTrue(cmd[0].endswith("venv\\Scripts\\python.exe"),
+                        "pip 目标必须是 venv 内的 python，实测 %s" % cmd[0])
+
+    def test_whisper_model_dir_is_managed(self):
+        """whisper 模型目录必须落在组件目录内（不再散落 ~/.cache/whisper）。"""
+        import media_tools
+        d = media_tools.whisper_model_dir()
+        self.assertIn("Jinghe", d)
+        self.assertTrue(d.replace("/", "\\").endswith("components\\models"),
+                        "模型目录实测算 %s" % d)
+
+    def test_whisper_argv_has_model_dir(self):
+        """两个转写模块的 whisper 命令都必须带 --model_dir。"""
+        import audio_transcribe
+        import video_transcribe
+        cap = {"tools": {"whisper": {"path": "whisper.exe"}}}
+        for mod in (audio_transcribe, video_transcribe):
+            argv = mod._whisper_argv(Path("a.wav"), Path("/tmp"), cap, "base")
+            self.assertIn("--model_dir", argv,
+                          "%s 的 whisper 命令必须带 --model_dir" % mod.__name__)
+            self.assertIn("models", argv[-1])
+
+    def test_migration_hint_for_external_component(self):
+        """系统里有、组件目录里没有 → 给出迁移提示（不强制重装）。"""
+        with mock.patch.object(self.c, "_is_managed_path", return_value=False), \
+             mock.patch.object(self.c.shutil, "which",
+                               return_value=r"C:\sys\Scripts\yt-dlp.exe"):
+            hint = self.c._external_install_hint(
+                {"id": "yt-dlp", "name": "yt-dlp", "probe": "yt-dlp"})
+        self.assertIn("系统 Python", hint)
+        self.assertIn("不影响使用", hint)
+
+    def test_no_migration_hint_for_managed_component(self):
+        """已在受控目录内 → 不给迁移提示。"""
+        with mock.patch.object(self.c, "_is_managed_path", return_value=True), \
+             mock.patch.object(self.c.shutil, "which",
+                               return_value=r"C:\Jinghe\venv\Scripts\yt-dlp.exe"):
+            hint = self.c._external_install_hint(
+                {"id": "yt-dlp", "name": "yt-dlp", "probe": "yt-dlp"})
+        self.assertEqual(hint, "")
+
+
+class TestDllPrecheck(unittest.TestCase):
+    """DLL 依赖预检（用户 2026-11-23 实测缺陷）。
+
+    背景：本机 System32 缺 ``VCRUNTIME140_THREADS.dll`` 与
+    ``MSVCP140_ATOMIC_WAIT.dll``（均属 Microsoft Visual C++
+    Redistributable），导致 torch_cpu.dll / torch_python.dll 加载失败 →
+    whisper 报 ``OSError: [WinError 126]``。但 venv 里 whisper.exe 在、
+    pip 装成功、界面却显示「已安装」—— 假绿灯。
+
+    根因：受控目录（venv）曾被豁免导入校验。修复方案是受控目录改用
+    **DLL 依赖预检**（毫秒级，纯文件扫描，不加载 300MB 的 torch）。
+    """
+
+    def setUp(self):
+        import components
+        self.c = components
+
+    def _real_torch_dll(self) -> Path | None:
+        """找一份真实的 torch DLL 作夹具。
+
+        真实 torch 的 ``torch_cpu.dll`` 依赖 ``VCRUNTIME140_THREADS.dll``
+        （Microsoft Visual C++ Redistributable 的一部分）—— 这正是
+        「装了 whisper 却用不了」的真实成因，用它当夹具最贴近现场。
+        """
+        roots = [
+            Path(r"C:\Users\songweihu\AppData\Local\Jinghe\components\venv"),
+            Path(sys.prefix).parent,
+            Path(sys.prefix),
+        ]
+        for root in roots:
+            cand = root / "Lib" / "site-packages" / "torch" / "lib" / "torch_cpu.dll"
+            if cand.is_file():
+                return cand
+        return None
+
+    @staticmethod
+    def _real_system_dll() -> Path | None:
+        """找一份真实的小型系统 DLL 当夹具。"""
+        sys32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        for name in ("winmm.dll", "version.dll", "mpr.dll", "userenv.dll"):
+            p = sys32 / name
+            if p.is_file():
+                return p
+        return None
+
+    def test_pe_import_parser_reads_dlls(self):
+        """PE 导入表解析必须能读出依赖的 DLL 名（用真实 DLL 验证）。"""
+        dll = self._real_torch_dll() or self._real_system_dll()
+        if dll is None:
+            self.skipTest("找不到可用的 DLL 夹具")
+        got = self.c._pe_import_dlls(dll)
+        self.assertTrue(got, "真实 DLL 必须能解析出导入表")
+        self.assertTrue(any(n.lower().endswith(".dll") for n in got))
+
+    def test_pe_import_parser_tolerates_garbage(self):
+        """非 PE / 损坏文件必须返回空列表（宁可放过，不误报）。"""
+        with tempfile.TemporaryDirectory() as td:
+            bad = Path(td) / "bad.dll"
+            bad.write_bytes(b"not a pe file at all")
+            self.assertEqual(self.c._pe_import_dlls(bad), [])
+            self.assertEqual(self.c._pe_import_dlls(Path(td) / "missing.dll"), [])
+
+    def test_dll_precheck_detects_missing_msvc_runtime(self):
+        """缺 VC++ 运行库必须被抓到，并给出「装 VC++ Redistributable」的指引。
+
+        用**真实 torch DLL**（依赖 VCRUNTIME140_THREADS.dll）当夹具：
+        这正是用户本机的真实故障场景。
+        """
+        src = self._real_torch_dll()
+        if src is None:
+            self.skipTest("本机无 torch DLL 夹具")
+        with tempfile.TemporaryDirectory() as td:
+            sp = Path(td) / "Lib" / "site-packages"
+            lib = sp / "torch" / "lib"
+            lib.mkdir(parents=True)
+            (lib / "torch_cpu.dll").write_bytes(src.read_bytes())
+            ok, reason = self.c._dll_precheck(sp, "whisper")
+        # 若本机恰好装了 VC++ 运行库，则本用例不成立（跳过而非误报）
+        if ok:
+            self.skipTest("本机已安装 VC++ 运行库，缺失场景不成立")
+        self.assertIn("VCRUNTIME140_THREADS.dll", reason)
+        self.assertIn("Visual C++", reason)
+
+    def test_dll_precheck_passes_when_all_present(self):
+        """依赖齐备时必须放行（不能误报）。"""
+        src = self._real_system_dll()
+        if src is None:
+            self.skipTest("找不到系统 DLL 夹具")
+        with tempfile.TemporaryDirectory() as td:
+            sp = Path(td) / "Lib" / "site-packages"
+            lib = sp / "torch" / "lib"
+            lib.mkdir(parents=True)
+            (lib / "a.dll").write_bytes(src.read_bytes())
+            ok, reason = self.c._dll_precheck(sp, "whisper")
+        self.assertTrue(ok, "系统 DLL 依赖齐备，不该报缺失：%s" % reason)
+
+    def test_dll_precheck_scoped_per_component(self):
+        """预检必须按组件范围扫描 —— yt-dlp 不该被 whisper 的 torch 问题连坐。"""
+        src = self._real_torch_dll()
+        if src is None:
+            self.skipTest("本机无 torch DLL 夹具")
+        with tempfile.TemporaryDirectory() as td:
+            sp = Path(td) / "Lib" / "site-packages"
+            lib = sp / "torch" / "lib"
+            lib.mkdir(parents=True)
+            (lib / "torch_cpu.dll").write_bytes(src.read_bytes())
+            # yt-dlp 是纯 Python 包，不依赖 torch → 必须放行
+            ok, _ = self.c._dll_precheck(sp, "yt-dlp")
+        self.assertTrue(ok, "yt-dlp 不该被 torch 的环境问题连坐")
+
+    def test_managed_component_not_exempt_from_check(self):
+        """受控目录组件**不得**豁免校验 —— 豁免会让假绿灯回归。
+
+        这是本组测试的核心契约：venv 里的 whisper 因缺 VC++ 运行库
+        不可用，探测必须如实报 error，而不是 installed=True。
+        """
+        src = self._real_torch_dll()
+        if src is None:
+            self.skipTest("本机无 torch DLL 夹具")
+        with tempfile.TemporaryDirectory() as td:
+            sp = Path(td) / "Lib" / "site-packages"
+            lib = sp / "torch" / "lib"
+            lib.mkdir(parents=True)
+            (lib / "torch_cpu.dll").write_bytes(src.read_bytes())
+            exe = Path(td) / "venv" / "Scripts" / "whisper.exe"
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+            with mock.patch.object(self.c, "_is_managed_path", return_value=True), \
+                 mock.patch.object(self.c, "_site_packages_of", return_value=sp), \
+                 mock.patch.object(self.c.shutil, "which", return_value=str(exe)):
+                r = self.c._probe_one("whisper")
+        # 本机已装 VC++ 运行库时该场景不成立（此时 whisper 本就可用）
+        if r["available"]:
+            self.skipTest("本机已安装 VC++ 运行库，坏组件场景不成立")
+        self.assertFalse(r["available"], "受控目录的坏组件必须报不可用")
+        self.assertEqual(r["state"], "error")
+
+    def test_site_packages_reverse_lookup_venv_layout(self):
+        """venv 布局（<venv>\\Scripts\\exe）必须能反推出 site-packages。"""
+        with tempfile.TemporaryDirectory() as td:
+            sp = Path(td) / "venv" / "Lib" / "site-packages"
+            sp.mkdir(parents=True)
+            exe = Path(td) / "venv" / "Scripts" / "whisper.exe"
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+            got = self.c._site_packages_of(str(exe))
+        self.assertEqual(got, sp.resolve())
+
+    def test_site_packages_reverse_lookup_system_layout(self):
+        """系统布局（<Py>\\Lib\\site-packages\\Scripts\\exe）同样要能反推。"""
+        with tempfile.TemporaryDirectory() as td:
+            sp = Path(td) / "Lib" / "site-packages"
+            (sp / "Scripts").mkdir(parents=True)
+            exe = sp / "Scripts" / "yt-dlp.exe"
+            exe.write_bytes(b"MZ")
+            got = self.c._site_packages_of(str(exe))
+        self.assertEqual(got, sp.resolve())
+
+    def test_base_python_dirs_reads_pyvenv_cfg(self):
+        """必须从 pyvenv.cfg 读出基础解释器目录（Python DLL 在那里）。"""
+        with tempfile.TemporaryDirectory() as td:
+            venv = Path(td) / "venv"
+            sp = venv / "Lib" / "site-packages"
+            sp.mkdir(parents=True)
+            (venv / "pyvenv.cfg").write_text(
+                "home = C:\\Python313\ninclude-system-site-packages = false\n",
+                encoding="utf-8")
+            dirs = self.c._base_python_dirs(sp)
+        self.assertIn(Path(r"C:\Python313"), dirs)
 
 
 if __name__ == "__main__":
