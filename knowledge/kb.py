@@ -490,6 +490,43 @@ def query(kb_dir, text, *, limit=20) -> dict:
         conn.close()
 
 
+def browse(kb_dir, *, limit: int = 200, doc_id: str = "") -> dict:
+    """块浏览（v1.6.3）：按 doc_id 分组返回完整块，供思源式三栏展示。
+
+    纯只读。与 query 的区别：无需关键词、返回完整 body（非截断 snippet），
+    并附文档分组统计。不改变任何既有 API 行为。
+    """
+    db = _db_path(kb_dir)
+    if not db.exists():
+        return {"ok": True, "mode": "empty", "count": 0, "results": [], "docs": []}
+    conn = _connect(kb_dir)
+    try:
+        if doc_id:
+            rows = conn.execute(
+                "SELECT * FROM entries WHERE doc_id=? ORDER BY block LIMIT ?",
+                (doc_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM entries ORDER BY doc_id, block LIMIT ?",
+                (limit,),
+            ).fetchall()
+        results = []
+        docs = {}
+        for r in rows:
+            item = {k: r[k] for k in ("id", "doc_id", "block", "locator", "body",
+                                      "source_file", "sha256", "created_at")}
+            results.append(item)
+            d = docs.setdefault(item["doc_id"], {
+                "doc_id": item["doc_id"], "blocks": 0,
+                "source_file": item["source_file"],
+            })
+            d["blocks"] += 1
+        return {"ok": True, "mode": "browse", "count": len(results),
+                "results": results, "docs": list(docs.values())}
+    finally:
+        conn.close()
+
 def open_source(kb_dir, entry_id, *, allowed_roots=None) -> dict:
     """解析条目的原文回跳位置（doc_id + 块锚点 + 来源文件）。"""
     db = _db_path(kb_dir)

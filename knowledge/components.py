@@ -1571,6 +1571,35 @@ def install(component_id: str) -> dict:
     return {"ok": True, "already_installed": False}
 
 
+def auto_install_missing(*, enabled: bool = False) -> dict:
+    """后台静默补齐缺失组件（v1.6.3，**默认关闭**，仅供测试/显式授权）。
+
+    安全边界：
+      * 调用方必须显式传 ``enabled=True``（来自用户已开启的设置开关）。
+        默认 False 时本函数什么也不做，连探测都不跑。
+      * 客户安装后的默认行为完全不变——仍须在设置页手动点「启用」。
+        软件启动/探测/定时任务在不显式开启时绝不调用本函数。
+      * 真正下载仍走 :func:`install` → 令牌 → 白名单 URL，不新增任何网络路径。
+      * ``install()`` 自带的「同一组件正在安装中」检查负责防重复。
+
+    返回 {ok, enabled, missing, started, already, skipped}。
+    """
+    if not enabled:
+        return {"ok": False, "enabled": False, "error": "静默安装未开启",
+                "missing": [], "started": [], "already": [], "skipped": []}
+    items = list_components(refresh=True).get("components", [])
+    missing = [c["id"] for c in items if not c.get("installed")]
+    started, already, skipped = [], [], []
+    for cid in missing:
+        r = install(cid)
+        if r.get("ok"):
+            (already if r.get("already_installed") else started).append(cid)
+        else:
+            skipped.append({"id": cid, "reason": r.get("error", "")})
+    return {"ok": True, "enabled": True, "missing": missing,
+            "started": started, "already": already, "skipped": skipped}
+
+
 # --------------------------------------------------------------------------- #
 # 组件与环境清单（v1.6.1）
 # --------------------------------------------------------------------------- #
@@ -1649,6 +1678,15 @@ def load_manifest(refresh: bool = False) -> dict:
         if not isinstance(manifest, dict) or not isinstance(manifest.get("components"), list):
             last_reason = "清单结构不合法（缺 components 数组）"
             continue
+        # v1.6.3：清单里的 app_version 写 "auto" 占位符，加载时自动填入当前
+        # 代码真实版本（extract.__version__ 是唯一真源）。这样升号时不再需要
+        # 手工同步本文件——上次 v1.6.1/v1.6.2 就是漏改这里才回显旧版本号。
+        if str(manifest.get("app_version", "")).strip().lower() in ("auto", "", "current"):
+            try:
+                import extract as _extract
+                manifest["app_version"] = str(_extract.__version__)
+            except Exception:
+                manifest["app_version"] = ""
         result = {"ok": True, "path": str(path), "manifest": manifest, "reason": ""}
         _MANIFEST_CACHE.clear()
         _MANIFEST_CACHE["_at"] = now

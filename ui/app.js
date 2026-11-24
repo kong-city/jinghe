@@ -69,6 +69,10 @@
     kbQuery: $("kbQuery"),
     btnKbQuery: $("btnKbQuery"),
     kbResults: $("kbResults"),
+    kbDocTree: $("kbDocTree"),
+    kbBlocks: $("kbBlocks"),
+    kbSource: $("kbSource"),
+    btnKbBrowse: $("btnKbBrowse"),
     // S12a：订阅博主/频道
     subUrl: $("subUrl"),
     subName: $("subName"),
@@ -104,6 +108,7 @@
     setAutoExit: $("setAutoExit"),
     setExitGrace: $("setExitGrace"),
     setRememberPaths: $("setRememberPaths"),
+    setAutoInstallComponents: $("setAutoInstallComponents"),
     setDefaultOutdir: $("setDefaultOutdir"),
     setDefaultIndir: $("setDefaultIndir"),
     btnPickIndir: $("btnPickIndir"),
@@ -405,6 +410,8 @@
     if (name === "home") loadTools();
     // v1.1.0：进入知识库页时刷新真实状态（S9 端点早已实现）
     if (name === "kb") loadKbStatus();
+    // v1.6.3：思源式块视图——进入知识库页同时加载块浏览数据
+    if (name === "kb") loadKbBrowse();
     // v1.6.2：订阅表单迁入首页，订阅列表在首页加载时刷新
     if (name === "home") loadSubList();
     if (name === "kb") loadSubList();
@@ -429,6 +436,7 @@
     if (el.setAutoExit) el.setAutoExit.checked = settings.auto_exit !== false;
     if (el.setExitGrace) el.setExitGrace.value = settings.exit_grace_seconds;
     if (el.setRememberPaths) el.setRememberPaths.checked = settings.remember_paths !== false;
+    if (el.setAutoInstallComponents) el.setAutoInstallComponents.checked = settings.auto_install_components === true;
     if (el.setDefaultOutdir) el.setDefaultOutdir.value = settings.default_outdir || "";
     if (el.setDefaultIndir) el.setDefaultIndir.value = settings.default_indir || "";
   }
@@ -482,6 +490,7 @@
       auto_exit: el.setAutoExit.checked,
       exit_grace_seconds: parseInt(el.setExitGrace.value, 10) || 90,
       remember_paths: el.setRememberPaths.checked,
+      auto_install_components: !!(el.setAutoInstallComponents && el.setAutoInstallComponents.checked),
       default_outdir: el.setDefaultOutdir.value.trim(),
       default_indir: el.setDefaultIndir.value.trim()
     };
@@ -2694,43 +2703,193 @@
     });
   }
 
+  // v1.6.3：思源式块视图状态
+  var kbView = { items: [], docs: [], activeDoc: "", activeId: "", mode: "browse" };
+
+  function kbTextOf(item) {
+    return String(item.body || item.snippet || "");
+  }
+
+  function kbHighlight(container, text, keyword) {
+    text = String(text || "");
+    if (!keyword || text.indexOf(keyword) < 0) {
+      container.appendChild(document.createTextNode(text.length > 500 ? text.slice(0, 500) + "…" : text));
+      return;
+    }
+    var rest = text, idx;
+    while ((idx = rest.indexOf(keyword)) >= 0) {
+      if (idx > 0) container.appendChild(document.createTextNode(rest.slice(0, idx)));
+      var mark = document.createElement("mark");
+      mark.className = "kb-mark";
+      mark.textContent = keyword;
+      container.appendChild(mark);
+      rest = rest.slice(idx + keyword.length);
+    }
+    if (rest) container.appendChild(document.createTextNode(rest.length > 500 ? rest.slice(0, 500) + "…" : rest));
+  }
+
+  function renderKbTree() {
+    if (!el.kbDocTree) return;
+    el.kbDocTree.textContent = "";
+    var head = document.createElement("div");
+    head.className = "kb-tree-head";
+    head.textContent = "文档 · " + kbView.docs.length;
+    el.kbDocTree.appendChild(head);
+    kbView.docs.forEach(function (doc) {
+      var node = document.createElement("button");
+      node.type = "button";
+      node.className = "kb-doc-node" + (kbView.activeDoc === doc.doc_id ? " active" : "");
+      node.textContent = (doc.source_file || doc.doc_id).split(/[\\/]/).pop() +
+                         " · " + doc.blocks + " 块";
+      node.title = doc.source_file || doc.doc_id;
+      node.addEventListener("click", function () {
+        kbView.activeDoc = doc.doc_id;
+        renderKbTree();
+        renderKbBlocks();
+      });
+      el.kbDocTree.appendChild(node);
+    });
+    if (!kbView.docs.length) {
+      var empty = document.createElement("div");
+      empty.className = "hint";
+      empty.textContent = "知识库为空。先在上方「入库当前产物」添加内容。";
+      el.kbDocTree.appendChild(empty);
+    }
+  }
+
+  function renderKbBlocks() {
+    if (!el.kbBlocks) return;
+    el.kbBlocks.textContent = "";
+    var kw = (el.kbQuery && el.kbQuery.value || "").trim();
+    var shown = kbView.items.filter(function (it) {
+      return !kbView.activeDoc || it.doc_id === kbView.activeDoc;
+    });
+    var head = document.createElement("div");
+    head.className = "kb-tree-head";
+    head.textContent = "块 · " + shown.length + (kbView.mode === "query" ? "（检索命中）" : "");
+    el.kbBlocks.appendChild(head);
+    shown.forEach(function (item) {
+      var card = document.createElement("div");
+      card.className = "kb-block-card" + (kbView.activeId === item.id ? " active" : "");
+      var meta = document.createElement("div");
+      meta.className = "kb-block-meta";
+      meta.textContent = "((" + item.id + "))  ·  " + (item.locator || "块 " + item.block);
+      card.appendChild(meta);
+      var body = document.createElement("div");
+      body.className = "kb-block-body";
+      kbHighlight(body, kbTextOf(item), kw);
+      card.appendChild(body);
+      card.addEventListener("click", function () {
+        kbView.activeId = item.id;
+        renderKbBlocks();
+        renderKbSource();
+      });
+      el.kbBlocks.appendChild(card);
+    });
+    if (!shown.length) {
+      var empty = document.createElement("div");
+      empty.className = "hint";
+      empty.textContent = "没有可显示的块。";
+      el.kbBlocks.appendChild(empty);
+    }
+  }
+
+  function renderKbSource() {
+    if (!el.kbSource) return;
+    el.kbSource.textContent = "";
+    var item = null;
+    for (var i = 0; i < kbView.items.length; i += 1) {
+      if (kbView.items[i].id === kbView.activeId) { item = kbView.items[i]; break; }
+    }
+    if (!item) {
+      var hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = "选中块后显示来源信息";
+      el.kbSource.appendChild(hint);
+      return;
+    }
+    var head = document.createElement("div");
+    head.className = "kb-tree-head";
+    head.textContent = "来源溯源";
+    el.kbSource.appendChild(head);
+    [["块锚点", item.id], ["定位", item.locator], ["文档", item.doc_id],
+     ["来源文件", item.source_file], ["sha256", item.sha256]
+    ].forEach(function (pair) {
+      var row = document.createElement("div");
+      row.className = "kb-source-row";
+      var k = document.createElement("span");
+      k.className = "kb-source-key";
+      k.textContent = pair[0];
+      var v = document.createElement("span");
+      v.className = "kb-source-val";
+      v.textContent = pair[1] || "—";
+      v.title = pair[1] || "";
+      row.appendChild(k); row.appendChild(v);
+      el.kbSource.appendChild(row);
+    });
+    // S9：回跳原文位置；v1.3.10：传 open=true 让后端直接打开原文文件。
+    var jump = document.createElement("button");
+    jump.className = "link-btn";
+    jump.type = "button";
+    jump.textContent = "回跳原文";
+    jump.addEventListener("click", function () {
+      api("/api/kb/open-source", { id: item.id, open: true }, 10000).then(function (j) {
+        if (!j || !j.ok) { showError("回跳失败：" + ((j && j.error) || "未知错误")); return; }
+        showNotice(j.opened
+          ? "已打开原文：" + (j.source_file || j.locator || "")
+          : "原文位置：" + (j.source_file || j.locator || "已定位"));
+      }).catch(function (err) { showError("回跳失败：" + (err.message || err)); });
+    });
+    el.kbSource.appendChild(jump);
+  }
+
+  function renderKbThreeCol(items, docs, mode) {
+    kbView.items = items || [];
+    kbView.docs = docs || [];
+    kbView.mode = mode || "browse";
+    if (el.kbResults) el.kbResults.dataset.results = JSON.stringify(kbView.items);
+    if (!kbView.docs.some(function (d) { return d.doc_id === kbView.activeDoc; })) {
+      kbView.activeDoc = kbView.docs.length ? kbView.docs[0].doc_id : "";
+    }
+    if (!kbView.items.some(function (i) { return i.id === kbView.activeId; })) {
+      kbView.activeId = kbView.items.length ? kbView.items[0].id : "";
+    }
+    renderKbTree(); renderKbBlocks(); renderKbSource();
+  }
+
+  function loadKbBrowse() {
+    if (!el.kbResults) return;
+    api("/api/kb/browse?limit=200", undefined, 15000).then(function (r) {
+      if (!r || !r.ok) {
+        el.kbDocTree.textContent = "浏览失败：" + ((r && r.error) || "未知错误");
+        return;
+      }
+      renderKbThreeCol(r.results, r.docs, "browse");
+    }).catch(function (err) {
+      if (el.kbDocTree) el.kbDocTree.textContent = "浏览失败：" + (err.message || err);
+    });
+  }
+
   function doKbQuery() {
     var q = (el.kbQuery && el.kbQuery.value || "").trim();
     if (!q) { showError("请输入检索关键词"); return; }
     if (!el.kbResults) return;
-    el.kbResults.textContent = "检索中…";
+    el.kbBlocks.textContent = "检索中…";
     api("/api/kb/query", { q: q }, 30000).then(function (r) {
-      if (!r || !r.ok) { el.kbResults.textContent = "检索失败：" + ((r && r.error) || "未知错误"); return; }
-      if (!r.results || !r.results.length) { el.kbResults.textContent = "没有匹配的知识条目。"; return; }
-      el.kbResults.textContent = "";
-      el.kbResults.dataset.results = JSON.stringify(r.results);
-      var head = document.createElement("div");
-      head.textContent = "找到 " + r.count + " 条（模式：" + (r.mode || "—") + "）：";
-      el.kbResults.appendChild(head);
-      r.results.forEach(function (item) {
-        var row = document.createElement("div");
-        row.className = "kb-hit";
-        row.appendChild(document.createTextNode(
-          "[" + item.block + "] " + (item.locator || item.doc_id) +
-          " — " + (item.snippet || "").replace(/\s+/g, " ") + " "));
-        // S9：回跳原文位置（后端只解析坐标、不执行打开；路径围栏）
-        // v1.3.10：补上最后一跳——传 open=true 让后端直接打开原文文件。
-        var jump = document.createElement("button");
-        jump.className = "link-btn";
-        jump.type = "button";
-        jump.textContent = "回跳原文";
-        jump.addEventListener("click", function () {
-          api("/api/kb/open-source", { id: item.id, open: true }, 10000).then(function (j) {
-            if (!j || !j.ok) { showError("回跳失败：" + ((j && j.error) || "未知错误")); return; }
-            showNotice(j.opened
-              ? "已打开原文：" + (j.source_file || j.locator || "")
-              : "原文位置：" + (j.locator || j.source_file || "已定位"));
-          }).catch(function (err) { showError("回跳失败：" + (err.message || err)); });
-        });
-        row.appendChild(jump);
-        el.kbResults.appendChild(row);
+      if (!r || !r.ok) { el.kbBlocks.textContent = "检索失败：" + ((r && r.error) || "未知错误"); return; }
+      if (!r.results || !r.results.length) {
+        renderKbThreeCol([], [], "query");
+        el.kbBlocks.textContent = "没有匹配的块。点「浏览全部」回到完整视图。";
+        return;
+      }
+      var docs = {};
+      r.results.forEach(function (it) {
+        var d = docs[it.doc_id] || (docs[it.doc_id] = { doc_id: it.doc_id, blocks: 0, source_file: it.source_file });
+        d.blocks += 1;
       });
-    }).catch(function (err) { el.kbResults.textContent = "检索失败：" + (err.message || err); });
+      kbView.activeDoc = "";
+      renderKbThreeCol(r.results, Object.keys(docs).map(function (k) { return docs[k]; }), "query");
+    }).catch(function (err) { el.kbBlocks.textContent = "检索失败：" + (err.message || err); });
   }
 
   // ------------------------------------------------------------------ //
@@ -2835,6 +2994,10 @@
       }
     });
     if (el.btnKbQuery) el.btnKbQuery.addEventListener("click", doKbQuery);
+    if (el.btnKbBrowse) el.btnKbBrowse.addEventListener("click", function () {
+      if (el.kbQuery) el.kbQuery.value = "";
+      loadKbBrowse();
+    });
     if (el.kbQuery) el.kbQuery.addEventListener("keydown", function (e) {
       if (e.key === "Enter") { e.preventDefault(); doKbQuery(); }
     });

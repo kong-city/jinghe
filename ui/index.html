@@ -404,14 +404,20 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="card-title">检索</div>
+      <section class="card kb-workbench">
+        <div class="card-title">知识库 · 块视图</div>
+        <p class="card-sub">按文档 → 块浏览已入库内容。每条块带锚点与来源溯源；检索时三栏同步收缩到命中块。</p>
         <div class="row">
           <input id="kbQuery" class="text-input" type="text" spellcheck="false"
                  aria-label="知识库检索关键词" placeholder="输入关键词检索已入库内容">
           <button id="btnKbQuery" class="btn btn-ghost" type="button" disabled>检索</button>
+          <button id="btnKbBrowse" class="btn btn-ghost" type="button">浏览全部</button>
         </div>
-        <div id="kbResults" class="hint">输入关键词后点击「检索」。</div>
+        <div id="kbResults" class="kb-three-col" aria-live="polite">
+          <div id="kbDocTree" class="kb-col kb-doc-tree"><div class="hint">载入中…</div></div>
+          <div id="kbBlocks" class="kb-col kb-blocks"><div class="hint">载入中…</div></div>
+          <div id="kbSource" class="kb-col kb-source"><div class="hint">选中块后显示来源信息</div></div>
+        </div>
       </section>
 
       <!-- v1.6.2：订阅表单已迁入首页「统一提取台」（S12a 后台引擎不变）。 -->
@@ -532,6 +538,14 @@
             <span class="set-text">
               <b>记住上次的路径</b>
               <em>下次启动自动填回上次的输入路径与输出目录</em>
+            </span>
+          </label>
+
+          <label class="set-row">
+            <input type="checkbox" id="setAutoInstallComponents">
+            <span class="set-text">
+              <b>后台静默补齐缺失组件（测试用）</b>
+              <em>默认关闭，客户安装后行为不变。仅在你明确需要时打开：软件后台会自动下载并安装缺失的 ffmpeg / whisper / yt-dlp / OCR，来源仍限内置白名单。修改后重启软件生效</em>
             </span>
           </label>
 

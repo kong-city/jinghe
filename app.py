@@ -1337,6 +1337,9 @@ DEFAULT_SETTINGS = {
     # 清空保存则回退到后端下发的 TEMP/jinghe-out 兜底（test_68 契约）。
     "default_indir": str(DEFAULT_DESKTOP),
     "default_outdir": str(DEFAULT_DESKTOP),
+    # v1.6.3：后台静默补齐缺失组件。**默认 False**——客户安装后行为
+    # 完全不变（仍须手动点「启用」）；仅测试/显式授权场景才打开。
+    "auto_install_components": False,
 }
 _SETTINGS_LOCK = threading.Lock()
 _SETTINGS_CACHE: dict | None = None
@@ -1347,7 +1350,7 @@ def _validate_settings(data: object) -> dict:
     out = dict(DEFAULT_SETTINGS)
     if not isinstance(data, dict):
         return out
-    for key in ("auto_exit", "remember_paths"):
+    for key in ("auto_exit", "remember_paths", "auto_install_components"):
         if key in data:
             out[key] = bool(data[key])
     if "exit_grace_seconds" in data:
@@ -2776,6 +2779,22 @@ class Handler(BaseHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
                 self._send_json(components.compare_with_manifest(refresh=refresh))
+                return
+            if path == "/api/components/auto-install":
+                # v1.6.3：后台静默补齐缺失组件。**只在用户显式开启设置开关后**
+                # 才真正安装；默认关闭时直接返回未开启，零网络行为。
+                enabled = bool(_load_settings().get("auto_install_components"))
+                self._send_json(components.auto_install_missing(enabled=enabled))
+                return
+            if path == "/api/kb/browse":
+                # v1.6.3：块浏览（只读）——思源式三栏展示的数据源。
+                qs = parse_qs(parsed.query)
+                try:
+                    limit = min(int((qs.get("limit") or ["200"])[0]), 500)
+                except (TypeError, ValueError):
+                    limit = 200
+                self._send_json(kb.browse(KB_DIR, limit=limit,
+                                          doc_id=(qs.get("doc_id") or [""])[0]))
                 return
             if path == "/api/components/status":
                 # S10：安装进度轮询（since 增量事件，仿自更新的事件队列）
@@ -4492,6 +4511,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         _append_log("启动清理孤儿目录失败（不影响使用）：%r" % (exc,))
     capabilities()  # 预热：探测 extract.py 的 --version / --progress
+    # v1.6.3：静默补齐——仅当设置开关被显式打开时才启动；默认关闭无行为。
+    try:
+        if bool(_load_settings().get("auto_install_components")):
+            threading.Thread(target=components.auto_install_missing,
+                             kwargs={"enabled": True}, daemon=True,
+                             name="jinghe-auto-install").start()
+    except Exception as _exc:
+        _append_log("[WARN] 静默安装启动失败：%s" % type(_exc).__name__)
 
     # v0.4.8：清理上次更新遗留的暂存文件（<exe>.new.exe）。
     # 替换执行器就跑在那个文件里，删不掉；由新启动的程序接手，
