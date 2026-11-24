@@ -13,9 +13,13 @@
     btnPreview: $("btnPreview"),
     btnPreviewInline: $("btnPreviewInline"),
     btnRun: $("btnRun"),
+    btnRunAndIngest: $("btnRunAndIngest"),
     btnCancel: $("btnCancel"),
     btnOpenMerged: $("btnOpenMerged"),
     optOpenMerged: $("optOpenMerged"),
+    btnRefreshHistory: $("btnRefreshHistory"),
+    historyList: $("historyList"),
+    historyEmpty: $("historyEmpty"),
     errorBar: $("errorBar"),
     runStatus: $("runStatus"),
     progressBar: $("progressBar"),
@@ -109,6 +113,7 @@
     settingsStatus: $("settingsStatus"),
     // S10：相关组件列表
     componentList: $("componentList"),
+    componentsCard: $("componentsCard"),
     // S7d：精读 / 修订页 + 后端配置
     refineCap: $("refineCap"),
     refineSource: $("refineSource"),
@@ -174,6 +179,8 @@
 
   var running = false;
   var previewing = false;
+  // v1.5.0 一键流水线：本次提取是否要「提取后自动提纯入库」
+  var pipelineMode = false;
   var pollTimer = null;
   var pollFails = 0;
   var since = 0;
@@ -1279,12 +1286,13 @@
     poll();
   }
 
-  function doRun() {
+  function doRun(opts) {
     var input = el.inputPath.value.trim();
     var outdir = el.outPath.value.trim();
     if (!input) { showError("请先填写输入路径"); return; }
     if (!outdir) { showError("请先填写输出目录"); return; }
     if (running) return;
+    pipelineMode = !!(opts && opts.ingest);
     rememberPaths();
     clearBar();
     resetRunUI();
@@ -1301,9 +1309,35 @@
     }).catch(function (err) {
       showError("启动失败：" + (err.message || err));
       running = false;
+      pipelineMode = false;
       setState("failed");
       updateControls();
     });
+  }
+
+  // v1.5.0（S9 §3.3）一键流水线入口：提取 → 提纯 → 入库一次点击串起来。
+  function doRunAndIngest() {
+    doRun({ ingest: true });
+  }
+
+  // 提取成功后由 finish() 调用：对本次产物做抽取式提纯并入库。
+  function finishPipeline(outdir) {
+    if (!outdir) return;
+    api("/api/pipeline/finish", { outdir: outdir, refine: true, ingest: true }, 180000)
+      .then(function (r) {
+        if (!r || !r.ok) {
+          showError("提纯入库失败：" + ((r && r.error) || "未知错误"));
+          return;
+        }
+        var msg = "已提纯 " + (r.refined || 0) + " 份、入库 " + (r.ingested || 0) + " 条";
+        if ((r.refine_failed || []).length) msg += "（" + r.refine_failed.length + " 份提纯失败已按原文入库）";
+        if ((r.ingest_failed || []).length) msg += "（" + r.ingest_failed.length + " 条入库失败）";
+        showNotice("一键流水线完成：" + msg + " · " + nowHMS());
+        // 入库后知识库统计可能变化，若当前在知识库页则刷新
+        if (el.kbStatus) loadKbStatus();
+      }).catch(function (err) {
+        showError("提纯入库失败：" + (err.message || err));
+      });
   }
 
   function appendEvent(ev) {
@@ -1529,7 +1563,12 @@
       updateFeatureButtons();
       // v1.0.8：提取完成即刷新「本次产物」清单，精读页可直接选
       loadArtifacts();
+      // v1.5.0（T4）：同步刷新首页「产物中心」历史批次索引
+      loadHistory();
+      // v1.5.0（一键流水线）：提取成功后自动提纯 + 入库（仅「提取并入库」模式）
+      if (pipelineMode) finishPipeline(summary.outdir);
     }
+    pipelineMode = false;
     if (st === "done" && el.optOpenMerged.checked && summary && summary.outdir) {
       openMerged(summary.outdir);
     }
@@ -1569,37 +1608,66 @@
   function renderToolStatus() {
     if (!el.toolStatus) return;
     var tools = (toolState && toolState.tools) || {};
-    var names = ["ffmpeg", "whisper", "yt-dlp"];
-    var parts = names.map(function (n) {
-      var t = tools[n] || {};
-      return n + " " + (t.available ? "可用" : "未启用") +
-             (t.version ? "（" + t.version + "）" : "");
-    });
     var at = (toolState && toolState.audio_transcribe) || {};
     var vt = (toolState && toolState.video_transcribe) || {};
     var wi = (toolState && toolState.word_input) || {};
     var lr = (toolState && toolState.link_resolve) || {};
+    var we = (toolState && toolState.word_export) || {};
+    var legacy = wi.legacy_doc || {};
+
+    // 链接提取状态单独一行保留（它有自己的引导入口，不并入组件卡片）。
     if (el.linkCap) {
       el.linkCap.textContent = "链接提取：" +
-        (lr.enabled ? "已启用（本机 yt-dlp + 复用视频 handler，域名不设限、SSRF 防护）"
-                    : "未启用（" + (lr.reason || "缺少本机工具") + "）");
+        (lr.enabled ? "已启用（本机 yt-dlp）" : "未启用（需 yt-dlp，见下方）");
       el.linkCap.hidden = false;
     }
-    var legacy = wi.legacy_doc || {};
-    // 旧版这里还有一段「音视频转写」，读的是占位清单、恒为「未启用」，
-    // 且与紧随其后的「音频转写」「视频提取」重复。v1.3.10 删除该重复段，
-    // 真实就绪状态由下面两段（顶层增量字段）唯一承载。
-    el.toolStatus.textContent = "本机工具：" + parts.join(" · ") +
-      "；Word 输入增强：" +
-      (wi.enabled ? "已启用（.docx）" : "未启用") +
-      "，.doc 旧格式：" +
-      (legacy.enabled ? "可用（LibreOffice " + (legacy.tool && legacy.tool.version || "") + "）" : "未启用") +
-      "；Word 导出：" +
-      ((((toolState || {}).word_export) || {}).enabled ? "已启用（标准库 OOXML）" : "未启用") +
-      "；音频转写：" +
-      (at.enabled ? "已启用（本机 whisper + ffmpeg）" : "未启用（" + (at.reason || "缺少本机工具") + "）") +
-      "；视频提取：" +
-      (vt.enabled ? "已启用（独立 video handler）" : "未启用（" + (vt.reason || "缺少本机工具") + "）");
+
+    // v1.5.0（用户裁决）：删除常驻的全部能力长文字。
+    // 只收集**未就绪**项；全部就绪则整条隐藏，零噪音。
+    // 每项给出「去启用」——跳到设置页组件卡片并高亮，引导一键安装。
+    var missing = [];
+    ["ffmpeg", "whisper", "yt-dlp"].forEach(function (n) {
+      var t = tools[n] || {};
+      if (!t.available) missing.push({ label: n, why: t.reason || "未安装" });
+    });
+    // 音视频真实就绪状态只读顶层增量字段（at/vt），绝不读 S1 占位清单。
+    if (!at.enabled) missing.push({ label: "音频转写：", why: at.reason || "需 whisper + ffmpeg" });
+    if (!vt.enabled) missing.push({ label: "视频提取：", why: vt.reason || "需 whisper + ffmpeg" });
+    if (!wi.enabled && !legacy.enabled) {
+      missing.push({ label: ".doc 输入增强", why: "可选：需本机 LibreOffice" });
+    }
+    if (!we.enabled) missing.push({ label: "Word 导出", why: "未启用" });
+
+    if (!missing.length) {
+      el.toolStatus.hidden = true;
+      el.toolStatus.textContent = "";
+      return;
+    }
+
+    el.toolStatus.textContent = "";
+    var title = makeEl("span", "tool-status-title",
+                       "以下能力未就绪（点「去启用」安装组件）：");
+    el.toolStatus.appendChild(title);
+    missing.forEach(function (m) {
+      var line = makeEl("div", "tool-status-item");
+      line.appendChild(makeEl("span", "tool-status-name", m.label));
+      line.appendChild(makeEl("span", "tool-status-why", m.why));
+      var go = makeEl("button", "btn btn-ghost tool-status-go", "去启用");
+      go.type = "button";
+      go.addEventListener("click", function () {
+        // 跳到设置页并滚动到组件卡片，引导用户点对应组件的「启用」。
+        activatePage("settings");
+        if (el.componentsCard) {
+          el.componentsCard.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.componentsCard.classList.add("flash-highlight");
+          setTimeout(function () {
+            el.componentsCard.classList.remove("flash-highlight");
+          }, 1600);
+        }
+      });
+      line.appendChild(go);
+      el.toolStatus.appendChild(line);
+    });
     el.toolStatus.hidden = false;
   }
 
@@ -1620,19 +1688,13 @@
 
   // ---------------- S10：设置页「相关组件」（v0.10 支持真并发）----------------
   var componentState = null;
-  // v1.0.1：扫描件 OCR（外部工具链，软件绝不自动下载）
-  var ocrState = null;
   var componentPoll = null;
   var componentJobs = {};   // cid -> {next, state, percent, message}
 
   function loadComponents() {
     if (!el.componentList) return;
-    // 扫描件 OCR 能力状态（可选增强，仅探测本机工具链，不下载）
-    // v1.0.1：改为与其他组件同排列——结果存入 ocrState，由 renderComponents 渲染成一行
-    api("/api/pdf/ocr/status", undefined, 10000).then(function (o) {
-      ocrState = (o && o.ok) ? o : null;
-      renderComponents();
-    }).catch(function () {});
+    // v1.5.0：OCR 已纳入统一组件清单（id=ocr），不再单独探测 ocrState，
+    // 全部组件的真实状态统一从 /api/components 读取。
     api("/api/components?refresh=1", undefined, 15000).then(function (r) {
       componentState = (r && r.ok) ? r : null;
       renderComponents();
@@ -1721,43 +1783,9 @@
       el.componentList.appendChild(row);
     });
 
-    // v1.0.1：扫描件 OCR 与其他组件同排列（三列结构一致）。
-    // 它是外部工具链（tesseract + poppler），软件红线「绝不自动下载」，
-    // 所以按钮不触发安装，而是弹出清晰的安装指引——诚实，不假装能装。
-    if (ocrState) {
-      var ocrRow = makeEl("div", "component-row" + (ocrState.available ? "" : " is-missing"));
-      ocrRow.setAttribute("data-cid", "ocr");
-      var oi = makeEl("div", "component-info");
-      oi.appendChild(makeEl("span", "component-name", "扫描件 OCR"));
-      oi.appendChild(makeEl("span", "component-desc",
-        ocrState.available ? "本机 tesseract + poppler 已就绪，提取时自动识别扫描件图片页"
-                           : ("未启用——" + (ocrState.hint || ocrState.reason || "未检测到工具链"))));
-      // 与真实组件一致：进度条占位（OCR 无下载进度，恒 0%）
-      var op = makeEl("div", "component-progress");
-      op.setAttribute("data-role", "progress");
-      var ot = makeEl("div", "component-progress-track");
-      ot.appendChild(makeEl("div", "component-progress-bar"));
-      op.appendChild(ot);
-      op.appendChild(makeEl("span", "component-progress-text", "0%"));
-      oi.appendChild(op);
-      var ob = makeEl("span", "component-badge" + (ocrState.available ? "" : " is-off"),
-                      ocrState.available ? "已启用" : "未安装");
-      ob.setAttribute("data-role", "badge");
-      if (!ocrState.available && ocrState.reason) ob.title = ocrState.reason;
-      var obtn = makeEl("button", "btn component-toggle",
-                        ocrState.available ? "已启用" : "查看安装指引");
-      obtn.type = "button";
-      obtn.setAttribute("data-role", "toggle");
-      obtn.setAttribute("data-cid", "ocr");
-      if (ocrState.available) obtn.disabled = true;
-      else obtn.addEventListener("click", function () {
-        showNotice("扫描件 OCR 需本机安装 tesseract 与 poppler：软件绝不自动下载，请自行安装后重启软件。");
-      });
-      ocrRow.appendChild(oi);
-      ocrRow.appendChild(ob);
-      ocrRow.appendChild(obtn);
-      el.componentList.appendChild(ocrRow);
-    }
+    // v1.5.0：扫描件 OCR 已从外部工具链改为 pip 组件（id=ocr），
+    // 与其他组件同走 /api/components/install 统一「启用」流程，
+    // 故删除此前的 ocrState 假组件行——它由上面的 list.forEach 统一渲染。
   }
 
   function rowFor(cid) {
@@ -2347,6 +2375,97 @@
     }
   }
 
+  // ------------------------------------------------------------------ //
+  // v1.5.0（T4 产物中心）：跨批次统一索引 + 历史列表 + 软件内打开。
+  // 不新增导航入口（7 入口测试锁死），归属首页卡片；复用 /api/artifacts/history
+  // 只读索引与 /api/artifacts/open（产物目录 .md 白名单）打开，绝不放宽路径。
+  // ------------------------------------------------------------------ //
+  function formatSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  function loadHistory() {
+    if (!el.historyList) return;
+    api("/api/artifacts/history", undefined, 15000).then(function (r) {
+      if (!r || !r.ok) {
+        showError("读取历史产物失败：" + ((r && r.error) || "未知错误"));
+        return;
+      }
+      renderHistory(r.batches || []);
+    }).catch(function (e) {
+      showError("读取历史产物失败：" + (e && e.message ? e.message : e));
+    });
+  }
+
+  function renderHistory(batches) {
+    el.historyList.innerHTML = "";
+    var has = batches.length > 0;
+    if (el.historyEmpty) el.historyEmpty.hidden = has;
+    batches.forEach(function (b) {
+      var li = document.createElement("li");
+      li.className = "history-item";
+
+      var head = document.createElement("div");
+      head.className = "history-head";
+      var name = document.createElement("span");
+      name.className = "history-name";
+      name.textContent = b.name || "产物批次";
+      var meta = document.createElement("span");
+      meta.className = "history-meta";
+      var when = b.mtime ? new Date(b.mtime * 1000).toLocaleString("zh-CN") : "—";
+      meta.textContent = when + " · md " + (b.md_count || 0)
+        + " · 后处理 " + (b.derived_count || 0) + " · " + formatSize(b.size);
+      head.appendChild(name);
+      head.appendChild(meta);
+      li.appendChild(head);
+
+      var actions = document.createElement("div");
+      actions.className = "history-actions";
+      // 打开合并文档（仅有 MERGED.md 的批次）
+      if (b.has_merged) {
+        var btnMerged = document.createElement("button");
+        btnMerged.className = "btn btn-ghost";
+        btnMerged.type = "button";
+        btnMerged.textContent = "打开合并文档";
+        btnMerged.addEventListener("click", function () {
+          api("/api/artifacts/open", { path: b.path + "/MERGED.md" }, 15000)
+            .then(function (r) {
+              if (!r || !r.ok) showError("打开失败：" + ((r && r.error) || "未知错误"));
+            }).catch(function (e) {
+              showError("打开失败：" + (e && e.message ? e.message : e));
+            });
+        });
+        actions.appendChild(btnMerged);
+      }
+      // 打开产物目录（在当前批次输出目录上复用既有 browseOutput 逻辑的思想：
+      // 直接调 /api/open-folder，该端点同样受产物目录白名单约束）
+      var btnFolder = document.createElement("button");
+      btnFolder.className = "btn btn-ghost";
+      btnFolder.type = "button";
+      btnFolder.textContent = "打开目录";
+      btnFolder.addEventListener("click", function () {
+        api("/api/open-folder", { path: b.path }, 15000).then(function (r) {
+          if (!r || !r.ok) showError("打开目录失败：" + ((r && r.error) || "未知错误"));
+        }).catch(function (e) {
+          showError("打开目录失败：" + (e && e.message ? e.message : e));
+        });
+      });
+      actions.appendChild(btnFolder);
+      li.appendChild(actions);
+      el.historyList.appendChild(li);
+    });
+  }
+
+  function bindHistory() {
+    if (el.btnRefreshHistory) {
+      el.btnRefreshHistory.addEventListener("click", loadHistory);
+    }
+    // 提取完成后自动刷新历史索引（finish() 里也会触发**，见下方 hook）
+  }
+
   function bindReviseSync() {
     if (el.reviseSyncCheck) {
       el.reviseSyncCheck.addEventListener("change", function () {
@@ -2460,9 +2579,21 @@
       cookie_file: (el.subCookie && el.subCookie.value || "").trim(),
       interval_hours: (el.subInterval && el.subInterval.value) || "24"
     };
+    // v1.5.0（S12c）：实时直播诚实拒绝；直播回放/普通链接给出对应提示。
+    var low = url.toLowerCase();
+    var liveMarkers = ["/live/", "/live?", "/liveroom", "/room/",
+                       "live.bilibili.com", "live.douyin.com"];
+    if (liveMarkers.some(function (m) { return low.indexOf(m) >= 0; })) {
+      showError("实时直播暂不支持（依赖云端录制与推流授权）；请订阅直播结束后的回放链接");
+      return;
+    }
+    var replayMarkers = ["/video/", "watch?v=", "/v/", "youtu.be/", "/bv"];
+    var isReplay = replayMarkers.some(function (m) { return low.indexOf(m) >= 0; });
     api("/api/sub/add", payload, 10000).then(function (r) {
       if (!r || !r.ok) { showError("添加订阅失败：" + ((r && r.error) || "未知")); return; }
-      showNotice("订阅已添加，可点「立即同步」拉取首批内容");
+      showNotice(isReplay
+        ? "回放链接已添加（回放是普通视频，会自动转成 md 入库），可点「立即同步」"
+        : "订阅已添加，可点「立即同步」拉取首批内容");
       if (el.subUrl) el.subUrl.value = "";
       if (el.subName) el.subName.value = "";
       loadSubList();
@@ -2992,7 +3123,10 @@
       if (!picked.length) { showNotice("请先勾选要预览的文件"); return; }
       doPreview(picked);
     });
-    el.btnRun.addEventListener("click", doRun);
+    // 显式忽略事件对象：doRun(opts) 的 opts 是业务参数，不能被 MouseEvent 混入
+    el.btnRun.addEventListener("click", function () { doRun(); });
+    // v1.5.0：一键流水线（提取 → 提纯 → 入库）
+    if (el.btnRunAndIngest) el.btnRunAndIngest.addEventListener("click", doRunAndIngest);
     el.btnCancel.addEventListener("click", doCancel);
     el.btnOpenMerged.addEventListener("click", function () { openMerged(); });
     el.btnBrowseOut.addEventListener("click", browseOutput);
@@ -3000,6 +3134,7 @@
     bindKbEvents();
     bindReviseSync();
     bindArtifacts();
+    bindHistory();
     el.btnSummarize.addEventListener("click", doSummarize);
     el.btnExportDocx.addEventListener("click", doWordExport);
     el.btnWordEnhance.addEventListener("click", doWordEnhance);

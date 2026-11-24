@@ -5517,16 +5517,16 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('aboutSettingsFile: $("aboutSettingsFile")', js)
         self.assertIn('btnOpenAboutSettings: $("btnOpenAboutSettings")', js)
 
-        # ③ OCR 与其他组件同排列：三列结构、有按钮、不自动下载
+        # ③ OCR（v1.5.0 用户裁决：从外部工具链改为 pip 组件，点击即装）
+        #    旧契约「假组件行 + 查看安装指引 + 绝不自动下载」已被新裁决覆盖，
+        #    新契约由 test_v150_ocr.py 守护（pylib 组件 + 统一安装流程）。
         self.assertNotIn('id="ocrStatus"', html, "独立 OCR 文案块未清")
-        self.assertIn("var ocrState = null;", js)
-        self.assertIn('data-cid", "ocr"', js)
-        self.assertIn('"查看安装指引"', js, "OCR 未启用时应显示指引按钮")
-        ocr_fn = js[js.index("if (ocrState) {"):js.index("el.componentList.appendChild(ocrRow);")]
-        for marker in ("component-row", "component-info", "component-badge",
-                       "component-toggle", "component-progress"):
-            self.assertIn(marker, ocr_fn, "OCR 行缺少组件同款结构 %s" % marker)
-        self.assertIn("绝不自动下载", js, "OCR 指引须声明不自动下载")
+        self.assertNotIn("var ocrState = null;", js,
+                         "OCR 已纳入统一组件清单，不应再有独立状态变量")
+        self.assertNotIn('"查看安装指引"', js,
+                         "OCR 现在走统一「启用」安装，不再只给指引")
+        self.assertNotIn("if (ocrState) {", js,
+                         "前端不应再渲染 OCR 假组件行")
 
         # ④ 状态栏（v1.0.3：用户裁决彻底删除，连底色饰条一并取消）
         self.assertNotIn('id="statusbar"', html, "状态栏元素应彻底删除")

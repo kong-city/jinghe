@@ -380,6 +380,21 @@ button, input { font-family: inherit; }
 
 .btn-ghost { background: #FFFFFF; }
 
+/* v1.6.1：强调型次级按钮——一键流水线是主操作，但不宜与「开始提取」
+   同为实心蓝（两个 primary 并列会争抢视觉焦点）。用描边蓝 + 浅蓝底
+   形成清晰层级：开始提取（实心）> 提取并入库（描边）> 预览（幽灵）。 */
+.btn-accent {
+  background: #E6F1FB;
+  border-color: #185FA5;
+  color: #185FA5;
+  font-weight: 500;
+  padding: 0 18px;
+}
+.btn-accent:hover:not(:disabled) {
+  background: #B5D4F4;
+  border-color: #134C85;
+}
+
 /* ---------- v0.4.9 焦点可见性（ui-ux-pro-max 审查项 A1） ----------
    审查发现：全站仅 2 处 :focus，且 drop-zone / text-input 直接 `outline: none`
    却不给替代 —— 键盘用户完全无法定位焦点（WCAG 2.4.7 失败）。
@@ -1140,3 +1155,58 @@ select.text-input {
   line-height: 1.6;
 }
 .kb-hit:last-child { border-bottom: none; }
+
+/* ---------- v1.5.0（T4 产物中心）历史批次索引 ----------
+   复用卡片/按钮基色，只加列表与批次条目；不新增导航入口。 */
+/* ---------- v1.5.0：工具状态按需提示（仅未就绪项 + 去启用引导） ---------- */
+.tool-status-title { display: block; margin-bottom: 6px; font-weight: 600; }
+.tool-status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 0;
+  border-top: 1px solid #EFEDE6;
+}
+.tool-status-name { font-weight: 600; color: #8A4B1E; min-width: 88px; }
+.tool-status-why { flex: 1 1 auto; color: #6B6A65; }
+.tool-status-go { font-size: 11px; padding: 2px 8px; }
+/* 「去启用」跳转后短暂高亮组件卡片，引导视线 */
+.flash-highlight { animation: flashHL 1.6s ease; }
+@keyframes flashHL {
+  0%, 100% { box-shadow: none; }
+  30%, 70% { box-shadow: 0 0 0 3px rgba(24, 95, 165, 0.35); }
+}
+
+.artifact-center { margin-top: 14px; }
+.artifact-center-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.history-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.history-item {
+  padding: 8px 10px;
+  border: 1px solid #E8E6DF;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  background: #FBFAF7;
+}
+.history-item:last-child { margin-bottom: 0; }
+.history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.history-name { font-weight: 600; color: #2B2A26; }
+.history-meta { font-size: 11px; color: #6F6D66; }
+.history-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.history-actions .btn { font-size: 12px; padding: 3px 9px; }

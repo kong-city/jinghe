@@ -1102,6 +1102,166 @@ def _list_artifacts(outdir: str) -> dict:
         "count": len(md_items) + len(derived_items),
     }
 
+
+def _list_artifact_history() -> dict:
+    """T4 产物中心：跨批次统一索引——列出所有历史产物批次。
+
+    与 :func:`_list_artifacts`（只看当前 outdir）不同，本函数扫描
+    ``_kb_allowed_roots()`` 围栏内每个根及其一级子目录，凡含 ``md/*.md``
+    或 ``MERGED.md`` 的目录即算一个「产物批次」，汇总成历史索引。
+
+    设计约束（不可破）：
+    - 只读枚举，绝不写/删任何文件；
+    - 复用 ``_kb_allowed_roots()`` 白名单 + ``kb._is_within`` 双重围栏，
+      **不放宽** /api/open 白名单（v0.4.0 刻意堵死任意路径打开的成果）；
+    - 不碰冻结的 extract.py 内核与阶段 1 对账口径；
+    - 每批返回路径/名称/修改时间/md 数/derived 数/总字节，按时间倒序。
+    """
+    roots = _kb_allowed_roots()
+    seen: set[str] = set()
+    batches: list[dict] = []
+    for base in roots:
+        try:
+            root = Path(base).expanduser().resolve()
+        except (OSError, ValueError):
+            continue
+        if not root.is_dir():
+            continue
+        # 根本身 + 一级子目录都可能承载产物（默认 out-<日期-时分> 是子目录）
+        candidates = [root]
+        try:
+            candidates.extend(p for p in root.iterdir() if p.is_dir())
+        except OSError:
+            pass
+        for cand in candidates:
+            try:
+                cand = cand.resolve()
+            except (OSError, ValueError):
+                continue
+            key = str(cand).lower()
+            if key in seen:
+                continue
+            # 双重围栏：必须在某个合法根内
+            if not any(kb._is_within(cand, Path(r)) for r in roots):
+                continue
+            md_dir = cand / "md"
+            md_files = (sorted(md_dir.glob("*.md"))
+                        if md_dir.is_dir() else [])
+            has_merged = (cand / MERGED_NAME).is_file()
+            if not md_files and not has_merged:
+                continue
+            d_dir = media_runtime.derived_dir(cand)
+            derived = ([p for p in d_dir.iterdir() if p.is_file()]
+                       if d_dir.is_dir() else [])
+            try:
+                mtime = cand.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            size = 0
+            for f in list(md_files) + list(derived):
+                try:
+                    size += f.stat().st_size
+                except OSError:
+                    pass
+            if has_merged:
+                try:
+                    size += (cand / MERGED_NAME).stat().st_size
+                except OSError:
+                    pass
+            seen.add(key)
+            batches.append({
+                "path": str(cand),
+                "name": cand.name,
+                "mtime": mtime,
+                "md_count": len(md_files),
+                "derived_count": len(derived),
+                "has_merged": has_merged,
+                "size": size,
+            })
+    batches.sort(key=lambda b: b["mtime"], reverse=True)
+    return {
+        "ok": True,
+        "batches": batches,
+        "count": len(batches),
+    }
+
+
+def _pipeline_finish(outdir: str, refine: bool = True,
+                     ingest: bool = True) -> dict:
+    """v1.5.0 一键流水线（S9 §3.3）：对已完成提取的产物做「提纯 → 入库」。
+
+    设计约束（不破冻结契约）：
+    - 不重复实现提取——只处理已完成的产物目录（前端 doRun 成功后调用）；
+    - 提纯复用订阅同一套引擎 ``subscription_engine.default_iterate_fn``
+      （抽取式、原文原句、可逐字回溯、零依赖离线）；
+    - 入库复用 ``kb.ingest_md``（content_hash 幂等去重）；
+    - 路径全程走 ``_kb_allowed_roots()`` 围栏，不放宽任何打开白名单；
+    - 提纯失败如实降级（用原始 md 入库），绝不因提纯失败丢内容。
+
+    :param outdir: 已提取完成的产物目录
+    :param refine: 是否先提纯（默认 True）
+    :param ingest: 是否入库（默认 True）
+    """
+    roots = _kb_allowed_roots()
+    raw = str(outdir or "").strip() or _LAST_OUTDIR
+    try:
+        root = Path(raw).expanduser().resolve()
+    except (OSError, ValueError):
+        return {"ok": False, "error": "路径无效"}
+    if not any(kb._is_within(root, Path(r)) for r in roots):
+        return {"ok": False, "error": "路径不在允许范围内", "dir": str(root)}
+    md_dir = root / "md"
+    if not md_dir.is_dir():
+        return {"ok": False, "error": "产物目录内没有 md/ 子目录", "dir": str(root)}
+    sources = sorted(md_dir.glob("*.md"))
+    if not sources:
+        return {"ok": False, "error": "产物目录内没有 md 文件", "dir": str(root)}
+
+    from subs.subscription_engine import default_iterate_fn
+
+    refined: list[str] = []
+    refine_failed: list[dict] = []
+    to_ingest: list[Path] = []
+    for md in sources:
+        target = to_ingest
+        if refine:
+            # 已是提纯产物（.refine.md）不再重复提纯
+            if md.name.endswith(".refine.md"):
+                to_ingest.append(md)
+                continue
+            try:
+                p = default_iterate_fn(md, 1)
+                refined.append(str(p))
+                to_ingest.append(p)
+            except Exception as exc:  # noqa: BLE001 - 提纯失败降级回原文
+                refine_failed.append({"file": md.name, "error": str(exc)})
+                to_ingest.append(md)   # 降级：用原始 md 入库，绝不丢内容
+        else:
+            to_ingest.append(md)
+
+    ingested = 0
+    ingest_failed: list[dict] = []
+    if ingest:
+        for p in to_ingest:
+            res = kb.ingest_md(KB_DIR, str(p), include_ai=False,
+                               allowed_roots=roots)
+            if res.get("ok"):
+                ingested += int(res.get("added", 0))
+            else:
+                ingest_failed.append({"file": p.name,
+                                      "error": res.get("error", "入库失败")})
+
+    return {
+        "ok": True,
+        "dir": str(root),
+        "sources": len(sources),
+        "refined": len(refined),
+        "refine_failed": refine_failed,
+        "ingested": ingested,
+        "ingest_failed": ingest_failed,
+    }
+
+
 def _update_plan() -> dict:
     """带 TTL 缓存的安装条件探测结果。"""
     global _UPDATE_PLAN_CACHE
@@ -2499,6 +2659,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_list_artifacts(
                     (q.get("outdir") or [""])[0]))
                 return
+            if path == "/api/artifacts/history":
+                # v1.5.0（T4 产物中心）：跨批次历史索引，只读枚举白名单内
+                # 所有产物批次，供首页「产物中心」卡片展示历史与软件内打开。
+                _touch_heartbeat()
+                self._send_json(_list_artifact_history())
+                return
             if path == "/api/progress":
                 _touch_heartbeat()
                 qs = parse_qs(parsed.query)
@@ -2954,6 +3120,14 @@ class Handler(BaseHTTPRequestHandler):
                     str(data.get("dir") or "").strip(),
                     include_ai=bool(data.get("include_ai", False)),
                     allowed_roots=kb_roots,
+                ))
+            elif path == "/api/pipeline/finish":
+                # v1.5.0（S9 §3.3 一键流水线）：提取完成后「提纯 → 入库」编排，
+                # 复用订阅的抽取式提纯器 + kb 幂等入库；失败如实降级。
+                self._send_json(_pipeline_finish(
+                    str(data.get("outdir") or "").strip(),
+                    refine=data.get("refine", True) is not False,
+                    ingest=data.get("ingest", True) is not False,
                 ))
             elif path == "/api/kb/query":
                 # S9：关键词检索（trigram 主 / LIKE 降级，结果带来源标注）

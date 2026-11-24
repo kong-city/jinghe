@@ -123,7 +123,8 @@
             <input id="inputPath" class="text-input" type="text" spellcheck="false" autocomplete="off"
                    aria-label="输入文件或文件夹路径"
                    placeholder="粘贴文件 / 文件夹路径，或点击「打开」选择文件">
-            <button id="btnPickFiles" class="btn btn-ghost" type="button">打开</button>
+            <button id="btnPickFiles" class="btn btn-ghost" type="button"
+                    title="选择要提取的文件或文件夹">打开</button>
           </div>
           <!-- v0.4.9：拖拽输入区——把文件 / 音频 / 视频直接拖进框内即识别为输入 -->
           <div id="dropZone" class="drop-zone" role="button" tabindex="0"
@@ -175,6 +176,9 @@
 
       <div class="actions">
         <button id="btnRun" class="btn btn-primary" type="button">开始提取</button>
+        <!-- v1.5.0（S9 §3.3 一键流水线）：提取 → 提纯 → 入库，一次点击串起来 -->
+        <button id="btnRunAndIngest" class="btn btn-accent" type="button"
+                title="提取完成后自动提纯并入库到本机知识库（抽取式、原文原句、不造假）">提取并入库</button>
         <button id="btnPreview" class="btn btn-ghost" type="button">仅预览分流</button>
         <button id="btnCancel" class="btn btn-ghost" type="button" disabled>取消</button>
         <span id="runStatus" class="run-status"></span>
@@ -229,6 +233,19 @@
           <pre id="logBox" class="log"></pre>
         </div>
       </section>
+
+      <!-- v1.5.0（T4 产物中心）：跨批次统一索引 + 历史列表 + 软件内打开。
+           不新增导航入口（7 入口测试锁死），作为首页底部卡片归属提取主干。 -->
+      <section class="card artifact-center" id="artifactCenter">
+        <div class="card-title artifact-center-title">
+          <span>产物中心</span>
+          <button id="btnRefreshHistory" class="btn btn-ghost" type="button"
+                  title="重新扫描历史产物批次">刷新</button>
+        </div>
+        <div id="historyHint" class="hint">历史批次索引：读取本机产物目录，点批次展开产物并可直接打开。</div>
+        <ul id="historyList" class="history-list"></ul>
+        <div id="historyEmpty" class="hint center" hidden>暂无历史产物批次。完成一次提取后会出现在这里。</div>
+      </section>
     </section>
 
     <!-- ==================== 加工（v1.1.0：后处理与链接提取独立成页） ==================== -->
@@ -265,7 +282,7 @@
                   title="用本机 ffmpeg + whisper 把所选视频转成三区块 .md（落 out/derived/）；独立 video handler，不复用音频路径">视频提取为文档</button>
           <button id="btnVideoCancel" class="feature-btn" type="button" hidden>取消提取</button>
         </div>
-        <p id="toolStatus" class="card-sub tool-status" hidden></p>
+        <div id="toolStatus" class="card-sub tool-status" hidden></div>
       </section>
 
       <!-- S5：视频链接 → .md（域名不设限；SSRF 内网防护；cookie 只读不落盘） -->
@@ -359,7 +376,7 @@
         </div>
         <div id="subEvents" class="hint" hidden></div>
         <div id="subList" class="hint">尚未添加订阅。</div>
-        <p class="card-sub">能力边界：需本机已安装 yt-dlp（软件不打包、不下载）；仅处理你有权访问的公开内容，需登录的站点请自带本机 cookie 文件（只读引用、不入库不外传）。抖音等平台的反爬或视频号截图订阅暂不支持。</p>
+        <p class="card-sub">能力边界：需本机已安装 yt-dlp（软件不打包、不下载）；仅处理你有权访问的公开内容，需登录的站点请自带本机 cookie 文件（只读引用、不入库不外传）。<strong>直播回放链接</strong>可直接粘贴（回放是普通视频，会自动转成 md 并入库）；<strong>实时直播</strong>、抖音等平台反爬、视频号截图订阅暂不支持。</p>
       </section>
     </section>
 

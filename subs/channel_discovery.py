@@ -111,6 +111,37 @@ def parse_entries(payload: object, *, limit: int = DEFAULT_LIMIT) -> list[dict]:
     return out
 
 
+def classify_url(url: str) -> dict:
+    """S12c：分类订阅地址——频道主页 / 直播回放（普通视频） / 实时直播 / 未知。
+
+    设计依据（docs/S12 §六）：**直播是实时流、不可行；直播回放是普通视频，
+    现有链路可直接吃**。本函数只做诚实分类与提示，不改变 discover 的下载行为：
+    - ``channel`` 频道主页：原样走 flat-playlist 枚举；
+    - ``replay`` 直播回放链接（如 /video/、watch?v=）：本质是普通视频，
+      提示用户「回放链接可直接转 md」，订阅单条回放仍走 discover（yt-dlp 兼容）；
+    - ``live`` 实时直播：明确拒绝（实时流依赖云端录制/推流授权，不做）；
+    - ``unknown``：按普通 URL 处理，不乱下结论。
+    """
+    raw = str(url or "").strip().lower()
+    if not raw:
+        return {"kind": "unknown", "supported": False,
+                "hint": "请提供订阅地址"}
+    # 实时直播特征（平台 live 路径 / 直播间号）——诚实拒绝，不假装能订阅
+    live_markers = ("/live/", "/live?", "/liveroom", "/room/", "live.bilibili.com",
+                    "live.douyin.com")
+    if any(m in raw for m in live_markers):
+        return {"kind": "live", "supported": False,
+                "hint": "实时直播暂不支持（依赖云端录制与推流授权）。"
+                        "请订阅直播结束后的回放链接，它与普通视频一样可转 md。"}
+    # 直播回放 / 单条视频：/video/、watch?v=、/v/ 等
+    replay_markers = ("/video/", "watch?v=", "/v/", "youtu.be/", "/bv")
+    if any(m in raw for m in replay_markers):
+        return {"kind": "replay", "supported": True,
+                "hint": "识别为回放/单条视频链接：现有链路可直接转成 md 并沉淀入知识库。"}
+    return {"kind": "channel", "supported": True,
+            "hint": "频道/博主主页：将按间隔自动枚举新视频并入库。"}
+
+
 def discover(url: str, *, limit: int = DEFAULT_LIMIT,
              cookie_file: str = "", runner=None) -> dict:
     """枚举频道的近期视频。
@@ -121,6 +152,11 @@ def discover(url: str, *, limit: int = DEFAULT_LIMIT,
     raw = str(url or "").strip()
     if not raw:
         return {"ok": False, "error": "请提供频道地址", "entries": []}
+    # S12c：实时直播诚实拒绝（回放链接是普通视频，继续走下面枚举）
+    kind = classify_url(raw)
+    if kind["kind"] == "live":
+        return {"ok": False, "error": kind["hint"], "entries": [],
+                "kind": "live"}
     limit = max(1, min(MAX_LIMIT, int(limit or DEFAULT_LIMIT)))
 
     # ① 形状预检（DNS 解析交给后续下载阶段，这里只查形状，避免阻塞响应）
@@ -180,4 +216,5 @@ def discover(url: str, *, limit: int = DEFAULT_LIMIT,
                 "entries": []}
     entries = parse_entries(payload, limit=limit)
     return {"ok": True, "entries": entries, "url": raw,
+            "kind": kind["kind"], "hint": kind["hint"],
             "total": int(payload.get("playlist_count") or len(entries)) or len(entries)}

@@ -10,7 +10,8 @@ a = Analysis(
     ['app.py'],
     pathex=['core', 'media', 'knowledge', 'link', 'subs'],
     binaries=[],
-    datas=[('ui', 'ui'), ('vendor', 'vendor')],
+    # v1.5.0：OCR worker 子进程脚本必须随包携带（pdf_ocr 在 venv python 下执行它）
+    datas=[('ui', 'ui'), ('vendor', 'vendor'), ('tools/ocr_worker.py', 'tools')],
     hiddenimports=['extract', 'format_registry', 'media_tools', 'media_runtime', 'word_input', 'word_export', 'audio_transcribe', 'video_transcribe', 'self_update', 'kb', 'components', 'pdf_ocr', 'iterate_engine', 'subscription_store', 'channel_discovery', 'subscription_engine', 'subscription_scheduler'],
     hookspath=[],
     hooksconfig={},

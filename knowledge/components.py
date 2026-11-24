@@ -54,9 +54,15 @@ VENV_DIR = COMPONENT_DIR / "venv"
 # （whisper/transcribe.py: model_dir → load_model(download_root=...)），
 # 不再落在用户家目录 ~/.cache/whisper/（那处不受软件管理、卸载清不掉）。
 MODELS_DIR = COMPONENT_DIR / "models"
-# runtime：便携 Python 运行时（按需下载兜底，v1.4.x 实现）。
-# 当前仅预留目录定义，不参与安装流程。
+# runtime：便携 Python 运行时（v1.5.0 兜底：无 Python 的机器点击启用组件时，
+# 带手动令牌从官方源下载 embeddable 包并 bootstrap pip，装到本目录）。
+# 仅在系统找不到 Python 时才会触发，且必须经用户点击授权（绝不主动下载）。
 RUNTIME_DIR = COMPONENT_DIR / "runtime"
+RUNTIME_PYTHON = RUNTIME_DIR / "python.exe"
+# 官方 embeddable 包（固定版本，前端不可改；3.11.9 兼容主流组件版本窗口）
+RUNTIME_PY_VERSION = "3.11.9"
+RUNTIME_URL = ("https://www.python.org/ftp/python/%s/"
+               "python-%s-embed-amd64.zip" % (RUNTIME_PY_VERSION, RUNTIME_PY_VERSION))
 
 # venv 内部布局
 VENV_SCRIPTS = VENV_DIR / "Scripts"
@@ -149,6 +155,20 @@ COMPONENTS = (
         "kind": "pip",
         "package": "yt-dlp",
         "exe": "yt-dlp.exe",
+    },
+    {
+        # v1.5.0（用户裁决）：扫描件 OCR 从外部 tesseract+poppler 工具链
+        # 改为纯 Python 库，走统一 pip 组件机制——真正「点击就能装」。
+        # kind=pylib：装库不生成 CLI，验证走 import 校验（见 _install_worker /
+        # _probe_one）。主程序通过 tools/ocr_worker.py 子进程调用这些库。
+        "id": "ocr",
+        "name": "扫描件 OCR",
+        "desc": "识别扫描件 PDF 的图片页文字（含中文），安装后自动启用",
+        "probe": "",             # 无 CLI；探测走 probe_module
+        "probe_module": "fitz,rapidocr_onnxruntime",
+        "kind": "pylib",
+        "package": "pymupdf rapidocr-onnxruntime",
+        "exe": "",
     },
 )
 _BY_ID = {c["id"]: c for c in COMPONENTS}
@@ -636,9 +656,54 @@ def _import_check(exe_path: str, module: str) -> tuple[bool, str]:
     return False, reason
 
 
+def _import_check_strict(py: str, modules: list[str]) -> tuple[bool, str]:
+    """严格 import 校验：直接用 ``py`` 跑 import，失败即失败（无宽容分支）。
+
+    与 :func:`_import_check` 的区别：那个给 CLI exe 用，找不到解释器时
+    **宽容返回 True**（避免误伤系统组件）；pylib 的 python 是我们自己的
+    venv，必须严格判断——不然「包没装却报已安装」就是假绿灯。
+    """
+    if not py or not Path(py).is_file():
+        return False, "组件 Python 不存在：%s" % py
+    code = "import " + ", ".join(modules)
+    try:
+        r = subprocess.run(
+            [py, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", timeout=60,
+            creationflags=_CREATE_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        # ValueError：某些受限环境（IDE 沙箱注入 sitecustomize）会让子进程的
+        # communicate() 抛「not enough values to unpack」，属探测环境异常，
+        # 不能让整个 list_components 崩溃——按「暂不可判定」处理，给出原因。
+        return False, "导入校验异常（环境受限）：%s" % exc
+    if r.returncode == 0:
+        return True, ""
+    lines = (r.stdout or "").strip().splitlines()
+    return False, lines[-1][:200] if lines else "导入失败（退出码 %d）" % r.returncode
+
+
 # --------------------------------------------------------------------------- #
 # 清单与状态
 # --------------------------------------------------------------------------- #
+def _probe_pylib(comp: dict) -> dict:
+    """探测纯库组件（kind=pylib，如 OCR）：真 import 校验，无 CLI 命令。
+
+    与 CLI 组件不同，pylib 没有可执行文件可探测；用 venv python 真跑
+    ``import`` 判断库是否装好可用。任一必需模块导入失败即判未安装。
+    """
+    mods = [m.strip() for m in comp.get("probe_module", "").split(",") if m.strip()]
+    if not mods:
+        return {"available": False, "version": "", "reason": "组件未配置探测模块",
+                "path": "", "state": "missing"}
+    py = _python_for_pip()
+    ok, reason = _import_check_strict(py, mods)
+    if not ok:
+        return {"available": False, "version": "",
+                "reason": reason or "未安装", "path": py, "state": "missing"}
+    return {"available": True, "version": "组件库", "reason": "",
+            "path": py, "state": "ok"}
+
+
 def _probe_one(probe_name: str, deep: bool = False) -> dict:
     """用统一的 ToolAdapter 探测，结果归一为 {available, version, reason, path}。
 
@@ -711,7 +776,7 @@ def _external_install_hint(comp: dict) -> str:
     返回空串表示无迁移提示。
     """
     try:
-        found = shutil.which(comp["probe"])
+        found = shutil.which(comp["probe"]) if comp.get("probe") else ""
     except Exception:
         found = ""
     if not found:
@@ -736,7 +801,10 @@ def list_components(refresh: bool = False) -> dict:
     ensure_component_path()
     items = []
     for c in COMPONENTS:
-        st = _probe_one(c["probe"])
+        if c["kind"] == "pylib":
+            st = _probe_pylib(c)
+        else:
+            st = _probe_one(c["probe"])
         items.append({
             "id": c["id"],
             "name": c["name"],
@@ -1012,27 +1080,101 @@ def _create_venv(base_python: str) -> str:
     return str(VENV_PYTHON)
 
 
-def _ensure_venv() -> str:
+def _ensure_runtime_python(component_id: str) -> str:
+    """按需下载便携 Python 到 ``components\\runtime\\``（无 Python 机器兜底）。
+
+    **红线**：本函数只在用户点击「启用」组件、且系统确实找不到任何 Python
+    时调用；下载走 :func:`_download`，它强制校验手动令牌——探测 / 定时器
+    等路径不会触发任何下载。
+
+    流程：下载官方 embeddable zip → 解压 → 启用 ``site``（改 ``._pth``）
+    → ``ensurepip`` → 校验可用。任一步失败都抛带可读原因的异常，
+    绝不留下半截运行时（.part 由 _download 保证清理）。
+    """
+    # 已有可用运行时直接用
+    if RUNTIME_PYTHON.is_file():
+        try:
+            r = subprocess.run([str(RUNTIME_PYTHON), "-c", "import sys;sys.exit(0)"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=30, creationflags=_CREATE_NO_WINDOW)
+            if r.returncode == 0:
+                return str(RUNTIME_PYTHON)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    _emit("progress", "本机未找到 Python，正在准备便携运行环境…", 0.005, component_id)
+    zip_path = RUNTIME_DIR / ("python-%s-embed.zip" % RUNTIME_PY_VERSION)
+    _download(RUNTIME_URL, zip_path, component_id)
+
+    try:
+        import zipfile
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(RUNTIME_DIR)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise RuntimeError("解压便携 Python 失败：%s" % exc)
+    finally:
+        zip_path.unlink(missing_ok=True)
+
+    if not RUNTIME_PYTHON.is_file():
+        raise RuntimeError("便携 Python 解压后未找到 python.exe")
+
+    # embeddable 包默认禁用 site（._pth 里 #import site），不启用则 ensurepip
+    # 装到别处、pip 不可用。把 #import site 取消注释。
+    try:
+        for pth in RUNTIME_DIR.glob("python*._pth"):
+            txt = pth.read_text(encoding="utf-8", errors="replace")
+            if "#import site" in txt:
+                pth.write_text(txt.replace("#import site", "import site"),
+                               encoding="utf-8")
+    except OSError:
+        pass
+
+    # bootstrap pip
+    try:
+        r = subprocess.run(
+            [str(RUNTIME_PYTHON), "-m", "ensurepip", "--upgrade"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", timeout=180,
+            creationflags=_CREATE_NO_WINDOW)
+        if r.returncode != 0:
+            lines = (r.stdout or "").strip().splitlines()
+            raise RuntimeError("便携 Python 初始化 pip 失败：%s"
+                               % (lines[-1][:160] if lines else "未知原因"))
+    except subprocess.SubprocessError as exc:
+        raise RuntimeError("便携 Python 初始化 pip 异常：%s" % exc)
+    _emit("progress", "便携运行环境就绪", 0.02, component_id)
+    return str(RUNTIME_PYTHON)
+
+
+def _ensure_venv(component_id: str = "") -> str:
     """确保 venv 可用，返回 venv 内的 python 路径；不存在则用系统 Python 创建。
 
-    **为什么用系统 Python 创建、而不是内置运行时（v1.4.0 决策）**：
+    **为什么优先用系统 Python 创建、而不是内置运行时（v1.4.0 决策）**：
     venv 的 Python 版本窗口必须**跟随用户机器**。组件的版本要求会随时间右移
     （实测 yt-dlp 2026.10.26 要求 ``>=3.11``；torch 的 win wheel 从 cp310~313
     一路覆盖到 cp311~315）。若把运行时锁死在安装包里，一旦内置版本落后于
     组件要求窗口，功能就会**静默失效**（显示已安装，pip 报 requires a
-    different Python），排查成本极高。用系统 Python 建 venv 则天然免疫。
+    different Python），排查成本极高。故优先系统 Python。
 
-    若用户机器**确实没有 Python**，此处会抛出带指引的异常；
-    按需下载便携 Python 到 ``components\\runtime\\`` 的兜底逻辑留待 v1.4.x。
+    **v1.5.0 兜底**：系统确实没有 Python 时，若带 ``component_id``（即正在
+    用户点击的安装流程中），按需下载便携 Python 到 ``components\\runtime\\``
+    创建 venv——这是无 Python 机器的最后兜底，全程带手动令牌、绝不主动下载。
     """
     if _venv_python_usable():
         return str(VENV_PYTHON)
-    base = _find_python_for_pip()
+    try:
+        base = _find_python_for_pip()
+    except RuntimeError:
+        base = ""
     if not base:
-        raise RuntimeError(
-            "未找到可用于创建组件环境的 Python 解释器。\n"
-            "请安装 Python 3.11 或更高版本（安装时勾选「Add Python to PATH」），"
-            "重启软件后再点启用。")
+        if not component_id:
+            raise RuntimeError(
+                "未找到可用于创建组件环境的 Python 解释器。\n"
+                "请安装 Python 3.11 或更高版本（安装时勾选「Add Python to PATH」），"
+                "重启软件后再点启用。")
+        # 用户点击安装中 → 下载便携 Python 兜底（带令牌，红线内）
+        base = _ensure_runtime_python(component_id)
     try:
         return _create_venv(base)
     except RuntimeError as exc:
@@ -1186,7 +1328,10 @@ def _pip_cmd_install(package: str) -> list[str]:
              or os.environ.get("https_proxy")
              or os.environ.get("HTTP_PROXY")
              or os.environ.get("http_proxy") or "").strip()
-    cmd = [_python_for_pip(), "-m", "pip", "install", package,
+    # package 可能是多个包（空格分隔，如 OCR 的 "pymupdf rapidocr-onnxruntime"），
+    # pip 要求每个包是独立 argv，不能整串当成一个参数。
+    packages = package.split() if package else []
+    cmd = [_python_for_pip(), "-m", "pip", "install"] + packages + [
            "-i", PIP_INDEX, "--trusted-host", PIP_TRUSTED_HOST,
            "--disable-pip-version-check"]
     if proxy:
@@ -1316,33 +1461,48 @@ def _install_worker(component_id: str) -> None:
             # v1.4.0 收口：pip 类组件一律装进 **venv**（软件专属目录），
             # 不再污染宿主 Python。venv 不存在/失效时在此创建（用系统 Python）。
             _emit("progress", "准备组件运行环境…", 0.02, component_id)
-            venv_python = _ensure_venv()
+            venv_python = _ensure_venv(component_id)
             detail = _pip_install(comp["package"], component_id)
-            # pip 装的是「包」，exe 是它的副产品：包已装但 exe 丢失时，
-            # pip 会「already satisfied」整个跳过、不会补回 exe → 离线补生成。
-            try:
-                exe_path = _scripts_dir() / comp["exe"]
-            except RuntimeError:
-                exe_path = None
-            if exe_path is not None and not exe_path.is_file():
-                _emit("progress", "补生成 %s 启动器…" % comp["exe"], 0.97, component_id)
-                detail = _ensure_console_script(
-                    venv_python, comp["package"], comp["exe"])
+            # pylib（如 OCR）装的是纯库，没有 CLI exe，跳过启动器生成。
+            if comp["kind"] != "pylib":
+                # pip 装的是「包」，exe 是它的副产品：包已装但 exe 丢失时，
+                # pip 会「already satisfied」整个跳过、不会补回 exe → 离线补生成。
+                try:
+                    exe_path = _scripts_dir() / comp["exe"]
+                except RuntimeError:
+                    exe_path = None
+                if exe_path is not None and not exe_path.is_file():
+                    _emit("progress", "补生成 %s 启动器…" % comp["exe"], 0.97, component_id)
+                    detail = _ensure_console_script(
+                        venv_python, comp["package"], comp["exe"])
 
         if _cancelled(component_id):
             raise RuntimeError("cancelled")
         ensure_component_path()
         # 安装流程末尾做**深度验证**（真跑探测命令）：此处必须确认命令真的
         # 能跑，不能只凭轻量检查说「装好了」。
-        st = _probe_one(comp["probe"], deep=True)
+        # pylib（OCR）没有 CLI，改走真实 import 校验。
+        if comp["kind"] == "pylib":
+            mods = [m.strip() for m in comp.get("probe_module", "").split(",") if m.strip()]
+            py = _python_for_pip()
+            imp_ok, imp_reason = _import_check_strict(py, mods)
+            st = {"available": imp_ok, "version": "组件库",
+                  "reason": imp_reason, "path": py}
+        else:
+            st = _probe_one(comp["probe"], deep=True)
         if not st["available"]:
             # 报错必须带诊断信息（用户 2026-11-19 反馈：只有「仍探测不到」
-            # 无法定位）。此处明示：pip 用哪个 Python、探测查哪个目录、
-            # 目标 exe 是否真的不在那里。
+            # 无法定位）。pylib 无 CLI/exe，用 import 校验的真实原因诊断。
             try:
                 py = _python_for_pip()
             except RuntimeError:
                 py = "(未找到 Python)"
+            if comp["kind"] == "pylib":
+                raise RuntimeError(
+                    "组件安装结束但导入校验未通过：%s\n"
+                    "诊断：pip 使用 Python = %s\n"
+                    "请重启软件后重试；若仍失败，请把以上诊断信息反馈给开发者。"
+                    % (st.get("reason") or "未知原因", py))
             dirs = [str(d) for d in _candidate_scripts_dirs()]
             raise RuntimeError(
                 "安装结束但仍探测不到 %s。\n"
