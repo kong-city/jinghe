@@ -4,6 +4,15 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [1.6.1] - 2026-11-24
+
+用户「将系统环境组件导出成清单、另一台终端读它补齐」裁决，落地**声明式组件清单**（不是环境快照，不打包 918MB 的 venv）：
+
+- **清单文件** `docs/组件与环境清单.md`：人可读表格 + 顶部机器可读 JSON 块（纯正则提取，零第三方依赖）。记录 4 个组件（ffmpeg / whisper / yt-dlp / OCR）的来源、类型、包名、探测方式、采集机实测版本，以及 Python 3.13.14 / venv 隔离 / torch 2.15.0 等运行时基线。声明与 `COMPONENTS` 常量一致，由测试锁死防漂移。
+- **软件只读比对**：`knowledge/components.py` 新增 `load_manifest()` / `compare_with_manifest()`，读同一份清单与本机真实探测结果对账，状态如实分六类（`match` / `different` / `missing` / `unusable` / `no-expectation` / `not-in-manifest`）——特别把「装了但不可用」（如 whisper 缺 VC++ 运行库）与「没装」分开，避免误导重装。
+- **新端点** `GET /api/components/manifest`：设置页组件卡片新增对齐状态条，只读展示缺口与版本差异。**绝不自动下载/安装**——补缺仍走用户点「启用」按钮（守住手动令牌红线）。
+- 清单随包携带（build.spec datas），冻结态也能读到；新增守护测试 `test_v161_manifest.py`（14 项），测试总数 321 → **335**。
+
 ## [1.6.0] - 2026-11-24
 
 用户「还有哪些没上的功能开始上」裁决，落地三项此前只规划未实现的剩余能力：

@@ -2769,6 +2769,14 @@ class Handler(BaseHTTPRequestHandler):
                 refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
                 self._send_json(components.list_components(refresh=refresh))
                 return
+            if path == "/api/components/manifest":
+                # v1.6.1：组件与环境清单比对（**只读**，零下载副作用）。
+                # 读 docs/组件与环境清单.md 顶部的机器可读块，与本机真实探测
+                # 结果对账，报告「缺哪些 / 版本差多少」。补缺仍走用户点「启用」。
+                qs = parse_qs(parsed.query)
+                refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+                self._send_json(components.compare_with_manifest(refresh=refresh))
+                return
             if path == "/api/components/status":
                 # S10：安装进度轮询（since 增量事件，仿自更新的事件队列）
                 # v0.10：cid 指定组件；cid=* 一次返回全部任务（并发安装用）

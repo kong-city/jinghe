@@ -114,6 +114,7 @@
     // S10：相关组件列表
     componentList: $("componentList"),
     componentsCard: $("componentsCard"),
+    componentManifestStatus: $("componentManifestStatus"),  // v1.6.1：清单对齐状态
     // S7d：精读 / 修订页 + 后端配置
     refineCap: $("refineCap"),
     refineSource: $("refineSource"),
@@ -1702,6 +1703,45 @@
           anyComponentRunning()) startComponentPolling();
     }).catch(function (err) {
       el.componentList.textContent = "组件状态读取失败：" + (err.message || err);
+    });
+    // v1.6.1：只读清单对齐比对。失败时静默隐藏状态条，不影响组件列表本身。
+    // 绝不因此触发任何下载/安装——补缺仍由用户点各组件的「启用」按钮。
+    loadComponentManifest();
+  }
+
+  function loadComponentManifest() {
+    var box = el.componentManifestStatus;
+    if (!box) return;
+    api("/api/components/manifest", undefined, 15000).then(function (r) {
+      if (!r || !r.ok) { box.hidden = true; box.textContent = ""; return; }
+      var s = r.summary || {};
+      var items = r.items || [];
+      var parts = [];
+      // 对齐状态按组件逐条列，版本差异与缺口分开表述，绝不夸大。
+      items.forEach(function (it) {
+        if (it.status === "missing") {
+          parts.push(it.name + "：缺失，点下方「启用」安装");
+        } else if (it.status === "unusable") {
+          parts.push(it.name + "：已装但不可用（" + (it.reason || "依赖异常") +
+                     "），建议检查运行库后重装");
+        } else if (it.status === "different") {
+          parts.push(it.name + "：本机 " + (it.local_version || "?") +
+                     "，清单基线 " + (it.expected_version || "?") + "（不影响使用）");
+        } else if (it.status === "not-in-manifest") {
+          parts.push(it.name + "：本机有、清单未列（清单可能滞后）");
+        }
+      });
+      box.hidden = false;
+      box.textContent = parts.length
+        ? "清单对齐（基线 v" + (r.app_version || "?") + "）：" + parts.join("；") +
+          "。清单只读，不会自动下载安装。"
+        : "清单对齐：本机组件与基线一致或无需版本对齐（基线 v" +
+          (r.app_version || "?") + "，只读）。";
+      box.classList.toggle("has-gap", (s.missing || 0) > 0 ||
+                            (s.different || 0) > 0 || (s.unusable || 0) > 0);
+    }).catch(function () {
+      box.hidden = true;
+      box.textContent = "";
     });
   }
 

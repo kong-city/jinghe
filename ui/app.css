@@ -718,6 +718,22 @@ button, input { font-family: inherit; }
 .set-actions { margin-top: 12px; }
 
 /* ---------- S10：设置页「相关组件」列表 + 绿色安装进度条 ---------- */
+/* v1.6.1：清单对齐状态条（只读提示）；light 主题，默认柔和绿，有缺口转琥珀 */
+.manifest-status {
+  margin: 2px 0 10px;
+  padding: 8px 11px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #275A3B;
+  background: #EAF6EE;
+  border: 1px solid #B7DFC5;
+  border-radius: 8px;
+}
+.manifest-status.has-gap {
+  color: #854F0B;
+  background: #FAEEDA;
+  border-color: #E8C98A;
+}
 .component-list { margin-top: 4px; }
 .component-empty { padding: 14px 2px; font-size: 13px; color: #6F6D66; }
 .component-row {

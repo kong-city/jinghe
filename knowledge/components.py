@@ -1569,3 +1569,185 @@ def install(component_id: str) -> dict:
                      name="jinghe-component-install-%s" % component_id,
                      daemon=True).start()
     return {"ok": True, "already_installed": False}
+
+
+# --------------------------------------------------------------------------- #
+# 组件与环境清单（v1.6.1）
+# --------------------------------------------------------------------------- #
+# 清单是一份**声明式** Markdown 文档（docs/组件与环境清单.md），顶部用 HTML 注释
+# 包裹一段机器可读 JSON。本模块做三件事：
+#   1. 找到并读取该文件（源码态在仓库 docs/，冻结态在 _MEIPASS/docs/）；
+#   2. 用纯正则 + json 提取 JSON 块（零第三方依赖）；
+#   3. 与本机 list_components() 的真实探测结果比对，报告缺口。
+# **只读**：本段代码绝不下载、安装、升级、降级任何组件；补缺仍走用户点「启用」。
+# 这样另一台终端启动时读同一份清单，就能知道「缺什么 / 版本差多少」。
+
+import json as _json
+
+MANIFEST_FILENAME = "组件与环境清单.md"
+MANIFEST_BEGIN = "JINGHE_COMPONENT_MANIFEST_BEGIN"
+MANIFEST_END = "JINGHE_COMPONENT_MANIFEST_END"
+_MANIFEST_CACHE: dict = {}
+_MANIFEST_CACHE_TTL = 60.0  # 1 分钟：清单是静态文件，无需每次刷新都读盘
+
+
+def _manifest_candidates() -> list[Path]:
+    """清单可能所在的路径（按优先级）：环境变量覆盖 > 冻结资源 > 源码目录。"""
+    out: list[Path] = []
+    override = os.environ.get("JINGHE_COMPONENT_MANIFEST", "").strip()
+    if override:
+        out.append(Path(override))
+    # 冻结态：PyInstaller onefile 把 docs/ 解包到 sys._MEIPASS
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        out.append(Path(meipass) / "docs" / MANIFEST_FILENAME)
+    # 源码态：components.py 在 knowledge/ 下，仓库根是上一级
+    out.append(Path(__file__).resolve().parent.parent / "docs" / MANIFEST_FILENAME)
+    # 去重保序
+    seen: set[str] = set()
+    uniq = []
+    for p in out:
+        key = str(p).lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(p)
+    return uniq
+
+
+def load_manifest(refresh: bool = False) -> dict:
+    """读取并解析组件清单；返回 {ok, path, manifest, reason}。
+
+    纯只读、零网络。文件缺失或格式错误时 **ok=False 并如实给出 reason**，
+    绝不静默降级成空清单（避免出现「看似对齐、其实没读到清单」的假绿灯）。
+    """
+    now = time.time()
+    if (not refresh and _MANIFEST_CACHE
+            and now - _MANIFEST_CACHE.get("_at", 0) < _MANIFEST_CACHE_TTL):
+        return dict(_MANIFEST_CACHE["result"])
+    last_reason = "清单文件不存在"
+    for path in _manifest_candidates():
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            last_reason = "读取清单失败：%s" % exc
+            continue
+        m = re.search(
+            r"%s\s*\n(.*?)\n\s*%s" % (re.escape(MANIFEST_BEGIN), re.escape(MANIFEST_END)),
+            text, re.S,
+        )
+        if not m:
+            last_reason = "清单缺少机器可读标记（%s / %s）" % (
+                MANIFEST_BEGIN, MANIFEST_END)
+            continue
+        try:
+            manifest = _json.loads(m.group(1))
+        except (ValueError, TypeError) as exc:
+            last_reason = "清单 JSON 解析失败：%s" % exc
+            continue
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("components"), list):
+            last_reason = "清单结构不合法（缺 components 数组）"
+            continue
+        result = {"ok": True, "path": str(path), "manifest": manifest, "reason": ""}
+        _MANIFEST_CACHE.clear()
+        _MANIFEST_CACHE["_at"] = now
+        _MANIFEST_CACHE["result"] = result
+        return dict(result)
+    return {"ok": False, "path": "", "manifest": None, "reason": last_reason}
+
+
+def _version_status(local: str, expected: str) -> str:
+    """版本比对：只报告事实，不判优劣、不强制升级。"""
+    a = (local or "").strip()
+    b = (expected or "").strip()
+    if not b:
+        return "no-expectation"       # 清单未记录期望版本，以探测可用为准
+    if not a:
+        return "unknown-local"        # 本机版本读不到（如 pylib/CLI 不报版本）
+    if a == b:
+        return "match"
+    return "different"
+
+
+def compare_with_manifest(refresh: bool = False) -> dict:
+    """把清单期望与本机真实探测结果比对，返回只读的对账报告。
+
+    每项状态：
+      * ``match``            已装且版本与清单一致
+      * ``different``        已装但版本不同（仅提示）
+      * ``missing``          本机未装 → 引导点「启用」补
+      * ``unusable``         文件/版本在，但探测判不可用（如缺 VC++ 运行库）→ 如实提示，不误报成没装
+      * ``no-expectation``   清单未记录期望版本，本机可用即可
+      * ``unknown-local``    本机已装但读不到版本号，无法比对
+      * ``not-in-manifest``  本机组件未出现在清单里（清单滞后）
+
+    **绝不产生任何安装/下载副作用**，补缺动作仍由前端引导用户点按钮完成。
+    """
+    loaded = load_manifest(refresh=refresh)
+    if not loaded["ok"]:
+        return {"ok": False, "reason": loaded["reason"], "items": [],
+                "summary": {"total": 0, "missing": 0, "different": 0, "available": False}}
+
+    manifest = loaded["manifest"] or {}
+    expected = {
+        str(c.get("id", "")): c
+        for c in manifest.get("components", [])
+        if isinstance(c, dict)
+    }
+    # 复用现有探测（installed/version 口径与设置页完全一致，不另起判据）
+    actual = {c["id"]: c for c in list_components(refresh=refresh).get("components", [])}
+
+    items: list[dict] = []
+    for cid, exp in expected.items():
+        cur = actual.get(cid)
+        if cur is None:
+            items.append({"id": cid, "name": exp.get("name", cid), "status": "missing",
+                          "local_version": "", "expected_version": exp.get("reference_version", ""),
+                          "installed": False, "note": "清单有记录但本机无此组件定义"})
+            continue
+        want = exp.get("reference_version", "")
+        if not cur.get("installed"):
+            # 区分「真没装」与「装了但不可用」（如 whisper 缺 VC++ 运行库导致
+            # DLL 预检失败）——后者不能简单说成缺失，否则前端引导重装会误导。
+            st = "unusable" if (cur.get("version") or cur.get("state") == "error") else "missing"
+        else:
+            st = _version_status(cur.get("version", ""), want)
+        items.append({
+            "id": cid,
+            "name": exp.get("name", cur.get("name", cid)),
+            "status": st,
+            "installed": bool(cur.get("installed")),
+            "local_version": cur.get("version", ""),
+            "expected_version": want,
+            "state": cur.get("state", ""),
+            "reason": cur.get("reason", ""),
+            "note": exp.get("reference_version_note", ""),
+        })
+    # 本机有、清单没有的组件（清单可能滞后）
+    for cid, cur in actual.items():
+        if cid not in expected:
+            items.append({"id": cid, "name": cur.get("name", cid),
+                          "status": "not-in-manifest",
+                          "installed": bool(cur.get("installed")),
+                          "local_version": cur.get("version", ""),
+                          "expected_version": "",
+                          "note": "本机组件未列入清单，清单可能滞后"})
+
+    missing = sum(1 for i in items if i["status"] == "missing")
+    different = sum(1 for i in items if i["status"] == "different")
+    unusable = sum(1 for i in items if i["status"] == "unusable")
+    return {
+        "ok": True,
+        "manifest_path": loaded["path"],
+        "app_version": manifest.get("app_version", ""),
+        "generated_at": manifest.get("generated_at", ""),
+        "items": items,
+        "summary": {
+            "total": len(items), "missing": missing, "different": different,
+            "unusable": unusable, "available": True,
+        },
+        # 明确声明只读，供前端与测试校验
+        "read_only": True,
+        "auto_download": False,
+    }

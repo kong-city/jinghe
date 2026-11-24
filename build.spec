@@ -11,7 +11,9 @@ a = Analysis(
     pathex=['core', 'media', 'knowledge', 'link', 'subs'],
     binaries=[],
     # v1.5.0：OCR worker 子进程脚本必须随包携带（pdf_ocr 在 venv python 下执行它）
-    datas=[('ui', 'ui'), ('vendor', 'vendor'), ('tools/ocr_worker.py', 'tools')],
+    # v1.6.1：组件与环境清单随包携带（软件启动/刷新时读取，做只读版本对齐比对）
+    datas=[('ui', 'ui'), ('vendor', 'vendor'), ('tools/ocr_worker.py', 'tools'),
+           ('docs/组件与环境清单.md', 'docs')],
     hiddenimports=['extract', 'format_registry', 'media_tools', 'media_runtime', 'word_input', 'word_export', 'audio_transcribe', 'video_transcribe', 'self_update', 'kb', 'components', 'pdf_ocr', 'iterate_engine', 'subscription_store', 'channel_discovery', 'subscription_engine', 'subscription_scheduler'],
     hookspath=[],
     hooksconfig={},
