@@ -1226,3 +1226,20 @@ select.text-input {
 .history-meta { font-size: 11px; color: #6F6D66; }
 .history-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .history-actions .btn { font-size: 12px; padding: 3px 9px; }
+
+/* ---------- v1.6.2：统一提取台 —— 四类来源平级切换 ---------- */
+.source-tabs-card { margin-bottom: 12px; }
+.extract-tabs,
+.video-subtabs {
+  gap: 24px;
+  padding-left: 0;
+  padding-right: 0;
+  margin-top: 6px;
+}
+.video-subtabs { margin-bottom: 14px; gap: 18px; }
+.extract-panel[hidden],
+.video-subpanel[hidden] { display: none; }
+.video-subpanel { padding: 4px 0 2px; }
+/* 来源卡片内的文本域/输入行沿用全局 .row，仅补少量间距 */
+.extract-panel .feature-grid { margin-top: 6px; }
+.extract-panel .bar { margin-bottom: 8px; }

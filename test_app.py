@@ -5435,19 +5435,22 @@ class AppContractTest(unittest.TestCase):
             self.assertIn("%s: $(" % name, js, "el.pages 映射缺 %s" % name)
             self.assertIn("%s: { title:" % name, js, "PAGE_META 缺 %s" % name)
 
-        # ② 首页回归主干：后处理与链接卡片已迁出
+        # ② 首页：v1.6.2 统一提取台——四类来源平级，提取入口全在首页
         home = html[html.index('id="page-home"'):html.index('id="page-process"')]
-        self.assertNotIn("btnSummarize", home, "首页应只留提取主干")
-        self.assertNotIn("btnLinkRun", home, "链接提取已迁至加工页")
+        self.assertNotIn("btnSummarize", home, "首页应只留内容获取，二次加工留在加工页")
         self.assertIn("btnRun", home, "首页须保留「开始提取」")
         self.assertIn("btnPreview", home, "首页须保留「仅预览分流」")
+        # 迁移后的四类来源入口必须在首页（旧契约要求 btnLinkRun 不在首页，已随布局调整废弃）
+        for fid in ("btnAudioTranscribe", "btnVideoTranscribe",
+                    "btnLinkRun", "btnLinkInspect", "subUrl"):
+            self.assertIn('id="%s"' % fid, home, "统一提取台缺 %s" % fid)
 
-        # ③ 加工页：三组功能分区 + 僵尸按钮已清
+        # ③ 加工页：回归纯二次加工 + 僵尸按钮已清
         proc = html[html.index('id="page-process"'):html.index('id="page-kb"')]
-        for fid in ("btnSummarize", "btnExportDocx", "btnWordEnhance",
-                    "btnAudioTranscribe", "btnVideoTranscribe",
-                    "btnLinkRun", "btnLinkInspect"):
+        for fid in ("btnSummarize", "btnExportDocx", "btnWordEnhance"):
             self.assertIn('id="%s"' % fid, proc, "加工页缺少 %s" % fid)
+        self.assertNotIn("btnAudioTranscribe", proc, "音视频入口已迁至首页")
+        self.assertNotIn("btnLinkRun", proc, "链接入口已迁至首页")
         self.assertNotIn("btnTranscribe", proc, "僵尸占位按钮须从界面清除")
         self.assertNotIn("规划中", proc, "加工页不得再有「规划中」占位")
 

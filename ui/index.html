@@ -116,6 +116,20 @@
 
     <!-- ==================== 首页 ==================== -->
     <section class="page" id="page-home">
+      <!-- v1.6.2：统一提取台——四类来源平级切换，产物统一落到下方产物中心。
+           只重做前端编排，后端五条引擎不动（视频绝不走音频路径，红线 2）。 -->
+      <section class="card source-tabs-card">
+        <div class="card-title">内容提取 · 选择来源</div>
+        <p class="card-sub">文档 / 音频 / 视频 / 订阅四类来源同等级，产物统一落到下方产物中心。</p>
+        <div class="tabs extract-tabs" role="tablist">
+          <button class="tab active" type="button" data-extract-tab="file" role="tab">文档 / PDF</button>
+          <button class="tab" type="button" data-extract-tab="audio" role="tab">音频</button>
+          <button class="tab" type="button" data-extract-tab="video" role="tab">视频（含链接）</button>
+          <button class="tab" type="button" data-extract-tab="sub" role="tab">订阅频道</button>
+        </div>
+      </section>
+
+      <div class="extract-panel active" data-extract-panel="file">
       <section class="cards">
         <div class="card card-input">
           <div class="card-title">输入</div>
@@ -233,6 +247,96 @@
           <pre id="logBox" class="log"></pre>
         </div>
       </section>
+      </div><!-- /extract-panel file -->
+
+      <!-- 来源 2：音频转写（从加工页迁入，按钮 id 原样保留） -->
+      <div class="extract-panel" data-extract-panel="audio" hidden>
+        <section class="card features">
+          <div class="card-title">音频转写</div>
+          <p class="card-sub">本机 whisper 把所选音频转成带时间戳的 .md（落 out/derived/）。音频文件从上方「文档 / PDF」输入区选择即可；缺工具时按钮显示「未启用」。</p>
+          <div class="feature-grid">
+            <button id="btnAudioTranscribe" class="feature-btn" type="button" disabled
+                    title="用本机 whisper 把所选音频转成带时间戳的 .md（落 out/derived/）">音频转写 → .md</button>
+            <button id="btnAudioCancel" class="feature-btn" type="button" hidden>取消转写</button>
+          </div>
+          <div id="toolStatus" class="card-sub tool-status" hidden></div>
+        </section>
+      </div>
+
+      <!-- 来源 3：视频（本地文件 + 在线链接合并，产物同为三区块 md） -->
+      <div class="extract-panel" data-extract-panel="video" hidden>
+        <section class="card features">
+          <div class="card-title">视频来源</div>
+          <p class="card-sub">本地视频与在线链接都产出三区块 md（元数据 / 音轨转写 / 画面·字幕）。独立 video handler，绝不复用音频路径，绝不编造画面描述。</p>
+          <div class="tabs video-subtabs" role="tablist">
+            <button class="tab active" type="button" data-video-sub="local" role="tab">本地视频文件</button>
+            <button class="tab" type="button" data-video-sub="link" role="tab">在线视频链接</button>
+          </div>
+          <div class="video-subpanel active" data-video-subpanel="local">
+            <div class="feature-grid">
+              <button id="btnVideoTranscribe" class="feature-btn" type="button" disabled
+                      title="用本机 ffmpeg + whisper 把所选视频转成三区块 .md（落 out/derived/）；独立 video handler，不复用音频路径">视频提取 → .md</button>
+              <button id="btnVideoCancel" class="feature-btn" type="button" hidden>取消提取</button>
+            </div>
+          </div>
+          <div class="video-subpanel" data-video-subpanel="link" hidden>
+            <div class="card-sub">粘贴视频链接（每行一条，最多 20 条），本机 yt-dlp 下载后复用视频提取生成三区块 .md。域名不设限，但内网 / 保留地址一律拒绝（SSRF 防护）。软件不内置任何账号凭据。</div>
+            <div class="row">
+              <textarea id="linkUrls" class="text-input" rows="3" spellcheck="false"
+                        aria-label="视频链接，每行一条"
+                        placeholder="https://example.com/video/1&#10;https://example.com/video/2"></textarea>
+            </div>
+            <div class="row">
+              <input id="linkCookie" class="text-input" type="text" spellcheck="false"
+                     aria-label="可选的本地 cookie 文件路径"
+                     placeholder="可选：本机 cookie 文件路径（只读引用，不复制不上传）">
+            </div>
+            <div class="row set-actions">
+              <button id="btnLinkRun" class="btn btn-primary" type="button" disabled>链接提取为文档</button>
+              <button id="btnLinkInspect" class="btn btn-ghost" type="button" disabled>预检链接</button>
+              <button id="btnLinkCancel" class="btn btn-ghost" type="button" hidden>取消提取</button>
+              <span id="linkStatus" class="run-status"></span>
+            </div>
+            <p id="linkCap" class="card-sub tool-status" hidden></p>
+            <p class="card-sub">cookie 文件仅只读传给本机 yt-dlp，不复制进产物、不写入日志、不外传；请仅处理你有权访问的内容。</p>
+          </div>
+        </section>
+      </div>
+
+      <!-- 来源 4：订阅频道（从知识库页迁入，表单 id 原样保留） -->
+      <div class="extract-panel" data-extract-panel="sub" hidden>
+        <section class="card">
+          <div class="card-title">订阅博主 / 频道</div>
+          <p class="card-sub">粘贴博主主页或频道链接，软件会按间隔自动把新视频转成笔记并入本知识库。关闭窗口后程序缩到右下角托盘、继续在后台同步；从托盘退出才真正结束，下次启动补上遗漏的内容。</p>
+          <div id="subSchedHint" class="bar" role="status">后台调度状态读取中…</div>
+          <div id="subCapHint" class="bar bar-warn" role="status" hidden></div>
+          <div class="row">
+            <input id="subUrl" class="text-input" type="text" spellcheck="false"
+                   aria-label="订阅频道地址" placeholder="粘贴博主主页 / 频道链接（如 B站、YouTube 频道）">
+          </div>
+          <div class="row">
+            <input id="subName" class="text-input" type="text" spellcheck="false"
+                   aria-label="订阅名称" placeholder="备注名称（可选）">
+            <input id="subCookie" class="text-input" type="text" spellcheck="false"
+                   aria-label="订阅 cookie 文件" placeholder="cookie 文件路径（可选，需登录的站点）">
+          </div>
+          <div class="row">
+            <label class="hint" for="subInterval">同步间隔（小时）</label>
+            <input id="subInterval" class="text-input" type="number" value="24"
+                   min="1" max="720" step="1" aria-label="同步间隔小时">
+            <button id="btnSubAdd" class="btn btn-primary" type="button">添加订阅</button>
+          </div>
+          <div class="row">
+            <button id="btnSubSyncAll" class="btn btn-ghost" type="button">同步全部到期</button>
+            <button id="btnSubCancel" class="btn btn-ghost" type="button">取消同步</button>
+            <button id="btnSubRefresh" class="btn btn-ghost" type="button">刷新列表</button>
+            <span id="subStatus" class="run-status"></span>
+          </div>
+          <div id="subEvents" class="hint" hidden></div>
+          <div id="subList" class="hint">尚未添加订阅。</div>
+          <p class="card-sub">能力边界：需本机已安装 yt-dlp（软件不打包、不下载）；仅处理你有权访问的公开内容，需登录的站点请自带本机 cookie 文件（只读引用、不入库不外传）。<strong>直播回放链接</strong>可直接粘贴（回放是普通视频，会自动转成 md 并入库）；<strong>实时直播</strong>、抖音等平台反爬、视频号截图订阅暂不支持。</p>
+        </section>
+      </div>
 
       <!-- v1.5.0（T4 产物中心）：跨批次统一索引 + 历史列表 + 软件内打开。
            不新增导航入口（7 入口测试锁死），作为首页底部卡片归属提取主干。 -->
@@ -252,7 +356,7 @@
     <section class="page" id="page-process" hidden>
       <section class="card" id="flowGuide">
         <div class="card-title">加工流程指引</div>
-        <p class="card-sub">这里是把内容转成 md 的工具。拿到 md 之后，继续用顶部步骤条走后面两步；想让软件自动追更多内容，去「知识库」页订阅博主。</p>
+        <p class="card-sub">这里对已提取的 Markdown 做二次加工。音视频转写、视频链接、订阅博主等「内容获取」入口已统一移到首页「统一提取台」；拿到 md 后走下面两步继续加工。</p>
         <div class="row">
           <button type="button" class="btn btn-ghost" data-goto="refine">去提纯核心 →</button>
           <button type="button" class="btn btn-ghost" data-goto="revise">去改写补充 →</button>
@@ -271,43 +375,7 @@
         </div>
       </section>
 
-      <section class="card features">
-        <div class="card-title">音视频转写</div>
-        <p class="card-sub">本机 whisper 转写音频、独立 video handler 提取视频三区块（元数据 / 音轨转写 / 画面·字幕）。缺工具时按钮显示「未启用」；绝不复用音频路径处理视频，绝不编造画面描述。</p>
-        <div class="feature-grid">
-          <button id="btnAudioTranscribe" class="feature-btn" type="button" disabled
-                  title="用本机 whisper 把所选音频转成带时间戳的 .md（落 out/derived/）">音频转写为文档</button>
-          <button id="btnAudioCancel" class="feature-btn" type="button" hidden>取消转写</button>
-          <button id="btnVideoTranscribe" class="feature-btn" type="button" disabled
-                  title="用本机 ffmpeg + whisper 把所选视频转成三区块 .md（落 out/derived/）；独立 video handler，不复用音频路径">视频提取为文档</button>
-          <button id="btnVideoCancel" class="feature-btn" type="button" hidden>取消提取</button>
-        </div>
-        <div id="toolStatus" class="card-sub tool-status" hidden></div>
-      </section>
-
-      <!-- S5：视频链接 → .md（域名不设限；SSRF 内网防护；cookie 只读不落盘） -->
-      <section class="card" id="linkCard">
-        <div class="card-title">视频链接 → .md</div>
-        <p class="card-sub">粘贴视频链接（每行一条，最多 20 条），本机 yt-dlp 下载后复用视频提取生成三区块 .md，落 out/derived/。域名不设限，但内网 / 保留地址一律拒绝（SSRF 防护）。软件不内置任何账号凭据。</p>
-        <div class="row">
-          <textarea id="linkUrls" class="text-input" rows="3" spellcheck="false"
-                    aria-label="视频链接，每行一条"
-                    placeholder="https://example.com/video/1&#10;https://example.com/video/2"></textarea>
-        </div>
-        <div class="row">
-          <input id="linkCookie" class="text-input" type="text" spellcheck="false"
-                 aria-label="可选的本地 cookie 文件路径"
-                 placeholder="可选：本机 cookie 文件路径（只读引用，不复制不上传）">
-        </div>
-        <div class="row set-actions">
-          <button id="btnLinkRun" class="btn btn-primary" type="button" disabled>链接提取为文档</button>
-          <button id="btnLinkInspect" class="btn btn-ghost" type="button" disabled>预检链接</button>
-          <button id="btnLinkCancel" class="btn btn-ghost" type="button" hidden>取消提取</button>
-          <span id="linkStatus" class="run-status"></span>
-        </div>
-        <p id="linkCap" class="card-sub tool-status" hidden></p>
-        <p class="card-sub">cookie 文件仅只读传给本机 yt-dlp，不复制进产物、不写入日志、不外传；请仅处理你有权访问的内容。</p>
-      </section>
+      <!-- v1.6.2：音视频转写与视频链接已迁入首页「统一提取台」，加工页回归纯二次加工。 -->
     </section>
 
     <!-- ==================== 知识库（v1.1.0：S9 后端已实现，接上真实端点） ==================== -->
@@ -346,38 +414,7 @@
         <div id="kbResults" class="hint">输入关键词后点击「检索」。</div>
       </section>
 
-      <!-- S12a：订阅博主/频道——自动拉取新视频并沉淀进知识库 -->
-      <section class="card">
-        <div class="card-title">订阅博主 / 频道</div>
-        <p class="card-sub">粘贴博主主页或频道链接，软件会按间隔自动把新视频转成笔记并入本知识库。关闭窗口后程序缩到右下角托盘、继续在后台同步；从托盘退出才真正结束，下次启动补上遗漏的内容。</p>
-        <div id="subSchedHint" class="bar" role="status">后台调度状态读取中…</div>
-        <div id="subCapHint" class="bar bar-warn" role="status" hidden></div>
-        <div class="row">
-          <input id="subUrl" class="text-input" type="text" spellcheck="false"
-                 aria-label="订阅频道地址" placeholder="粘贴博主主页 / 频道链接（如 B站、YouTube 频道）">
-        </div>
-        <div class="row">
-          <input id="subName" class="text-input" type="text" spellcheck="false"
-                 aria-label="订阅名称" placeholder="备注名称（可选）">
-          <input id="subCookie" class="text-input" type="text" spellcheck="false"
-                 aria-label="订阅 cookie 文件" placeholder="cookie 文件路径（可选，需登录的站点）">
-        </div>
-        <div class="row">
-          <label class="hint" for="subInterval">同步间隔（小时）</label>
-          <input id="subInterval" class="text-input" type="number" value="24"
-                 min="1" max="720" step="1" aria-label="同步间隔小时">
-          <button id="btnSubAdd" class="btn btn-primary" type="button">添加订阅</button>
-        </div>
-        <div class="row">
-          <button id="btnSubSyncAll" class="btn btn-ghost" type="button">同步全部到期</button>
-          <button id="btnSubCancel" class="btn btn-ghost" type="button">取消同步</button>
-          <button id="btnSubRefresh" class="btn btn-ghost" type="button">刷新列表</button>
-          <span id="subStatus" class="run-status"></span>
-        </div>
-        <div id="subEvents" class="hint" hidden></div>
-        <div id="subList" class="hint">尚未添加订阅。</div>
-        <p class="card-sub">能力边界：需本机已安装 yt-dlp（软件不打包、不下载）；仅处理你有权访问的公开内容，需登录的站点请自带本机 cookie 文件（只读引用、不入库不外传）。<strong>直播回放链接</strong>可直接粘贴（回放是普通视频，会自动转成 md 并入库）；<strong>实时直播</strong>、抖音等平台反爬、视频号截图订阅暂不支持。</p>
-      </section>
+      <!-- v1.6.2：订阅表单已迁入首页「统一提取台」（S12a 后台引擎不变）。 -->
     </section>
 
     <!-- ==================== 精读（提纯核心知识点） ==================== -->

@@ -38,16 +38,23 @@ class TestUILayout(unittest.TestCase):
         self.assertNotIn('id="btnToggleNav"', self.html, "横杠按钮应已取消")
 
     def test_02_page_button_ownership_unchanged(self):
+        """v1.6.2：四类来源入口统一到首页；加工页回归纯二次加工。
+        导航 7 入口与页面骨架不变，只调整按钮归属（详见交付报告）。"""
         home = self.html[self.html.index('id="page-home"'):self.html.index('id="page-process"')]
         proc = self.html[self.html.index('id="page-process"'):self.html.index('id="page-kb"')]
         kb = self.html[self.html.index('id="page-kb"'):self.html.index('id="page-refine"')]
         self.assertIn("btnRun", home)
         self.assertIn("btnPreview", home)
-        for fid in ("btnSummarize", "btnExportDocx", "btnWordEnhance",
-                    "btnAudioTranscribe", "btnVideoTranscribe", "btnLinkRun"):
+        # 四类内容获取入口（含迁入的订阅）全在首页统一提取台
+        for fid in ("btnAudioTranscribe", "btnVideoTranscribe", "btnLinkRun", "subUrl"):
+            self.assertIn('id="%s"' % fid, home, "统一提取台缺 %s" % fid)
+        # 加工页只留二次加工
+        for fid in ("btnSummarize", "btnExportDocx", "btnWordEnhance"):
             self.assertIn('id="%s"' % fid, proc, "加工页缺 %s" % fid)
+        self.assertNotIn("btnAudioTranscribe", proc, "音视频入口已迁至首页")
         for fid in ("btnKbIngest", "btnKbRefresh", "kbQuery", "btnKbQuery"):
             self.assertIn('id="%s"' % fid, kb, "知识库页缺 %s" % fid)
+        self.assertNotIn("subUrl", kb, "订阅表单已迁至首页统一提取台")
 
     # ---------- 新布局 ---------- #
     def test_03_nav_grouped_into_four(self):

@@ -316,9 +316,9 @@
   }
 
   var PAGE_META = {
-    home: { title: "① 获取 · 文件提取", sub: "第一步：选文件 → 预览分流 → 开始提取 → 查看结果" },
-    process: { title: "① 获取 · 更多来源", sub: "文档 / 音视频 / 视频链接 → md；订阅博主在「知识库」页，后台自动同步" },
-    kb: { title: "④ 沉淀 · 知识库", sub: "把产物入库为可检索条目 + 订阅博主自动更新，全部保存在本机" },
+    home: { title: "① 获取 · 统一提取台", sub: "文档 / 音频 / 视频（含链接）/ 订阅四类来源同等级切换，产物统一落到产物中心" },
+    process: { title: "② 加工 · 文档加工", sub: "核心提炼 / 导出文档 / 文档输入增强；提纯核心与改写补充走左侧导航后续步骤" },
+    kb: { title: "④ 沉淀 · 知识库", sub: "把产物入库为可检索条目 + 维护索引，全部保存在本机；订阅博主在首页统一提取台" },
     refine: { title: "② 加工 · 提纯核心", sub: "第二步：对 md 提取核心知识点，默认抽取式（原文原句、可逐字回溯）" },
     revise: { title: "③ 加工 · 改写补充", sub: "第三步：术语归一 / 合并去重 / 改写补充，变更以颜色标记区分" },
     settings: { title: "系统 · 设置", sub: "提纯方式与迭代轮数、组件、路径——只保存在本机，改动即时生效" },
@@ -401,8 +401,12 @@
     if (name === "refine" || name === "revise") refreshRefineCap();
     // v1.1.0：进入加工页时刷新一次工具能力（按钮「未启用」判定依赖它）
     if (name === "process") loadTools();
+    // v1.6.2：音视频转写迁入首页，进入首页也刷新工具能力
+    if (name === "home") loadTools();
     // v1.1.0：进入知识库页时刷新真实状态（S9 端点早已实现）
     if (name === "kb") loadKbStatus();
+    // v1.6.2：订阅表单迁入首页，订阅列表在首页加载时刷新
+    if (name === "home") loadSubList();
     if (name === "kb") loadSubList();
     // v1.0.8：进入精读页时刷新本次产物清单
     if (name === "refine") loadArtifacts();
@@ -3124,8 +3128,53 @@
   }
 
   /* ------------------------------ Tabs ------------------------------ */
+  /* v1.6.2 统一提取台：来源切换只切换面板显示，不做任何 API 调用、
+     不改任务状态、不移动输入 —— 音频/视频的文件输入沿用首页 inputPath，
+     与文档提取共用同一份已识别清单（hasAudioInput/hasVideoInput 读的就是它）。 */
+  function switchExtractSource(source) {
+    var tabs = document.querySelectorAll("[data-extract-tab]");
+    for (var i = 0; i < tabs.length; i += 1) {
+      tabs[i].classList.toggle("active", tabs[i].getAttribute("data-extract-tab") === source);
+    }
+    var panels = document.querySelectorAll("[data-extract-panel]");
+    for (var j = 0; j < panels.length; j += 1) {
+      panels[j].hidden = panels[j].getAttribute("data-extract-panel") !== source;
+    }
+    // 切到某来源时刷新一次工具能力，保证「未启用」按钮状态是当前真实值
+    if (source === "audio" || source === "video") loadTools();
+    if (source === "sub") { loadSubList(); loadSubSchedStatus(); }
+  }
+
+  function switchVideoSub(mode) {
+    var tabs = document.querySelectorAll("[data-video-sub]");
+    for (var i = 0; i < tabs.length; i += 1) {
+      tabs[i].classList.toggle("active", tabs[i].getAttribute("data-video-sub") === mode);
+    }
+    var panels = document.querySelectorAll("[data-video-subpanel]");
+    for (var j = 0; j < panels.length; j += 1) {
+      panels[j].hidden = panels[j].getAttribute("data-video-subpanel") !== mode;
+    }
+    if (mode === "link") updateFeatureButtons();
+  }
+
+  function bindExtractSourceTabs() {
+    var srcTabs = document.querySelectorAll("[data-extract-tab]");
+    for (var i = 0; i < srcTabs.length; i += 1) {
+      srcTabs[i].addEventListener("click", function () {
+        switchExtractSource(this.getAttribute("data-extract-tab"));
+      });
+    }
+    var vTabs = document.querySelectorAll("[data-video-sub]");
+    for (var j = 0; j < vTabs.length; j += 1) {
+      vTabs[j].addEventListener("click", function () {
+        switchVideoSub(this.getAttribute("data-video-sub"));
+      });
+    }
+  }
+
   function activateTab(name) {
-    var tabs = document.querySelectorAll(".tab");
+    // v1.6.2：只切结果区 tab，不碰统一提取台的来源 tab（二者都带 .tab 类）
+    var tabs = document.querySelectorAll(".tab[data-tab]");
     for (var i = 0; i < tabs.length; i += 1) {
       tabs[i].classList.toggle("active", tabs[i].getAttribute("data-tab") === name);
     }
@@ -3148,12 +3197,14 @@
     // 记住上次用过的输出目录（服务端状态优先，见下面的 /api/state 处理）
     var savedOut = lsGet(LS_OUTDIR);
     if (savedOut) el.outPath.value = savedOut;
-    var tabs = document.querySelectorAll(".tab");
+    var tabs = document.querySelectorAll(".tab[data-tab]");
     for (var i = 0; i < tabs.length; i += 1) {
       tabs[i].addEventListener("click", function () {
         activateTab(this.getAttribute("data-tab"));
       });
     }
+    // v1.6.2：统一提取台——四类来源 tab + 视频子切换（纯展示层，不碰任务状态）
+    bindExtractSourceTabs();
 
     el.btnPreview.addEventListener("click", function () { doPreview(); });
     // v0.4.9：清单标题栏的「预览分流」只对勾选文件生效；未识别任何文件时回退全量。
