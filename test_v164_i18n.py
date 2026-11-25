@@ -1,17 +1,21 @@
 # -*- coding: utf-8 -*-
-"""v1.6.4：左上角导航按钮 + 页头的中英切换契约测试。
+"""中英切换契约测试（v1.6.4 第一步导航+页头；v1.6.6 扩展到页面正文全量）。
 
-范围严格限定：
-* 第一步只覆盖左上角导航（7 按钮 + 4 分组标题）与页头 title/sub；
-* 页面正文仍是中文，不应被整体翻译；
+范围：
+* 导航（7 按钮 + 4 分组标题）、页头 title/sub、页面正文文案（250 条中文原文 key）；
+* placeholder / title / aria-label 三类属性同样接入；
+* 语义 key（nav.* / group.* / page.*）与中文原文 key 共存于 I18N.en 字典；
 * 语言持久化走 /api/settings 的 lang 字段，白名单 zh/en，默认 zh。
 """
+import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 HTML = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+I18NJS = (ROOT / "ui" / "i18n.js").read_text(encoding="utf-8")
 JS = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
 CSS = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
 
@@ -59,18 +63,19 @@ class TestV164I18n(unittest.TestCase):
 
     # ---- 二、JS 字典与应用 ----
     def test_05_i18n_dict_has_all_keys(self):
-        self.assertIn("var I18N = {", JS_CODE)
+        self.assertIn("window.JINGHE_I18N = {", I18NJS)
+        self.assertIn("var I18N = window.JINGHE_I18N", JS_CODE)
         for lang in ("zh:", "en:"):
-            self.assertIn(lang, JS_CODE)
+            self.assertIn(lang, I18NJS)
         for page in ("home", "process", "refine", "revise", "kb", "settings", "about"):
-            self.assertIn('"nav.%s"' % page, JS_CODE,
+            self.assertIn('"nav.%s"' % page, I18NJS,
                           "字典缺 nav.%s" % page)
-            self.assertIn('"page.%s.title"' % page, JS_CODE)
-            self.assertIn('"page.%s.sub"' % page, JS_CODE)
+            self.assertIn('"page.%s.title"' % page, I18NJS)
+            self.assertIn('"page.%s.sub"' % page, I18NJS)
 
     def test_06_english_labels_present(self):
         for word in ("Home", "Process", "Refine", "Revise", "Knowledge", "Settings", "About"):
-            self.assertIn('"%s"' % word, JS_CODE, "英文字典缺 %s" % word)
+            self.assertIn('"%s"' % word, I18NJS, "英文字典缺 %s" % word)
 
     def test_07_apply_lang_updates_dom(self):
         self.assertIn("function applyLang(lang)", JS_CODE)
@@ -115,12 +120,43 @@ class TestV164I18n(unittest.TestCase):
             self.assertIn('data-extract-tab="%s"' % tab, HTML)
             self.assertNotIn('data-i18n="%s"' % tab, HTML)
 
-    def test_15_no_full_page_translation(self):
-        """第一步只翻导航+页头，正文文案的 data-i18n 标记不应出现。"""
+    def test_15_full_page_translation_coverage(self):
+        """v1.6.6：正文已全量接入 i18n；中文文本节点必须带标记。"""
+        # 1) 导航语义 key 仍在（页头由 JS 动态注入，不落在 HTML 上）
+        for key in ("nav.home", "group.source", "nav.about"):
+            self.assertIn('data-i18n="%s"' % key, HTML)
+        # 2) 正文标记数量应远超第一步的导航+分组（>=150）
         ids = re.findall(r'data-i18n="([^"]+)"', HTML)
-        for key in ids:
-            self.assertTrue(key.startswith("nav.") or key.startswith("group."),
-                            "超出第一步范围: %s" % key)
+        self.assertGreaterEqual(len(ids), 150,
+                                "正文 i18n 标记过少，疑似未全量接入: %d" % len(ids))
+        # 3) 属性类标记齐备
+        self.assertGreaterEqual(HTML.count("data-i18n-ph="), 10, "placeholder 未接入")
+        self.assertGreaterEqual(HTML.count("data-i18n-aria="), 20, "aria-label 未接入")
+        self.assertGreaterEqual(HTML.count("data-i18n-title="), 20, "title 未接入")
+
+    def test_16_all_chinese_keys_have_english(self):
+        """每个中文原文 key 都有对应英文翻译（映射表覆盖）。"""
+        sys.path.insert(0, str(ROOT / "tools"))
+        from i18n_en_map import EN  # noqa: WPS433
+        keys = json.loads((ROOT / "tools" / "i18n_pending_en.json").read_text(encoding="utf-8"))
+        missing = [k for k in keys if not EN.get(k)]
+        self.assertEqual(missing, [], "缺英文翻译: %s" % missing[:5])
+        self.assertGreaterEqual(len(EN), 240, "翻译条数不足")
+
+    def test_17_en_auto_block_in_js(self):
+        """生成的英文映射已注入 I18N.en 字典。"""
+        self.assertIn("/* I18N_AUTO_BEGIN */", I18NJS)
+        self.assertIn("/* I18N_AUTO_END */", I18NJS)
+        # 抽查几条翻译确实在独立字典文件里
+        self.assertIn('"精核 · 文件提取": "Jinghe · File extraction"', I18NJS)
+        self.assertIn('"保存设置": "Save settings"', I18NJS)
+
+    def test_18_apply_lang_handles_attrs(self):
+        """applyLang 同时更新 placeholder / aria-label / title。"""
+        self.assertIn('querySelectorAll("[data-i18n-ph]")', JS_CODE)
+        self.assertIn('querySelectorAll("[data-i18n-aria]")', JS_CODE)
+        self.assertIn('setAttribute("placeholder"', JS_CODE)
+        self.assertIn('setAttribute("aria-label"', JS_CODE)
 
 
 if __name__ == "__main__":

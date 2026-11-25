@@ -81,6 +81,13 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def strip_i18n(s: str) -> str:
+    """v1.6.6 起正文文案带 data-i18n* 属性；本文件是后端契约测试，
+    断言锁定的是文案与结构，去掉这些属性后再匹配，避免前端国际化导致误报。"""
+    return re.sub(r'\s+data-i18n(?:-ph|-aria|-title)?="[^"]*"', "", s)
+
 APP = ROOT / "app.py"
 EXTRACT = ROOT / "extract.py"
 SAMPLES = ROOT / "samples"
@@ -1064,7 +1071,7 @@ class AppContractTest(unittest.TestCase):
     # ------------------------------------------------------------------ #
     def test_22_frontend_lock_contract(self):
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
 
         # ① 超时与复位机制：AbortController + .finally + dry-run 显式超时
         self.assertIn("AbortController", js,
@@ -1204,7 +1211,7 @@ class AppContractTest(unittest.TestCase):
     # ------------------------------------------------------------------ #
     def test_27_sidebar_nav_and_settings(self):
         srv = self.start()
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
 
@@ -1277,7 +1284,7 @@ class AppContractTest(unittest.TestCase):
     # ------------------------------------------------------------------ #
     def test_28_resizable_nav_update_and_log_export(self):
         srv = self.start()
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -1404,7 +1411,7 @@ class AppContractTest(unittest.TestCase):
     # 29) v0.3.7：首页文案 / 按钮精简 + 「打开合并文档」按钮失效修复
     # ------------------------------------------------------------------ #
     def test_29_home_ui_slim_and_open_merged(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
 
@@ -1487,7 +1494,7 @@ class AppContractTest(unittest.TestCase):
     # 30) v0.3.8：关于页一键检查更新 + 首页上下布局 / 已识别移到原输出位
     # ------------------------------------------------------------------ #
     def test_30_one_click_update_and_home_layout(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -1587,7 +1594,7 @@ class AppContractTest(unittest.TestCase):
     # 31) v0.3.9：关于页清除说明内容/链接/离线长文案 + 按钮左、当前版本右
     # ------------------------------------------------------------------ #
     def test_31_about_cleanup_and_button_left(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -1661,7 +1668,7 @@ class AppContractTest(unittest.TestCase):
     # 32) v0.4.0：工程化交付闭环（CI / CHANGELOG / 发版门禁 / 更新资产 / 安全边界）
     # ------------------------------------------------------------------ #
     def test_32_engineering_delivery_and_update_asset(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
         wf = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -1784,7 +1791,7 @@ class AppContractTest(unittest.TestCase):
         from unittest import mock
 
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
 
@@ -2218,7 +2225,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIs(unknown["ok"], False)
 
         # ⑤ UI 入口与降级文案；S1 的音视频判定行原样保留
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn('id="btnWordEnhance"', html)
@@ -2445,7 +2452,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIs(unknown["ok"], False)
 
         # ⑤ UI：禁用占位已放开，S1 音视频诚实降级判定仍原样保留
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
@@ -2786,7 +2793,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIs(unknown["ok"], False)
 
         # ⑥ UI 与后端接线；S1 空心位与冻结断言原样保留
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
@@ -3168,7 +3175,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIs(unknown["ok"], False)
 
         # ⑥ UI / 后端接线 / 打包清单；S1 空心位与冻结断言原样保留
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
@@ -3210,7 +3217,7 @@ class AppContractTest(unittest.TestCase):
         from unittest import mock
 
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         gate = (ROOT / "tools" / "check_release.py").read_text(encoding="utf-8")
@@ -3334,7 +3341,7 @@ class AppContractTest(unittest.TestCase):
     # 44) v0.4.9：检查更新交互修复 + 拖拽输入 + 已识别清单勾选预览
     # ------------------------------------------------------------------ #
     def test_44_v049_update_feedback_and_drop_input(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -3452,7 +3459,7 @@ class AppContractTest(unittest.TestCase):
     #     （依据 ui-ux-pro-max 审查；冻结内核与主流水线零改动）
     # ------------------------------------------------------------------ #
     def test_46_v049_accessibility_audit_fixes(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
 
         def _lum(hexs):
@@ -3969,7 +3976,7 @@ class AppContractTest(unittest.TestCase):
     # 51) S7d UI：导航两项 + 配置页 + 精读/修订页 + 产物只读安全
     # ------------------------------------------------------------------ #
     def test_51_s7d_ui(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -4195,7 +4202,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("allow_suppplement", app_src, "app.py 未透传补写开关")
 
         # ⑩ UI：模式选择 + 补写开关（默认关）+ 抽取式提示
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="beMode"', html, "缺提纯模式选择")
         self.assertIn('value="extract"', html, "缺抽取式模式选项")
@@ -4318,7 +4325,7 @@ class AppContractTest(unittest.TestCase):
             self.assertIn("不造假", cap["engine"]["reason"])
 
         # ⑥ UI 模式联动
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="refineSub"', html, "缺精读页模式说明元素")
         self.assertIn('id="reviseSub"', html, "缺修订页模式说明元素")
@@ -4635,7 +4642,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("start_retention_watchdog", src_py, "未启动保留期轮询")
 
         # ---------- ⑥ 关于页卡片顺序：系统信息在版本更新之上 ----------
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         self.assertLess(html.index('<div class="card-title">系统信息</div>'),
                         html.index('<div class="card-title">版本更新</div>'),
                         "系统信息应排在版本更新上面")
@@ -5103,7 +5110,7 @@ class AppContractTest(unittest.TestCase):
 
         # ⑤ 功能路线卡片已移除（v0.8.2 用户裁决）：关于页不再展示静态路线图，
         #    其职责由 CHANGELOG / 文档承担，避免过时进度误导用户
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         self.assertNotIn("功能路线", html, "功能路线卡片应已删除")
         self.assertNotIn("road-list", html, "功能路线 CSS 钩子应已移除")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
@@ -5125,7 +5132,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("webbrowser.open(url)", app_src,
                       "必须保留无 Edge 时的浏览器兜底")
         # HTML 有 title（--app 模式下作窗口标题）
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         self.assertIn("<title>精核", html, "--app 模式窗口需要 title")
 
         # ② 版本契约机器可读且完整
@@ -5244,7 +5251,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("position: sticky", side_block)
         self.assertIn("top: 0", side_block)
         # 关于页两处确实删除（用户 2026-11-19 裁决，旧进程曾导致误以为没生效）
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         self.assertNotIn("软件版本", html)
         self.assertNotIn("功能路线", html)
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
@@ -5271,7 +5278,7 @@ class AppContractTest(unittest.TestCase):
         su = (ROOT / "self_update.py").read_text(encoding="utf-8")
         self.assertIn('startswith("jinghe")', su, "自更新须兼容 Jinghe* 前缀")
         # ④ 导航栏底部：无版本号、品牌文字已清空只留空占位、侧栏无滚动条
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         self.assertNotIn("sideVersion", html, "底部版本号应已取消")
         side_foot = html[html.index('<div class="side-foot">'):
                          html.index('</aside>')]
@@ -5338,7 +5345,7 @@ class AppContractTest(unittest.TestCase):
     def test_66_toggle_button_fixed_alignment(self):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         # 横杠按钮已取消：CSS/HTML 均不得残留
         self.assertNotIn(".nav-toggle", css, "横杠按钮样式应已移除")
         self.assertNotIn("btnToggleNav", html, "横杠按钮应已从 HTML 移除")
@@ -5422,7 +5429,7 @@ class AppContractTest(unittest.TestCase):
     # 69) v1.1.0 导航重构：加工页 / 知识库页 + 首页主干化
     # ------------------------------------------------------------------ #
     def test_69_nav_process_and_knowledge_pages(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
 
@@ -5485,7 +5492,7 @@ class AppContractTest(unittest.TestCase):
     # 70) v1.0.1 四条 UI 裁决：patch 版本号 / 日志与数据合并 / OCR 组件行 / 状态栏按页
     # ------------------------------------------------------------------ #
     def test_70_ui_refinements(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "extract.py").read_text(encoding="utf-8")
@@ -5540,7 +5547,7 @@ class AppContractTest(unittest.TestCase):
     # 71) v1.0.2 五条 UI 裁决：状态栏全页固定 / 描述补充 / 同步滚动 / 导航顺序 / 清文案
     # ------------------------------------------------------------------ #
     def test_71_five_ui_refinements(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
 
@@ -5591,7 +5598,7 @@ class AppContractTest(unittest.TestCase):
     # 72) v1.0.2 三条裁决：描述含 settings.json / 每次升号 / 状态栏清空留边框
     # ------------------------------------------------------------------ #
     def test_72_statusbar_emptied_and_version_policy(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         src = (ROOT / "extract.py").read_text(encoding="utf-8")
@@ -5662,7 +5669,7 @@ class AppContractTest(unittest.TestCase):
     # 74) v1.0.6 T1：三个 P0 断点修复（知识库默认可用 / 扫描到位 / 跨页提示可见）
     # ------------------------------------------------------------------ #
     def test_74_t1_three_p0_breaks_fixed(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
         import kb
         import app as app_mod
@@ -5828,7 +5835,7 @@ class AppContractTest(unittest.TestCase):
     # 76) v1.0.8 T3 接线：产物清单端点 / 精读页下拉 / 一键送往修订
     # ------------------------------------------------------------------ #
     def test_76_t3_wiring_no_manual_paths(self):
-        html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        html = strip_i18n((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
         import app as app_mod
