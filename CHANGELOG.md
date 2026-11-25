@@ -4,6 +4,10 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [1.6.4] - 2026-11-25
+
+- CID乱码PDF可补救诊断(app.py后处理层，冻结内核零改)+三个OCR工具脚本(clean_ocr/check_ocr_quality/format_book)；295测试+门禁16/16
+
 ## [1.6.3] - 2026-11-24
 
 ### 环境与组件

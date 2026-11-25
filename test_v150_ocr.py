@@ -117,6 +117,67 @@ class TestV150OcrComponent(unittest.TestCase):
         # HTML 容器支持放按钮（div 而非 p）
         self.assertIn('<div id="toolStatus"', self.ui_html)
 
+    # ---- v1.6.4：CID 乱码降级的可补救诊断（不碰冻结内核）----------------
+    def test_08_degraded_names_from_provenance(self) -> None:
+        """能从 provenance.json 找出「文字层不可用、适合 OCR」的 PDF；
+        只读，不写任何文件（守住冻结内核的不污染对账约束）。"""
+        import json
+        import tempfile
+        import app as AP
+
+        with tempfile.TemporaryDirectory(prefix="jinghe-ocr-diag-") as td:
+            prov = Path(td) / "provenance.json"
+            prov.write_text(json.dumps({"entries": [
+                {"status": "成功", "path": "out/md/ok.md", "note": ""},
+                {"status": ("需专用解析器：PDF 使用了 CID 子集字体但 ToUnicode 映射不完整，"
+                            "内置解析无法还原文字（本机 markitdown 因 onnxruntime 崩溃不可用）"),
+                 "path": "扫描版.pdf", "note": "CID"},
+                {"status": "疑似扫描件，需先 OCR", "path": "纯图.pdf", "note": ""},
+                {"status": "待人工授权：加密", "path": "locked.pdf", "note": ""},
+                {"status": "成功", "path": "out/md/扫描版.md", "note": ""},
+                {"status": "需专用解析器", "path": "notpdf.txt", "note": ""},
+            ]}, ensure_ascii=False), encoding="utf-8")
+            names = AP._ocr_degraded_names(td)
+            self.assertEqual(names, {"扫描版.pdf", "纯图.pdf"},
+                             "降级 PDF 识别不准：%r" % names)
+            # 只读：读取前后 provenance.json 内容不变
+            self.assertEqual(json.loads(prov.read_text(encoding="utf-8"))["entries"][0]["status"], "成功")
+
+    def test_09_guidance_states_true_cause(self) -> None:
+        """诊断文案必须说真因（CID/ToUnicode），不能甩锅 markitdown/onnxruntime。"""
+        import app as AP
+        ok = AP._ocr_guidance(True)
+        no = AP._ocr_guidance(False, "DLL load failed")
+        for text in (ok, no):
+            self.assertIn("CID", text)
+            self.assertIn("ToUnicode", text)
+            self.assertIn("与 markitdown / onnxruntime 无关", text)
+        self.assertIn("正在自动识别", ok, "组件可用时应说明将自动 OCR")
+        self.assertIn("设置 · 组件", no, "组件不可用时应引导去启用")
+        self.assertIn("扫描件 OCR", no)
+        self.assertIn("DLL load failed", no, "应带上真实不可用原因")
+
+    def test_10_ocr_fallback_emits_diagnosis(self) -> None:
+        """组件不可用时，对降级 PDF 必须输出诊断日志（此前整段静默）。"""
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        block = app_src[app_src.index("ocr_st = pdf_ocr.status()"):
+                        app_src.index("except Exception as exc:", app_src.index("ocr_st = pdf_ocr.status()"))]
+        self.assertIn("else:", block, "组件不可用时必须有 else 分支")
+        self.assertIn("_ocr_degraded_names(job.outdir)", block)
+        self.assertIn("_ocr_guidance(False", block)
+        self.assertIn('job.add("log"', block, "诊断必须落到日志（UI 可见）")
+
+    def test_11_frozen_core_untouched(self) -> None:
+        """冻结内核 extract.py 主流水线一行不动：诊断只在 app.py 后处理层。"""
+        ex = (ROOT / "extract.py").read_text(encoding="utf-8")
+        # 旧的误导文案常量仍在内核里（冻结），我们不改它——靠后处理层纠偏
+        self.assertIn("PDF_CID_NEEDS_SPECIALIST", ex)
+        self.assertIn("markitdown 因 onnxruntime 崩溃不可用", ex)
+        # app.py 侧不得写内核产物文件
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertNotIn("md.write_text", app_src[app_src.index("def _ocr_degraded_names"):
+                                                  app_src.index("def _error_tail")])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
