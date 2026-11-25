@@ -19,65 +19,65 @@
     <nav class="nav" aria-label="主导航">
       <!-- S14：导航按「用户任务流」归组，7 个入口本身不变（测试契约锁定 data-page）-->
       <div class="nav-group" data-group="source">
-        <span class="nav-group-title">获取内容</span>
-      <button class="nav-item active" type="button" data-page="home" title="首页">
+        <span class="nav-group-title" data-i18n="group.source">获取内容</span>
+      <button class="nav-item active" type="button" data-page="home" title="首页" data-i18n-title="nav.home">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M3.5 10.6L12 3.6l8.5 7v8.9a1 1 0 0 1-1 1h-4.6v-6H9.1v6H4.5a1 1 0 0 1-1-1z"/>
         </svg>
-        <span class="nav-label">首页</span>
+        <span class="nav-label" data-i18n="nav.home">首页</span>
       </button>
       <!-- v1.1.0：加工页——从首页迁出后处理与链接提取，首页回归提取主干 -->
-      <button class="nav-item" type="button" data-page="process" title="加工">
+      <button class="nav-item" type="button" data-page="process" title="加工" data-i18n-title="nav.process">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h7M15 17h5"/>
           <circle cx="16" cy="7" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="17" r="2"/>
         </svg>
-        <span class="nav-label">加工</span>
+        <span class="nav-label" data-i18n="nav.process">加工</span>
       </button>
       </div>
       <div class="nav-group" data-group="refine-flow">
-        <span class="nav-group-title">加工流水线</span>
+        <span class="nav-group-title" data-i18n="group.refine-flow">加工流水线</span>
       <!-- S7d：精读 / 修订入口（提纯核心 / 补写修改，本机可插拔后端） -->
-      <button class="nav-item" type="button" data-page="refine" title="精读">
+      <button class="nav-item" type="button" data-page="refine" title="精读" data-i18n-title="nav.refine">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 3.2l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8z"/>
         </svg>
-        <span class="nav-label">精读</span>
+        <span class="nav-label" data-i18n="nav.refine">精读</span>
       </button>
-      <button class="nav-item" type="button" data-page="revise" title="修订">
+      <button class="nav-item" type="button" data-page="revise" title="修订" data-i18n-title="nav.revise">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M4 20h4L20 8l-4-4L4 16v4z"/><path d="M14 6l4 4"/>
         </svg>
-        <span class="nav-label">修订</span>
+        <span class="nav-label" data-i18n="nav.revise">修订</span>
       </button>
       </div>
       <div class="nav-group" data-group="knowledge">
-        <span class="nav-group-title">知识沉淀</span>
+        <span class="nav-group-title" data-i18n="group.knowledge">知识沉淀</span>
       <!-- v1.1.0：知识库页——S9 后端端点已实现，此前首页按钮仍是「规划中」占位 -->
-      <button class="nav-item" type="button" data-page="kb" title="知识库">
+      <button class="nav-item" type="button" data-page="kb" title="知识库" data-i18n-title="nav.kb">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M4 5.5C4 4.7 4.7 4 5.5 4H10a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 16.5z"/>
           <path d="M20 5.5c0-.8-.7-1.5-1.5-1.5H14a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"/>
         </svg>
-        <span class="nav-label">知识库</span>
+        <span class="nav-label" data-i18n="nav.kb">知识库</span>
       </button>
       </div>
       <div class="nav-group" data-group="system">
-        <span class="nav-group-title">系统</span>
-      <button class="nav-item" type="button" data-page="settings" title="设置">
+        <span class="nav-group-title" data-i18n="group.system">系统</span>
+      <button class="nav-item" type="button" data-page="settings" title="设置" data-i18n-title="nav.settings">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="3.2"/>
           <path d="M12 2.8v2.3M12 18.9v2.3M21.2 12h-2.3M5.1 12H2.8M18.5 5.5l-1.6 1.6M7.1 16.9l-1.6 1.6M18.5 18.5l-1.6-1.6M7.1 7.1L5.5 5.5"/>
         </svg>
-        <span class="nav-label">设置</span>
+        <span class="nav-label" data-i18n="nav.settings">设置</span>
       </button>
-      <button class="nav-item" type="button" data-page="about" title="关于">
+      <button class="nav-item" type="button" data-page="about" title="关于" data-i18n-title="nav.about">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="8.6"/>
           <path d="M12 11.2v5.1"/>
           <circle cx="12" cy="7.9" r="0.95" fill="currentColor" stroke="none"/>
         </svg>
-        <span class="nav-label">关于</span>
+        <span class="nav-label" data-i18n="nav.about">关于</span>
       </button>
       </div>
     </nav>
@@ -516,6 +516,17 @@
         <div class="card-sub">设置只保存在本机，不上传任何数据；改动即时生效，无需重启软件。</div>
 
         <div class="set-list">
+          <div class="set-row">
+            <span class="set-text">
+              <b>界面语言</b>
+              <em>选择导航按钮与页头的显示语言；默认中文，切换后立即预览，保存后永久生效</em>
+            </span>
+            <span class="lang-switch" role="radiogroup" aria-label="界面语言">
+              <label class="lang-opt"><input type="radio" name="setLang" id="setLangZh" value="zh" checked><span>中文</span></label>
+              <label class="lang-opt"><input type="radio" name="setLang" id="setLangEn" value="en"><span>English</span></label>
+            </span>
+          </div>
+
           <label class="set-row">
             <input type="checkbox" id="setAutoExit">
             <span class="set-text">

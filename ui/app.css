@@ -715,6 +715,18 @@ button, input { font-family: inherit; }
 .set-num { flex: 0 0 92px; width: 92px; text-align: center; }
 .set-wide { flex: 0 0 260px; width: 260px; }
 
+/* v1.6.4：界面语言单选（导航按钮/页头中英切换） */
+.lang-switch { flex: none; display: inline-flex; gap: 0; border: 1px solid #DCDAD2; border-radius: 7px; overflow: hidden; }
+.lang-opt { position: relative; display: inline-flex; }
+.lang-opt input[type="radio"] { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.lang-opt span {
+  display: inline-block; padding: 5px 14px; font-size: 13px; cursor: pointer;
+  color: #5F5E5A; background: transparent; transition: background .12s, color .12s;
+}
+.lang-opt + .lang-opt span { border-left: 1px solid #DCDAD2; }
+.lang-opt input:checked + span { background: #1F5FA8; color: #fff; }
+.lang-opt input:focus-visible + span { outline: 2px solid #1F5FA8; outline-offset: -2px; }
+
 .set-actions { margin-top: 12px; }
 
 /* ---------- S10：设置页「相关组件」列表 + 绿色安装进度条 ---------- */

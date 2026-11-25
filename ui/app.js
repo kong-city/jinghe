@@ -105,6 +105,8 @@
       about: $("page-about")
     },
     // 设置页
+    setLangZh: $("setLangZh"),
+    setLangEn: $("setLangEn"),
     setAutoExit: $("setAutoExit"),
     setExitGrace: $("setExitGrace"),
     setRememberPaths: $("setRememberPaths"),
@@ -303,6 +305,7 @@
 
   // 后端设置（来自 /api/settings）；remember_paths 决定路径要不要记
   var settings = {
+    lang: "zh",
     auto_exit: true,
     exit_grace_seconds: 90,
     remember_paths: true,
@@ -318,6 +321,81 @@
   function defaultIndir() {
     if (settings.default_indir) return settings.default_indir;
     return settings.default_desktop || "";
+  }
+
+  // ---- v1.6.4：界面语言（第一步：左上角导航按钮 + 页头）--------------------
+  // 只覆盖导航区与页头；页面正文仍保持中文。字典内嵌、纯前端、零网络请求，
+  // 切语言只改 DOM 文本，不触碰 data-page / data-extract-tab 等功能属性。
+  var I18N = {
+    zh: {
+      "nav.home": "首页", "nav.process": "加工", "nav.refine": "精读",
+      "nav.revise": "修订", "nav.kb": "知识库", "nav.settings": "设置",
+      "nav.about": "关于",
+      "group.source": "获取内容", "group.refine-flow": "加工流水线",
+      "group.knowledge": "知识沉淀", "group.system": "系统",
+      "page.home.title": "① 获取 · 统一提取台",
+      "page.home.sub": "文档 / 音频 / 视频（含链接）/ 订阅四类来源同等级切换，产物统一落到产物中心",
+      "page.process.title": "② 加工 · 文档加工",
+      "page.process.sub": "核心提炼 / 导出文档 / 文档输入增强；提纯核心与改写补充走左侧导航后续步骤",
+      "page.kb.title": "④ 沉淀 · 知识库",
+      "page.kb.sub": "把产物入库为可检索条目 + 维护索引，全部保存在本机；订阅博主在首页统一提取台",
+      "page.refine.title": "② 加工 · 提纯核心",
+      "page.refine.sub": "第二步：对 md 提取核心知识点，默认抽取式（原文原句、可逐字回溯）",
+      "page.revise.title": "③ 加工 · 改写补充",
+      "page.revise.sub": "第三步：术语归一 / 合并去重 / 改写补充，变更以颜色标记区分",
+      "page.settings.title": "系统 · 设置",
+      "page.settings.sub": "提纯方式与迭代轮数、组件、路径——只保存在本机，改动即时生效",
+      "page.about.title": "系统 · 关于",
+      "page.about.sub": "版本、路线与隐私说明"
+    },
+    en: {
+      "nav.home": "Home", "nav.process": "Process", "nav.refine": "Refine",
+      "nav.revise": "Revise", "nav.kb": "Knowledge", "nav.settings": "Settings",
+      "nav.about": "About",
+      "group.source": "Acquire", "group.refine-flow": "Processing flow",
+      "group.knowledge": "Knowledge base", "group.system": "System",
+      "page.home.title": "1. Acquire · Unified extraction",
+      "page.home.sub": "Documents / audio / video (with links) / subscriptions — four equal sources, all outputs land in the artifact center",
+      "page.process.title": "2. Process · Document processing",
+      "page.process.sub": "Core extraction / export / enhanced document input; refine and revise are the next steps in the sidebar",
+      "page.kb.title": "4. Organize · Knowledge base",
+      "page.kb.sub": "Ingest outputs into searchable entries + rebuild index, all stored locally; subscriptions live in the unified extraction desk",
+      "page.refine.title": "2. Process · Refine core",
+      "page.refine.sub": "Step 2: extract key points from markdown, extractive by default (verbatim, traceable)",
+      "page.revise.title": "3. Process · Revise & supplement",
+      "page.revise.sub": "Step 3: term normalization / merge dedup / rewrite, changes color-coded",
+      "page.settings.title": "System · Settings",
+      "page.settings.sub": "Refine mode, iterations, components, paths — stored locally only, changes take effect immediately",
+      "page.about.title": "System · About",
+      "page.about.sub": "Version, roadmap and privacy"
+    }
+  };
+  var currentLang = "zh";
+
+  function tr(key) {
+    var dict = I18N[currentLang] || I18N.zh;
+    return (dict[key] !== undefined) ? dict[key] : (I18N.zh[key] !== undefined ? I18N.zh[key] : key);
+  }
+
+  function applyLang(lang) {
+    currentLang = (lang === "en") ? "en" : "zh";
+    var nodes, i;
+    nodes = document.querySelectorAll("[data-i18n]");
+    for (i = 0; i < nodes.length; i += 1) {
+      nodes[i].textContent = tr(nodes[i].getAttribute("data-i18n"));
+    }
+    nodes = document.querySelectorAll("[data-i18n-title]");
+    for (i = 0; i < nodes.length; i += 1) {
+      nodes[i].setAttribute("title", tr(nodes[i].getAttribute("data-i18n-title")));
+    }
+    // 页头跟着当前页 + 当前语言走
+    if (el.pageTitle) el.pageTitle.textContent = tr("page." + currentPage + ".title");
+    if (el.pageSub) el.pageSub.textContent = tr("page." + currentPage + ".sub");
+    if (el.setLangZh) el.setLangZh.checked = (currentLang === "zh");
+    if (el.setLangEn) el.setLangEn.checked = (currentLang === "en");
+    if (document.documentElement) {
+      document.documentElement.setAttribute("lang", currentLang === "zh" ? "zh-CN" : "en");
+    }
   }
 
   var PAGE_META = {
@@ -399,8 +477,8 @@
       items[i].classList.toggle("active", on);
     }
     var meta = PAGE_META[name] || PAGE_META.home;
-    if (el.pageTitle) el.pageTitle.textContent = meta.title;
-    if (el.pageSub) el.pageSub.textContent = meta.sub;
+    if (el.pageTitle) el.pageTitle.textContent = tr("page." + name + ".title");
+    if (el.pageSub) el.pageSub.textContent = tr("page." + name + ".sub");
     if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); loadComponents(); }
     if (name === "about") loadAbout();
     if (name === "refine" || name === "revise") refreshRefineCap();
@@ -433,6 +511,8 @@
         settings.default_desktop = keepDesktop;
       }
     }
+    var lang = settings.lang === "en" ? "en" : "zh";
+    applyLang(lang);
     if (el.setAutoExit) el.setAutoExit.checked = settings.auto_exit !== false;
     if (el.setExitGrace) el.setExitGrace.value = settings.exit_grace_seconds;
     if (el.setRememberPaths) el.setRememberPaths.checked = settings.remember_paths !== false;
@@ -487,6 +567,7 @@
 
   function readSettingsForm() {
     return {
+      lang: (el.setLangEn && el.setLangEn.checked) ? "en" : "zh",
       auto_exit: el.setAutoExit.checked,
       exit_grace_seconds: parseInt(el.setExitGrace.value, 10) || 90,
       remember_paths: el.setRememberPaths.checked,
@@ -3368,6 +3449,7 @@
     }
     // v1.6.2：统一提取台——四类来源 tab + 视频子切换（纯展示层，不碰任务状态）
     bindExtractSourceTabs();
+    applyLang("zh");  // 默认中文；后端设置返回后由 applySettings 覆盖
 
     el.btnPreview.addEventListener("click", function () { doPreview(); });
     // v0.4.9：清单标题栏的「预览分流」只对勾选文件生效；未识别任何文件时回退全量。
@@ -3488,6 +3570,12 @@
     if (el.btnOpenReviseHtml) el.btnOpenReviseHtml.addEventListener("click", function () {
       var p = el.reviseResult && el.reviseResult.dataset.html;
       if (p) api("/api/refine/open", { path: p }, 10000);
+    });
+    if (el.setLangZh) el.setLangZh.addEventListener("change", function () {
+      if (el.setLangZh.checked) applyLang("zh");
+    });
+    if (el.setLangEn) el.setLangEn.addEventListener("change", function () {
+      if (el.setLangEn.checked) applyLang("en");
     });
     if (el.btnSaveSettings) {
       el.btnSaveSettings.addEventListener("click", function () {

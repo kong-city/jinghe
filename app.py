@@ -1329,6 +1329,8 @@ HEARTBEAT_CHECK = 15.0   # 看门狗巡检周期（秒）
 # 全部设置都在本机，不上传任何数据。
 SETTINGS_FILE = LOG_DIR / "settings.json"
 DEFAULT_SETTINGS = {
+    # v1.6.4：界面语言，zh / en；默认中文。第一步只作用于导航按钮与页头
+    "lang": "zh",
     "auto_exit": True,           # 关闭窗口后自动退出
     "exit_grace_seconds": 90,    # 自动退出宽限期（秒）
     "remember_paths": True,      # 记住上次的输入/输出路径
@@ -1350,6 +1352,8 @@ def _validate_settings(data: object) -> dict:
     out = dict(DEFAULT_SETTINGS)
     if not isinstance(data, dict):
         return out
+    if "lang" in data:
+        out["lang"] = "en" if str(data["lang"]).strip().lower() == "en" else "zh"
     for key in ("auto_exit", "remember_paths", "auto_install_components"):
         if key in data:
             out[key] = bool(data[key])
@@ -1605,6 +1609,50 @@ def _is_out_of_scope(status: str) -> bool:
     return status.startswith(("阶段 3", "阶段3", "需预处理", "不支持"))
 
 
+# 冻结内核 extract.py 对文字层乱码 PDF 的降级文案里带着「markitdown /
+# onnxruntime 崩溃」的归因，但真正的失败原因是 CID 子集字体的 ToUnicode
+# 映射不完整——内核文案属于冻结范围，不在那里改。这里在 L4 后处理层识别
+# 这类降级并给出准确诊断 + 行动指引（不篡改内核产出的清单文件）。
+_OCR_RELATED_STATUS = ("需专用解析器", "需先 OCR", "疑似扫描件")
+
+
+def _ocr_degraded_names(outdir: str | Path) -> set[str]:
+    """从 provenance.json 找出「文字层不可用、适合 OCR 补救」的 PDF 文件名。
+
+    只读 provenance（阶段 1 对账真源），不写任何文件——遵守冻结内核
+    「新产物不写 out/md/*.md」与「不污染对账」两条不变量。
+    """
+    names: set[str] = set()
+    prov = Path(outdir) / "provenance.json"
+    if not prov.is_file():
+        return names
+    try:
+        data = json.loads(prov.read_text(encoding="utf-8"))
+    except Exception:
+        return names
+    for entry in data.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status") or "")
+        if not any(kw in status for kw in _OCR_RELATED_STATUS):
+            continue
+        name = str(entry.get("path") or "")
+        if name.lower().endswith(".pdf"):
+            names.add(Path(name).name)
+    return names
+
+
+def _ocr_guidance(available: bool, reason: str = "") -> str:
+    """给用户的准确诊断：真因是 CID 映射，不是 markitdown / onnxruntime。"""
+    head = ("诊断：该 PDF 的文字层由 CID 子集字体编码且 ToUnicode 映射不完整，"
+            "内置解析无法还原文字（与 markitdown / onnxruntime 无关）；"
+            "软件已按规格拒绝产出乱码文件。")
+    if available:
+        return head + " 本机 OCR 组件可用，正在自动识别扫描页。"
+    return (head + " 补救：请到「设置 · 组件」启用「扫描件 OCR」后重新提取；"
+            + ("当前组件不可用（%s）。" % reason if reason else "当前组件不可用。"))
+
+
 def _error_tail(lines: list[str]) -> str:
     for line in reversed(lines):
         if line.startswith("[ERROR]"):
@@ -1687,11 +1735,14 @@ def _run_job_inner(job: Job, enc_dir: Path) -> None:
             job.add("log", job.error, raw=job.error)
         else:
             job.state = "done"
-            # 可选 OCR 后处理：扫描件 PDF（无文字层）由内置解析只标注「需 OCR」。
-            # 若本机有 tesseract + poppler，自动补做 OCR 并把文本写入产物目录；
-            # 无工具链时 pdf_ocr 内部快速返回，不产生任何副作用、不报错给用户。
+            # 可选 OCR 后处理（不碰冻结内核：内核只标注降级，这里负责补救与诊断）。
+            # 组件可用 → 对所有 PDF 尝试 OCR（ocr_pdf_to_md 内部按「产物是否已存在」
+            # 决定跳过，无需在调用侧按"有无文字层"分流）；
+            # 组件不可用 → 对降级的 PDF 给出准确诊断 + 引导（此前整段静默，用户
+            # 只看到内核那句误导性的 onnxruntime 归因，不知道该去启用 OCR 组件）。
             try:
-                if pdf_ocr.status().get("available"):
+                ocr_st = pdf_ocr.status()
+                if ocr_st.get("available"):
                     for src in list(job.inputs or []):
                         if str(src).lower().endswith(".pdf"):
                             res = pdf_ocr.ocr_pdf_to_md(src, job.outdir)
@@ -1704,6 +1755,12 @@ def _run_job_inner(job: Job, enc_dir: Path) -> None:
                             else:
                                 job.add("log", "OCR 未成功：%s（%s）" % (
                                     Path(src).name, res.get("error", "")), raw="")
+                else:
+                    degraded = _ocr_degraded_names(job.outdir)
+                    if degraded:
+                        guidance = _ocr_guidance(False, ocr_st.get("reason", ""))
+                        for name in sorted(degraded):
+                            job.add("log", "%s：%s" % (name, guidance), raw="")
             except Exception as exc:
                 # OCR 是可选增强，任何异常都不能影响主任务成功状态
                 job.add("log", "OCR 后处理跳过：%s" % exc, raw="")
