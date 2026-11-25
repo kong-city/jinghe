@@ -1331,6 +1331,9 @@ SETTINGS_FILE = LOG_DIR / "settings.json"
 DEFAULT_SETTINGS = {
     # v1.6.4：界面语言，zh / en；默认中文。第一步只作用于导航按钮与页头
     "lang": "zh",
+    # v1.7.0：界面主题，light / dark；默认浅色。后端只做白名单归一化，
+    # 真正的 CSS 变量覆写在 ui/app.css 的 html[data-theme="dark"] 层。
+    "theme": "light",
     "auto_exit": True,           # 关闭窗口后自动退出
     "exit_grace_seconds": 90,    # 自动退出宽限期（秒）
     "remember_paths": True,      # 记住上次的输入/输出路径
@@ -1354,6 +1357,8 @@ def _validate_settings(data: object) -> dict:
         return out
     if "lang" in data:
         out["lang"] = "en" if str(data["lang"]).strip().lower() == "en" else "zh"
+    if "theme" in data:
+        out["theme"] = "dark" if str(data["theme"]).strip().lower() == "dark" else "light"
     for key in ("auto_exit", "remember_paths", "auto_install_components"):
         if key in data:
             out[key] = bool(data[key])

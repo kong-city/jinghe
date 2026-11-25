@@ -116,6 +116,35 @@
 
     <!-- ==================== 首页 ==================== -->
     <section class="page" id="page-home">
+      <!-- v1.7.1：首页流程指引条（借鉴 Trilium「加工流程指引」+ NoteGen「先取后整理」）。
+           只在首页出现——全局步骤条已按用户 2026-11-23 裁决移除，这里不越界。
+           三段对应本应用的真实工作流，点击可直接跳到对应页。 -->
+      <nav class="pipeline-strip" aria-label="工作流阶段">
+        <button class="strip-step is-current" type="button" data-goto="home">
+          <span class="strip-idx">①</span>
+          <span class="strip-body">
+            <span class="strip-name" data-i18n="取内容">取内容</span>
+            <span class="strip-desc" data-i18n="文档 / 音频 / 视频 / 订阅">文档 / 音频 / 视频 / 订阅</span>
+          </span>
+        </button>
+        <span class="strip-arrow" aria-hidden="true">→</span>
+        <button class="strip-step" type="button" data-goto="process">
+          <span class="strip-idx">②</span>
+          <span class="strip-body">
+            <span class="strip-name" data-i18n="加工">加工</span>
+            <span class="strip-desc" data-i18n="提纯核心 / 改写补充">提纯核心 / 改写补充</span>
+          </span>
+        </button>
+        <span class="strip-arrow" aria-hidden="true">→</span>
+        <button class="strip-step" type="button" data-goto="kb">
+          <span class="strip-idx">③</span>
+          <span class="strip-body">
+            <span class="strip-name" data-i18n="沉淀">沉淀</span>
+            <span class="strip-desc" data-i18n="入库存成可检索条目">入库存成可检索条目</span>
+          </span>
+        </button>
+      </nav>
+
       <!-- v1.6.2：统一提取台——四类来源平级切换，产物统一落到下方产物中心。
            只重做前端编排，后端五条引擎不动（视频绝不走音频路径，红线 2）。 -->
       <section class="card source-tabs-card">
@@ -130,7 +159,11 @@
       </section>
 
       <div class="extract-panel active" data-extract-panel="file">
-      <section class="cards">
+      <!-- v1.7.1：首页改左右双栏——左侧「输入工作区」，右侧「产物栏」。
+           借鉴 AnythingLLM「结果与来源常驻可见」：提取完不用滚到页面底部找产物。
+           DOM 顺序不变（左→右），仅用 grid-template-areas 排布，
+           窄屏自动回落为单列（见 app.css 的 v1.7.1 段）。 -->
+      <section class="cards work-area">
         <div class="card card-input">
           <div class="card-title" data-i18n="输入">输入</div>
           <div class="row">
@@ -202,6 +235,12 @@
         <div id="progressBar" class="progress-bar"></div>
       </div>
 
+      <!-- v1.7.0：提取结果前置——成功即在按钮下方给出摘要，无需滚到下方结果 tab -->
+      <div id="doneSummary" class="done-summary bar-ok" role="status" aria-live="polite" hidden>
+        <span id="doneSummaryText"></span>
+        <button id="btnDoneOpenMerged" class="btn btn-ghost btn-mini" type="button" data-i18n="打开合并文档">打开合并文档</button>
+      </div>
+
       <section class="card result">
         <div class="tabs" role="tablist">
           <button class="tab active" type="button" data-tab="overview" role="tab" data-i18n="概览">概览</button>
@@ -246,6 +285,25 @@
         <div id="tab-log" class="panel log-panel" role="tabpanel">
           <pre id="logBox" class="log"></pre>
         </div>
+      </section>
+
+      <!-- v1.7.1：产物中心从页面底部移入右侧产物栏（与结果区同列）。
+           借鉴 AnythingLLM「产物区常驻可见」——提取完成即可见，不必滚到底。
+           id / 类名保持不变，历史批次索引与打开端点的行为完全不变。 -->
+      <section class="card artifact-center" id="artifactCenter">
+        <div class="card-title artifact-center-title">
+          <span data-i18n="产物中心">产物中心</span>
+          <button id="btnRefreshHistory" class="btn btn-ghost" type="button"
+                  title="重新扫描历史产物批次" data-i18n="刷新" data-i18n-title="重新扫描历史产物批次">刷新</button>
+        </div>
+        <div id="historyHint" class="hint" data-i18n="历史批次索引：读取本机产物目录，点批次展开产物并可直接打开。">历史批次索引：读取本机产物目录，点批次展开产物并可直接打开。</div>
+        <!-- v1.7.1：历史批次改为可折叠抽屉（借鉴 AnythingLLM「文档抽屉随用随开」）。
+             默认收起——历史批次是回看用的，不该占据主工作区；需要时点开即可。 -->
+        <details class="md-details artifact-drawer" id="historyDrawer">
+          <summary data-i18n="历史批次（点击展开）">历史批次（点击展开）</summary>
+          <ul id="historyList" class="history-list"></ul>
+          <div id="historyEmpty" class="hint center" hidden data-i18n="暂无历史产物批次。完成一次提取后会出现在这里。">暂无历史产物批次。完成一次提取后会出现在这里。</div>
+        </details>
       </section>
       </div><!-- /extract-panel file -->
 
@@ -338,29 +396,47 @@
         </section>
       </div>
 
-      <!-- v1.5.0（T4 产物中心）：跨批次统一索引 + 历史列表 + 软件内打开。
-           不新增导航入口（7 入口测试锁死），作为首页底部卡片归属提取主干。 -->
-      <section class="card artifact-center" id="artifactCenter">
-        <div class="card-title artifact-center-title">
-          <span data-i18n="产物中心">产物中心</span>
-          <button id="btnRefreshHistory" class="btn btn-ghost" type="button"
-                  title="重新扫描历史产物批次" data-i18n="刷新" data-i18n-title="重新扫描历史产物批次">刷新</button>
-        </div>
-        <div id="historyHint" class="hint" data-i18n="历史批次索引：读取本机产物目录，点批次展开产物并可直接打开。">历史批次索引：读取本机产物目录，点批次展开产物并可直接打开。</div>
-        <ul id="historyList" class="history-list"></ul>
-        <div id="historyEmpty" class="hint center" hidden data-i18n="暂无历史产物批次。完成一次提取后会出现在这里。">暂无历史产物批次。完成一次提取后会出现在这里。</div>
-      </section>
+      <!-- v1.7.1：产物中心已移入 file 面板右侧栏（见 result 区之后），
+           不再沉在页面底部——提取完一屏可见。 -->
     </section>
 
     <!-- ==================== 加工（v1.1.0：后处理与链接提取独立成页） ==================== -->
     <section class="page" id="page-process" hidden>
+      <!-- v1.7.1：加工页升级为流水线看板。
+           原先这里只有一张指引卡 + 三个跳转按钮，信息量太薄（点进来像空壳）。
+           借鉴 Trilium「流程指引」+ AnythingLLM「卡片式工作区」：
+           三步各成一张卡，标明这一步做什么、产出到哪、下一步去哪。 -->
       <section class="card" id="flowGuide">
-        <div class="card-title" data-i18n="加工流程指引">加工流程指引</div>
-        <p class="card-sub" data-i18n="这里对已提取的 Markdown 做二次加工。音视频转写、视频链接、订阅博主等「内容获取」入口已统一移到首页「统一提取台」；拿到 md 后走下面两步继续加工。">这里对已提取的 Markdown 做二次加工。音视频转写、视频链接、订阅博主等「内容获取」入口已统一移到首页「统一提取台」；拿到 md 后走下面两步继续加工。</p>
-        <div class="row">
-          <button type="button" class="btn btn-ghost" data-goto="refine" data-i18n="去提纯核心 →">去提纯核心 →</button>
-          <button type="button" class="btn btn-ghost" data-goto="revise" data-i18n="去改写补充 →">去改写补充 →</button>
-          <button type="button" class="btn btn-ghost" data-goto="kb" data-i18n="订阅博主 / 知识库 →">订阅博主 / 知识库 →</button>
+        <div class="card-title" data-i18n="加工流水线">加工流水线</div>
+        <p class="card-sub" data-i18n="对已提取的 Markdown 做二次加工。三步依次是「提纯核心 → 改写补充 → 入库检索」，每步都可独立重跑，不满意就回到上一步重来。">对已提取的 Markdown 做二次加工。三步依次是「提纯核心 → 改写补充 → 入库检索」，每步都可独立重跑，不满意就回到上一步重来。</p>
+        <div class="pipeline">
+          <div class="pipe-step">
+            <div class="pipe-head">
+              <span class="pipe-idx">1</span>
+              <span class="pipe-name" data-i18n="提纯核心">提纯核心</span>
+            </div>
+            <p class="pipe-desc" data-i18n="从 md 里抽出核心知识点。默认抽取式：原文原句、逐字可回溯，零依赖离线。">从 md 里抽出核心知识点。默认抽取式：原文原句、逐字可回溯，零依赖离线。</p>
+            <div class="pipe-meta" data-i18n="产出：核心 md 落 out/derived/">产出：核心 md 落 out/derived/</div>
+            <button type="button" class="btn btn-ghost" data-goto="refine" data-i18n="打开提纯核心 →">打开提纯核心 →</button>
+          </div>
+          <div class="pipe-step">
+            <div class="pipe-head">
+              <span class="pipe-idx">2</span>
+              <span class="pipe-name" data-i18n="改写补充">改写补充</span>
+            </div>
+            <p class="pipe-desc" data-i18n="在提纯结果上做术语归一 / 合并去重 / 结构重排。可信模式只改写法不动事实；大模型模式可补写，改动以颜色标记。">在提纯结果上做术语归一 / 合并去重 / 结构重排。可信模式只改写法不动事实；大模型模式可补写，改动以颜色标记。</p>
+            <div class="pipe-meta" data-i18n="产出：修订稿 + 变更标记">产出：修订稿 + 变更标记</div>
+            <button type="button" class="btn btn-ghost" data-goto="revise" data-i18n="打开改写补充 →">打开改写补充 →</button>
+          </div>
+          <div class="pipe-step">
+            <div class="pipe-head">
+              <span class="pipe-idx">3</span>
+              <span class="pipe-name" data-i18n="入库检索">入库检索</span>
+            </div>
+            <p class="pipe-desc" data-i18n="把产物沉淀为本机知识库条目，可全文检索、按文档浏览块、点块回跳原文位置。">把产物沉淀为本机知识库条目，可全文检索、按文档浏览块、点块回跳原文位置。</p>
+            <div class="pipe-meta" data-i18n="产出：可检索条目 + 块级溯源">产出：可检索条目 + 块级溯源</div>
+            <button type="button" class="btn btn-ghost" data-goto="kb" data-i18n="打开知识库 →">打开知识库 →</button>
+          </div>
         </div>
       </section>
       <section class="card features">
@@ -524,6 +600,17 @@
             <span class="lang-switch" role="radiogroup" aria-label="界面语言" data-i18n-aria="界面语言">
               <label class="lang-opt"><input type="radio" name="setLang" id="setLangZh" value="zh" checked><span data-i18n="中文">中文</span></label>
               <label class="lang-opt"><input type="radio" name="setLang" id="setLangEn" value="en"><span>English</span></label>
+            </span>
+          </div>
+
+          <div class="set-row" id="themeRow">
+            <span class="set-text">
+              <b data-i18n="界面主题">界面主题</b>
+              <em data-i18n="浅色适合明亮环境，深色适合暗光环境；切换立即预览，保存后永久生效">浅色适合明亮环境，深色适合暗光环境；切换立即预览，保存后永久生效</em>
+            </span>
+            <span class="lang-switch" role="radiogroup" aria-label="界面主题" data-i18n-aria="界面主题">
+              <label class="lang-opt"><input type="radio" name="setTheme" id="setThemeLight" value="light" checked><span data-i18n="浅色">浅色</span></label>
+              <label class="lang-opt"><input type="radio" name="setTheme" id="setThemeDark" value="dark"><span data-i18n="深色">深色</span></label>
             </span>
           </div>
 
@@ -755,6 +842,21 @@
 
     <!-- v0.4.9：轻量提示（检查更新无新版本时「当前是最新版本」，3 秒自动消失） -->
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <!-- v1.7.0：命令面板（Ctrl+K）：全局搜索并直达页面与高频动作 -->
+    <div id="cmdOverlay" class="cmd-overlay" hidden>
+      <div class="cmd-box" role="dialog" aria-modal="true" aria-label="命令面板" data-i18n-aria="命令面板">
+        <div class="cmd-input-row">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.2"/><path d="M15.6 15.6L20 20"/></svg>
+          <input id="cmdInput" class="cmd-input" type="text" spellcheck="false" autocomplete="off"
+                 aria-label="搜索命令" placeholder="搜索页面或动作，如：知识库、提取、深色主题"
+                 data-i18n-ph="搜索页面或动作，如：知识库、提取、深色主题" data-i18n-aria="搜索命令">
+          <kbd class="cmd-esc">Esc</kbd>
+        </div>
+        <div id="cmdList" class="cmd-list" role="listbox" aria-label="命令列表" data-i18n-aria="命令列表"></div>
+        <div class="cmd-foot" data-i18n="↑↓ 选择 · Enter 执行 · Esc 关闭">↑↓ 选择 · Enter 执行 · Esc 关闭</div>
+      </div>
+    </div>
 
   </main>
 </div>

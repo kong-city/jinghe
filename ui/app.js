@@ -107,6 +107,14 @@
     // 设置页
     setLangZh: $("setLangZh"),
     setLangEn: $("setLangEn"),
+    setThemeLight: $("setThemeLight"),
+    setThemeDark: $("setThemeDark"),
+    cmdOverlay: $("cmdOverlay"),
+    cmdInput: $("cmdInput"),
+    cmdList: $("cmdList"),
+    doneSummary: $("doneSummary"),
+    doneSummaryText: $("doneSummaryText"),
+    btnDoneOpenMerged: $("btnDoneOpenMerged"),
     setAutoExit: $("setAutoExit"),
     setExitGrace: $("setExitGrace"),
     setRememberPaths: $("setRememberPaths"),
@@ -370,6 +378,48 @@
     }
   }
 
+  // v1.7.0：界面主题。只切 <html data-theme>，不动任何功能属性；
+  // 纯浏览器调试时 document.documentElement 仍存在，逻辑一样生效。
+  var currentTheme = "light";
+  function applyTheme(theme) {
+    currentTheme = (theme === "dark") ? "dark" : "light";
+    if (document.documentElement) {
+      document.documentElement.setAttribute("data-theme", currentTheme);
+    }
+    if (el.setThemeLight) el.setThemeLight.checked = (currentTheme === "light");
+    if (el.setThemeDark) el.setThemeDark.checked = (currentTheme === "dark");
+  }
+
+  // v1.7.1：用户显式选择过的界面偏好（语言 / 主题）。
+  //
+  // 修复的缺陷：此前点「深色」只改前端 DOM，从不落盘。切到别的页面再回设置页时，
+  // loadSettingsIntoForm() 会拉回后端仍是 light 的旧值，applySettings() 把它盖回去，
+  // 表现为「界面变深色了，但转一圈回来又变浅色」。
+  //
+  // 现在点选即落盘（persistUiPref），后端成为唯一真源；
+  // 这里额外记一份本地覆盖，用于兜住「保存请求在途时切页返回」的竞态——
+  // 那时 GET 可能先于 POST 返回旧值，不该把用户刚选的偏好打回原形。
+  var uiPrefOverride = { lang: null, theme: null };
+
+  function persistUiPref(field, value) {
+    var payload = {};
+    payload[field] = value;
+    api("/api/settings", { settings: payload }, 10000).then(function (r) {
+      if (!r || !r.ok) {
+        showError("保存失败：" + ((r && r.error) || "未知错误"));
+        return;
+      }
+      // 只回写这一个字段：后端返回的是完整设置，直接整体覆盖会把
+      // 用户尚未保存的其他表单改动一并冲掉。
+      if (r.settings && r.settings[field] !== undefined) {
+        settings[field] = r.settings[field];
+      }
+      if (el.settingsStatus) el.settingsStatus.textContent = "已保存";
+    }).catch(function (err) {
+      showError("保存失败：" + (err.message || err));
+    });
+  }
+
   var PAGE_META = {
     home: { title: "① 获取 · 统一提取台", sub: "文档 / 音频 / 视频（含链接）/ 订阅四类来源同等级切换，产物统一落到产物中心" },
     process: { title: "② 加工 · 文档加工", sub: "核心提炼 / 导出文档 / 文档输入增强；提纯核心与改写补充走左侧导航后续步骤" },
@@ -437,6 +487,18 @@
     });
   }
 
+  // v1.7.1：首页流程指引条同步当前阶段。
+  // 三段映射：home→①取内容；process/refine/revise→②加工；kb→③沉淀。
+  function syncStrip(name) {
+    var flowStage = (name === "kb") ? "kb"
+                  : ((name === "process" || name === "refine" || name === "revise") ? "process" : "home");
+    var stripSteps = document.querySelectorAll(".strip-step");
+    for (var f = 0; f < stripSteps.length; f += 1) {
+      stripSteps[f].classList.toggle("is-current",
+        stripSteps[f].getAttribute("data-goto") === flowStage);
+    }
+  }
+
   function activatePage(name) {
     if (!el.pages[name]) name = "home";
     currentPage = name;
@@ -451,6 +513,8 @@
     var meta = PAGE_META[name] || PAGE_META.home;
     if (el.pageTitle) el.pageTitle.textContent = tr("page." + name + ".title");
     if (el.pageSub) el.pageSub.textContent = tr("page." + name + ".sub");
+    // v1.7.1：首页流程指引条同步当前阶段。
+    syncStrip(name);
     if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); loadComponents(); }
     if (name === "about") loadAbout();
     if (name === "refine" || name === "revise") refreshRefineCap();
@@ -484,7 +548,13 @@
       }
     }
     var lang = settings.lang === "en" ? "en" : "zh";
+    // v1.7.1：本会话内用户显式选过的偏好优先，避免「保存请求在途 → 切页 → GET 拿回旧值」
+    // 把刚选的主题/语言打回原形（这正是「点深色又变回浅色」的成因）。
+    if (uiPrefOverride.lang) lang = uiPrefOverride.lang;
     applyLang(lang);
+    var theme = settings.theme === "dark" ? "dark" : "light";
+    if (uiPrefOverride.theme) theme = uiPrefOverride.theme;
+    applyTheme(theme);
     if (el.setAutoExit) el.setAutoExit.checked = settings.auto_exit !== false;
     if (el.setExitGrace) el.setExitGrace.value = settings.exit_grace_seconds;
     if (el.setRememberPaths) el.setRememberPaths.checked = settings.remember_paths !== false;
@@ -540,6 +610,7 @@
   function readSettingsForm() {
     return {
       lang: (el.setLangEn && el.setLangEn.checked) ? "en" : "zh",
+      theme: (el.setThemeDark && el.setThemeDark.checked) ? "dark" : "light",
       auto_exit: el.setAutoExit.checked,
       exit_grace_seconds: parseInt(el.setExitGrace.value, 10) || 90,
       remember_paths: el.setRememberPaths.checked,
@@ -885,6 +956,26 @@
   function showError(message) { showBar("error", message); }
   function showNotice(message) { showBar("notice", message); }
 
+  // v1.7.0：提取结果前置——把成功摘要放到「开始提取」按钮正下方，
+  // 用户不用滚到页面末尾的结果 tab 就能看到本次产出。
+  var doneSummaryTimer = null;
+  function showDoneSummary(s) {
+    if (!el.doneSummary || !s) return;
+    if (doneSummaryTimer) { window.clearTimeout(doneSummaryTimer); doneSummaryTimer = null; }
+    var ok = s.success != null ? s.success : (s.produced || 0);
+    var failed = s.failed || 0;
+    var elapsed = s.elapsed != null ? Number(s.elapsed).toFixed(1) : "—";
+    var msg = tr("本次完成") + " " + ok + " " + tr("项") +
+      " · " + tr("未成功") + " " + failed +
+      " · " + tr("耗时") + " " + elapsed + "s";
+    if (el.doneSummaryText) el.doneSummaryText.textContent = msg;
+    if (el.btnDoneOpenMerged) el.btnDoneOpenMerged.hidden = !(s.outdir || lastDoneOutdir);
+    el.doneSummary.hidden = false;
+    doneSummaryTimer = window.setTimeout(function () {
+      if (el.doneSummary) el.doneSummary.hidden = true;
+    }, 20000);
+  }
+
   /* v0.4.9：轻量提示 toast——无新版本时「当前是最新版本」，3 秒自动消失。
      用 setTimeout 而非 CSS 动画计时，确保「显示→淡出→隐藏」三段可控、可重复触发。*/
   var toastTimer = null;
@@ -980,6 +1071,17 @@
     "不支持": "unsupported"
   };
 
+  // v1.7.0（借鉴 MDFlux 逐文件诊断）：分流类别 → 处理预期徽标。
+  // 预览阶段即可让用户看出每个文件「将会怎样被处理」，不用等真正提取。
+  // label / note 存中文原文，展示时经 tr() 翻译，跟随界面语言。
+  var KIND_DIAG = {
+    "文本类":   { label: "可直接提取", cls: "diag-ok",      note: "内置零依赖解析，直接产出 Markdown" },
+    "富文档":   { label: "增强解析",   cls: "diag-info",    note: "按文档结构还原标题 / 表格 / 图片" },
+    "阶段3预留": { label: "音视频·待工具", cls: "diag-defer", note: "需本机 whisper / ffmpeg，缺失时诚实降级、不伪转写" },
+    "需预处理":  { label: "需预处理",   cls: "diag-warn",    note: "大文件或非 UTF-8 编码，建议先拆分后再提取" },
+    "不支持":   { label: "不支持",     cls: "diag-stop",    note: "当前版本不识别该格式，会被跳过" }
+  };
+
   var FILE_LIST_MAX = 500;
 
   /* v0.3.8：已识别清单已从输入卡片移到右列独立卡片，常显不隐藏；
@@ -1045,6 +1147,24 @@
       chip.className = "file-kind kind-" + (KIND_CLASS[kind] || "other");
       chip.textContent = kind;
       li.appendChild(chip);
+
+      // v1.7.0：逐文件诊断徽标——预览阶段就标出处理预期，点开看原因。
+      var diag = KIND_DIAG[kind];
+      if (diag) {
+        var badge = document.createElement("button");
+        badge.type = "button";
+        badge.className = "file-diag " + diag.cls;
+        badge.textContent = item.hint ? (tr(diag.label) + " · " + tr("注意")) : tr(diag.label);
+        badge.title = tr(diag.note) + (item.hint ? "；" + item.hint : "");
+        badge.setAttribute("aria-label", tr("诊断") + "：" + kind + "，" + tr(diag.note));
+        badge.addEventListener("click", function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          showNotice("「" + (item.name || "—") + "」· " + kind + "：" +
+            tr(diag.note) + (item.hint ? "；" + item.hint : ""));
+        });
+        li.appendChild(badge);
+      }
 
       var name = document.createElement("span");
       name.className = "file-name";
@@ -1622,6 +1742,8 @@
         : "处理完成";
     }
     renderSummary(r.summary || summary, st);
+    // v1.7.0：结果前置——成功即在按钮下方给出摘要（20 秒后自动收起，不遮挡后续操作）
+    if (st === "done") showDoneSummary(r.summary || summary);
     // O5：仅正常完成且拿到产物目录时开放「打开合并文档」入口；
     // 该按钮绝不进 updateControls() 的 ids，产物查看不被 running/previewing 锁住。
     if (st === "done" && summary && summary.outdir) {
@@ -1660,6 +1782,131 @@
       el.btnCancel.textContent = "取消";
       el.btnCancel.disabled = false;
     });
+  }
+
+  /* ------------------------------ v1.7.0 命令面板 ------------------------------ */
+  // Ctrl+K 全局命令面板：页面跳转 + 高频动作，键盘可达、中英双语。
+  // 命令注册表只引用已有函数，不改变任何页面结构（data-page 数量保持 7）。
+  var cmdOpen = false;
+  var cmdActive = 0;
+  var cmdVisible = [];
+  var CMD_ITEMS = [
+    { id: "page.home",     group: "页面",  label: "nav.home",     hint: "跳转",  kw: "home shouye 首页",        run: function () { activatePage("home"); } },
+    { id: "page.process",  group: "页面",  label: "nav.process",  hint: "跳转",  kw: "process jiagong 加工",    run: function () { activatePage("process"); } },
+    { id: "page.refine",   group: "页面",  label: "nav.refine",   hint: "跳转",  kw: "refine jingdu 精读",      run: function () { activatePage("refine"); } },
+    { id: "page.revise",   group: "页面",  label: "nav.revise",   hint: "跳转",  kw: "revise xiuding 修订",     run: function () { activatePage("revise"); } },
+    { id: "page.kb",       group: "页面",  label: "nav.kb",       hint: "跳转",  kw: "kb knowledge zhishiku 知识库", run: function () { activatePage("kb"); } },
+    { id: "page.settings", group: "页面",  label: "nav.settings", hint: "跳转",  kw: "settings shezhi 设置",    run: function () { activatePage("settings"); } },
+    { id: "page.about",    group: "页面",  label: "nav.about",    hint: "跳转",  kw: "about guanyu 关于",       run: function () { activatePage("about"); } },
+    { id: "act.run",       group: "动作", label: "开始提取",    hint: "快捷键 Ctrl+Enter", kw: "run extract tiqu 开始提取 提取", run: function () { if (!running && !previewing) doRun(); else showNotice(tr("任务运行中，请稍后")); } },
+    { id: "act.preview",   group: "动作", label: "仅预览分流", hint: "立即执行", kw: "preview yulan 预览分流", run: function () { if (!running && !previewing) doPreview(); } },
+    { id: "act.ingest",    group: "动作", label: "提取并入库",  hint: "立即执行", kw: "ingest ruku 提取并入库", run: function () { if (!running && !previewing) doRunAndIngest(); } },
+    { id: "act.kbquery",   group: "动作", label: "知识库检索", hint: "跳转", kw: "search jiansuo 知识库检索 检索", run: function () { activatePage("kb"); setTimeout(function () { if (el.kbQuery) el.kbQuery.focus(); }, 0); } },
+    { id: "act.rebuild",   group: "动作", label: "重建索引", hint: "立即执行", kw: "rebuild chongjian 重建索引", run: function () { activatePage("kb"); setTimeout(doKbRebuild, 0); } },
+    { id: "act.openmerged",group: "动作", label: "打开合并文档", hint: "立即执行", kw: "merged hebing 打开合并文档", run: function () { openMerged(); } },
+    { id: "act.theme.light", group: "主题", label: "浅色主题", hint: "立即执行", kw: "light qianse 浅色 主题", run: function () { var p = readSettingsForm(); p.theme = "light"; saveSettings(p, tr("已保存")); } },
+    { id: "act.theme.dark",  group: "主题", label: "深色主题",  hint: "立即执行", kw: "dark shense 深色 主题", run: function () { var p = readSettingsForm(); p.theme = "dark"; saveSettings(p, tr("已保存")); } }
+  ];
+
+  function cmdMatches(item, q) {
+    if (!q) return true;
+    var hay = (tr(item.label) + " " + tr(item.hint) + " " + item.kw + " " + item.id).toLowerCase();
+    var parts = q.toLowerCase().split(/\s+/);
+    for (var i = 0; i < parts.length; i += 1) {
+      if (hay.indexOf(parts[i]) < 0) return false;
+    }
+    return true;
+  }
+
+  function renderCmdList() {
+    if (!el.cmdList) return;
+    var q = el.cmdInput ? el.cmdInput.value.trim() : "";
+    cmdVisible = CMD_ITEMS.filter(function (item) { return cmdMatches(item, q); });
+    if (cmdActive >= cmdVisible.length) cmdActive = 0;
+    if (cmdActive < 0) cmdActive = cmdVisible.length - 1;
+    el.cmdList.textContent = "";
+    if (!cmdVisible.length) {
+      var none = document.createElement("div");
+      none.className = "cmd-empty";
+      none.textContent = tr("没有匹配的命令");
+      el.cmdList.appendChild(none);
+      return;
+    }
+    var lastGroup = "";
+    cmdVisible.forEach(function (item, idx) {
+      var g = tr(item.group);
+      if (g !== lastGroup) {
+        var head = document.createElement("div");
+        head.className = "cmd-group-title";
+        head.textContent = g;
+        el.cmdList.appendChild(head);
+        lastGroup = g;
+      }
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cmd-item" + (idx === cmdActive ? " is-active" : "");
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", idx === cmdActive ? "true" : "false");
+      var icon = document.createElement("span");
+      icon.className = "cmd-icon";
+      icon.textContent = (item.group === "页面") ? "›" : "·";
+      var label = document.createElement("span");
+      label.className = "cmd-label";
+      label.textContent = tr(item.label);
+      var hint = document.createElement("span");
+      hint.className = "cmd-hint";
+      hint.textContent = tr(item.hint);
+      btn.appendChild(icon);
+      btn.appendChild(label);
+      btn.appendChild(hint);
+      btn.addEventListener("mouseenter", function () { cmdActive = idx; refreshCmdActive(); });
+      btn.addEventListener("click", function () { cmdActive = idx; cmdExecuteActive(); });
+      el.cmdList.appendChild(btn);
+    });
+  }
+
+  function refreshCmdActive() {
+    if (!el.cmdList) return;
+    var nodes = el.cmdList.querySelectorAll(".cmd-item");
+    for (var i = 0; i < nodes.length; i += 1) {
+      var on = i === cmdActive;
+      nodes[i].classList.toggle("is-active", on);
+      nodes[i].setAttribute("aria-selected", on ? "true" : "false");
+    }
+  }
+
+  function cmdMove(delta) {
+    if (!cmdVisible.length) return;
+    cmdActive = (cmdActive + delta + cmdVisible.length) % cmdVisible.length;
+    refreshCmdActive();
+    var activeNode = el.cmdList.querySelectorAll(".cmd-item")[cmdActive];
+    if (activeNode && activeNode.scrollIntoView) activeNode.scrollIntoView({ block: "nearest" });
+  }
+
+  function cmdExecuteActive() {
+    var item = cmdVisible[cmdActive];
+    if (!item) return;
+    closeCmdPalette();
+    item.run();
+  }
+
+  function openCmdPalette() {
+    if (!el.cmdOverlay) return;
+    cmdOpen = true;
+    el.cmdOverlay.hidden = false;
+    if (el.cmdInput) { el.cmdInput.value = ""; el.cmdInput.focus(); }
+    cmdActive = 0;
+    renderCmdList();
+  }
+
+  function closeCmdPalette() {
+    if (!el.cmdOverlay) return;
+    cmdOpen = false;
+    el.cmdOverlay.hidden = true;
+  }
+
+  function toggleCmdPalette() {
+    if (cmdOpen) closeCmdPalette(); else openCmdPalette();
   }
 
   /* ------------------------------ 阶段 2 / 3 后处理 ------------------------------ */
@@ -2894,6 +3141,44 @@
       }).catch(function (err) { showError("回跳失败：" + (err.message || err)); });
     });
     el.kbSource.appendChild(jump);
+
+    // v1.7.0（借鉴思源反向引用）：列出「同源块」——与当前块同属一个 doc_id 的其他块，
+    // 点选即在块视图聚焦，形成块 ↔ 来源 ↔ 同文档其他块 的闭环。纯前端，零后端改动。
+    var siblings = kbView.items.filter(function (it) {
+      return it.id !== item.id && it.doc_id === item.doc_id;
+    });
+    var relHead = document.createElement("div");
+    relHead.className = "kb-rel-head";
+    relHead.textContent = tr("同源块") + " · " + siblings.length;
+    el.kbSource.appendChild(relHead);
+    if (!siblings.length) {
+      var none = document.createElement("div");
+      none.className = "hint";
+      none.textContent = tr("本文暂无其他块");
+      el.kbSource.appendChild(none);
+    } else {
+      var shown = siblings.slice(0, 20);
+      shown.forEach(function (sib) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "kb-rel-item";
+        var sibText = kbTextOf(sib).replace(/\s+/g, " ").slice(0, 40);
+        btn.textContent = "((" + sib.id + ")) " + (sibText || sib.locator || "块");
+        btn.title = (sib.locator || "") + "\n" + kbTextOf(sib).slice(0, 200);
+        btn.addEventListener("click", function () {
+          kbView.activeId = sib.id;
+          renderKbBlocks();
+          renderKbSource();
+        });
+        el.kbSource.appendChild(btn);
+      });
+      if (siblings.length > shown.length) {
+        var more = document.createElement("div");
+        more.className = "hint";
+        more.textContent = "…" + tr("另有") + " " + (siblings.length - shown.length) + " " + tr("块，可用检索定位");
+        el.kbSource.appendChild(more);
+      }
+    }
   }
 
   function renderKbThreeCol(items, docs, mode) {
@@ -3437,6 +3722,7 @@
     if (el.btnRunAndIngest) el.btnRunAndIngest.addEventListener("click", doRunAndIngest);
     el.btnCancel.addEventListener("click", doCancel);
     el.btnOpenMerged.addEventListener("click", function () { openMerged(); });
+    if (el.btnDoneOpenMerged) el.btnDoneOpenMerged.addEventListener("click", function () { openMerged(); });
     el.btnBrowseOut.addEventListener("click", browseOutput);
     el.btnPickFiles.addEventListener("click", pickFiles);
     bindKbEvents();
@@ -3501,6 +3787,7 @@
       });
     }
     // S14：流程指引卡片的跨页跳转
+    // v1.7.1：首页流程指引条也走这套机制（data-goto），新增元素自动被覆盖。
     var gotoBtns = document.querySelectorAll("[data-goto]");
     for (var gi = 0; gi < gotoBtns.length; gi += 1) {
       gotoBtns[gi].addEventListener("click", function () {
@@ -3551,10 +3838,26 @@
       if (p) api("/api/refine/open", { path: p }, 10000);
     });
     if (el.setLangZh) el.setLangZh.addEventListener("change", function () {
-      if (el.setLangZh.checked) applyLang("zh");
+      if (el.setLangZh.checked) { applyLang("zh"); uiPrefOverride.lang = "zh"; persistUiPref("lang", "zh"); }
     });
     if (el.setLangEn) el.setLangEn.addEventListener("change", function () {
-      if (el.setLangEn.checked) applyLang("en");
+      if (el.setLangEn.checked) { applyLang("en"); uiPrefOverride.lang = "en"; persistUiPref("lang", "en"); }
+    });
+    // v1.7.0：主题即时预览（保存后永久生效，与语言一致）
+    // v1.7.1：主题改为点选即落盘——原先只改 DOM，切页回来会被后端旧值盖回浅色。
+    if (el.setThemeLight) el.setThemeLight.addEventListener("change", function () {
+      if (el.setThemeLight.checked) { applyTheme("light"); uiPrefOverride.theme = "light"; persistUiPref("theme", "light"); }
+    });
+    if (el.setThemeDark) el.setThemeDark.addEventListener("change", function () {
+      if (el.setThemeDark.checked) { applyTheme("dark"); uiPrefOverride.theme = "dark"; persistUiPref("theme", "dark"); }
+    });
+    // v1.7.0：命令面板输入即时过滤；点遮罩空白处关闭
+    if (el.cmdInput) el.cmdInput.addEventListener("input", function () {
+      cmdActive = 0;
+      renderCmdList();
+    });
+    if (el.cmdOverlay) el.cmdOverlay.addEventListener("click", function (ev) {
+      if (ev.target === el.cmdOverlay) closeCmdPalette();
     });
     if (el.btnSaveSettings) {
       el.btnSaveSettings.addEventListener("click", function () {
@@ -3613,8 +3916,19 @@
     initNavResize();
     activatePage("home");
 
-    // 桌面端快捷键：Ctrl+Enter 开始提取、Esc 取消运行中的任务
+    // 桌面端快捷键：Ctrl+K 命令面板、Ctrl+Enter 开始提取、Esc 取消运行中的任务
     document.addEventListener("keydown", function (e) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        toggleCmdPalette();
+        return;
+      }
+      if (cmdOpen) {
+        if (e.key === "Escape") { e.preventDefault(); closeCmdPalette(); return; }
+        if (e.key === "ArrowDown") { e.preventDefault(); cmdMove(1); return; }
+        if (e.key === "ArrowUp") { e.preventDefault(); cmdMove(-1); return; }
+        if (e.key === "Enter") { e.preventDefault(); cmdExecuteActive(); return; }
+      }
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
         if (!running && !previewing) doRun();

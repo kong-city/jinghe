@@ -291,6 +291,12 @@ def main(argv: list[str] | None = None) -> int:
                 "knowledge/components.py", "test_components.py",
                 # v1.0.0 特性测试（默认路径 / 多组件 Job / OCR / 安全边界）
                 "test_v10_features.py", "test_ui_layout.py", "test_v164_i18n.py",
+                # v1.7.0：界面改造 + UI 体验真运行时测试（诊断/同源块 + 主题/命令面板/结果前置）
+                # 注意：只列 .py；.js 由 node 在测试内执行，不能喂给 Python compile()
+                "test_ui_runtime.py", "test_ui_experience_runtime.py",
+                # v1.7.1：主题持久化 + 布局改造真运行时测试
+                # 注意：只列 .py；.js 由 node 在测试内执行，不能喂给 Python compile()
+                "test_ui_layout_runtime.py",
                 # v1.4.0 功能盘点修复的守护测试（12 项：状态条 / 回跳原文 /
                 # 产物打开 / 订阅提纯 / 知识库维护 / 红线 2 等）
                 "test_v140_fixes.py",
