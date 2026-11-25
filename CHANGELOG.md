@@ -4,6 +4,14 @@
 
 软件版本（`extract.py: __version__`）与 `SPEC.md` 的规格版本（v2.x）是两套编号，不要混淆。`SPEC.md` 为冻结的规格契约，不随本文件更新。
 
+## [1.6.7] - 2026-11-25
+
+- **原生菜单方案 B（可不用、不能没有）**：Electron 默认菜单改为中英双模板常驻，`buildAppMenu(lang)` 按语言构建；新增 `menu:set-lang` IPC 与 preload `desktopMenu` 具名白名单，`applyLang()` 切语言时同步重建菜单；菜单「关于精核」经 `menu:navigate` 跳应用内 about 页，不再打开 Electron 原生面板。菜单骨架保留供后续迭代扩展。
+- **打包运行修复**：免安装/外壳启动不再因缺 `electron-updater` 直接崩溃（改为可选加载，缺失时仅禁用自更新）；组装脚本按依赖闭包只复制必要的 16 个包（3.3 MB），避免误打包 electron-builder 全家桶；`build/icon.png` 入包，托盘恢复品牌图标。
+- **交付形态裁决**：以后只做 NSIS `setup.exe`，免安装目录不再产出/交付，`pack_portable.py` 仅作历史工具保留；约定写入 `electron/README.md`、`docs/本地打包指南.md` 与项目记忆，`.gitignore` 补充 `electron/release-setup*/` 忽略规则。
+- **关键坑固化**：`ui/` 被 PyInstaller 冻结进后端 exe——改前端后必须重打 `python build.py` 并重新拷贝，否则运行中的服务仍返回旧 UI。本轮已重打，两种形态同步。
+- **测试**：新增 5 项菜单守护测试（菜单常驻/双语/IPC 同步/导航/白名单），全量 389 项通过，发版门禁 16/16。
+
 ## [1.6.6] - 2026-11-25
 
 - **中英切换全量补齐**：正文 250 条中文文案全部接入 i18n（含 `data-i18n` / `data-i18n-ph` / `data-i18n-aria` / `data-i18n-title`），英文映射独立到 `ui/i18n.js`，切语言后导航、页头、正文、占位符、提示与无障碍标签同步变化；`tr()` 以中文原文作 key，zh 下回退原文，零硬编码英文残留。

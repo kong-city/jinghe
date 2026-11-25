@@ -361,6 +361,13 @@
     if (document.documentElement) {
       document.documentElement.setAttribute("lang", currentLang === "zh" ? "zh-CN" : "en");
     }
+    // 原生菜单不属于网页 DOM，i18n 管不到：经预加载白名单通知外壳同步重建。
+    // 纯浏览器调试时 desktopMenu 不存在，静默跳过（不影响源码态）。
+    if (typeof window !== "undefined" && window.desktopMenu &&
+        window.desktopMenu.available &&
+        typeof window.desktopMenu.setLang === "function") {
+      window.desktopMenu.setLang(currentLang);
+    }
   }
 
   var PAGE_META = {
@@ -3473,6 +3480,13 @@
     });
     el.outPath.addEventListener("input", rememberPaths);
     el.outPath.addEventListener("change", refreshMergedButton);
+
+    // 原生菜单「关于精核」通知：跳到应用内关于页，而非 Electron 原生面板。
+    if (window.desktopMenu && typeof window.desktopMenu.onNavigate === "function") {
+      window.desktopMenu.onNavigate(function (page) {
+        if (page) activatePage(page);
+      });
+    }
 
     // 左侧导航：页面切换（单击）+ 折叠/展开（双击任意导航项）
     // 用户裁决 2026-11-23：取消顶部横杠按钮，改为双击导航项折叠/展开。

@@ -24,6 +24,12 @@ const UPDATE_CHANNELS = Object.freeze({
   progress: 'update:progress',
 });
 
+// 原生菜单通道：页面切语言时同步菜单，菜单「关于」时通知页面跳页。
+const MENU_CHANNELS = Object.freeze({
+  setLang: 'menu:set-lang',
+  navigate: 'menu:navigate',
+});
+
 // 把 event 剥掉，只把 data 交给页面回调；返回退订函数供页面清理监听器。
 function subscribe(channel, callback) {
   if (typeof callback !== 'function') return function () {};
@@ -36,6 +42,16 @@ contextBridge.exposeInMainWorld('JINGHE_SHELL', Object.freeze({
   name: 'electron',
   electron: process.versions.electron || '',
   chromium: process.versions.chrome || '',
+}));
+
+contextBridge.exposeInMainWorld('desktopMenu', Object.freeze({
+  available: true,
+  // 只接受白名单枚举后的语言值，避免任意字符串污染主进程菜单模板。
+  setLang: function (lang) {
+    var normalized = (lang === 'en') ? 'en' : 'zh';
+    return ipcRenderer.invoke(MENU_CHANNELS.setLang, normalized);
+  },
+  onNavigate: function (cb) { return subscribe(MENU_CHANNELS.navigate, cb); },
 }));
 
 contextBridge.exposeInMainWorld('desktopUpdater', Object.freeze({

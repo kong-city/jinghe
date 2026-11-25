@@ -159,5 +159,51 @@ class TestV164I18n(unittest.TestCase):
         self.assertIn('setAttribute("aria-label"', JS_CODE)
 
 
+class NativeMenuI18nTest(unittest.TestCase):
+    """v1.6.6：原生菜单保留但跟随界面语言（菜单可不用、不能没有）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.main = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+        cls.preload = (ROOT / "electron" / "preload.js").read_text(encoding="utf-8")
+
+    def test_01_menu_always_present(self):
+        """菜单常驻：启动时构建，绝不再出现 setApplicationMenu(null)。"""
+        self.assertNotIn("setApplicationMenu(null)", self.main)
+        self.assertIn("buildAppMenu('zh')", self.main)
+        self.assertIn("Menu.setApplicationMenu(Menu.buildFromTemplate(template))", self.main)
+
+    def test_02_menu_has_bilingual_labels(self):
+        """中英两套菜单标签齐全，覆盖文件/编辑/视图/窗口/帮助。"""
+        for lang in ("zh:", "en:"):
+            self.assertIn(lang, self.main)
+        self.assertIn("file: '文件'", self.main)
+        self.assertIn("file: 'File'", self.main)
+        self.assertIn("help: '帮助'", self.main)
+        self.assertIn("help: 'Help'", self.main)
+        self.assertIn("quit: '退出精核'", self.main)
+        self.assertIn("quit: 'Quit Jinghe'", self.main)
+
+    def test_03_lang_sync_channel_end_to_end(self):
+        """语言同步链路：applyLang → 白名单 setLang → IPC → 重建菜单。"""
+        self.assertIn("window.desktopMenu.setLang(currentLang)", JS)
+        self.assertIn("menu:set-lang", self.preload)
+        self.assertIn("ipcMain.handle('menu:set-lang'", self.main)
+        self.assertIn("buildAppMenu(lang)", self.main)
+
+    def test_04_menu_navigate_to_about(self):
+        """菜单关于走应用内页面，不用 Electron 原生关于面板。"""
+        self.assertIn("menu:navigate", self.main)
+        self.assertIn("menu:navigate", self.preload)
+        self.assertIn('activatePageInRenderer(\'about\')', self.main)
+        self.assertIn('window.desktopMenu.onNavigate', JS)
+
+    def test_05_shell_bridge_is_whitelisted(self):
+        """页面拿不到 ipcRenderer，菜单只暴露具名方法且语言值归一化。"""
+        self.assertIn("contextBridge.exposeInMainWorld('desktopMenu'", self.preload)
+        self.assertNotIn("exposeInMainWorld('desktopMenu', ipcRenderer", self.preload)
+        self.assertIn("(lang === 'en') ? 'en' : 'zh'", self.preload)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,4 +1,4 @@
-# 精核 · Electron 桌面外壳（当前 v1.6.6；下述实测记录为 v1.1.1 时的产物）
+# 精核 · Electron 桌面外壳（当前 v1.6.7；下述实测记录为 v1.1.1 时的产物）
 
 > 本目录属于去浏览器内核开发线 `desktop/native-gui`，与已封存的 v1.0.9 基线物理隔离。
 
@@ -55,21 +55,19 @@ env -u ELECTRON_RUN_AS_NODE \
 
 ### 打包态（已打通 ✅）
 
+> **交付形态裁决（2026-11-25）：唯一交付 = NSIS `setup.exe`，免安装目录不再产出、不再交付。**
+> `pack_portable.py` 仅作为历史工具保留，禁止用于发版；CI 本来就只产出 setup.exe。
+
 ```bash
 # 1) 先用 PyInstaller 打后端，拷到 electron/backend/Jinghe.exe
 python build.py
 cp dist/Jinghe-<ver>.exe electron/backend/Jinghe.exe
 
-# 2a) 组装免安装目录（推荐，纯标准库、无额外下载）
-cd electron && python pack_portable.py
-#   → 产物 electron/release/win-unpacked/Jinghe.exe，双击即运行
-#   → python pack_portable.py --size 查看体积
-#   沙箱禁止删除旧目录时，可换全新目录名组装：
-#   JINGHE_PACK_OUT=Jinghe-v1.1.1 python pack_portable.py
-
-# 2b) NSIS 安装包（CI 里用，国内会因下载 NSIS 二进制卡住）
+# 2) NSIS 安装包（唯一交付形态；CI 与本地同构）
 cd electron && npm run dist
-#   → 产物 electron/release/Jinghe-<ver>-setup.exe
+#   → 产物 electron/release/Jinghe-<ver>-setup.exe + latest.yml + blockmap
+#   若旧 win-unpacked 目录被占用导致清理失败，换全新输出目录即可：
+#   ./node_modules/.bin/electron-builder --win --x64 --publish never -c.directories.output=release-<tag>
 ```
 
 `main.js` 会优先找 `resources/backend/Jinghe.exe`（打包后）或 `electron/backend/Jinghe.exe`（开发），找不到才回退到源码 `app.py`，因此目标机器无需 Python。

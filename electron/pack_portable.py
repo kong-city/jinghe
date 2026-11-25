@@ -107,10 +107,44 @@ def assemble() -> int:
             return 1
         shutil.copy2(src, app_dir / name)
 
+    # 3.1) 主进程依赖：main.js 顶层 require('electron-updater')，缺依赖会直接崩溃。
+    # 只复制 updater 的依赖闭包，避免把 electron-builder 全家桶（数百 MB）打进免安装版。
+    nm_src = HERE / "node_modules"
+    if nm_src.is_dir():
+        import json
+        wanted, queue = set(), ["electron-updater"]
+        while queue:
+            name = queue.pop(0)
+            if name in wanted:
+                continue
+            wanted.add(name)
+            pj = nm_src / name / "package.json"
+            if not pj.is_file():
+                continue
+            try:
+                meta = json.loads(pj.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for dep in list(meta.get("dependencies", {})) + list(meta.get("optionalDependencies", {})):
+                queue.append(dep)
+        for name in sorted(wanted):
+            src = nm_src / name
+            if not src.is_dir():
+                continue
+            dst = app_dir / "node_modules" / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+
     # 4) 后端 exe 放到 resources/backend/（main.js 打包态优先读这里）
     backend_dir = OUT / "resources" / "backend"
     backend_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(BACKEND_SRC, backend_dir / "Jinghe.exe")
+
+    # 5) 品牌图标真源放到 resources/icon.png，托盘与桌面图标同源。
+    # 缺这个文件时 main.js 会回退到内嵌 16x16 兜底图，视觉上像「图标被换过」。
+    icon = HERE / "build" / "icon.png"
+    if icon.is_file():
+        shutil.copy2(icon, OUT / "resources" / "icon.png")
 
     total = dir_size(OUT)
     print("[OK] 免安装版已组装：%s" % OUT)

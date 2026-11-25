@@ -28,7 +28,14 @@ try {
 } catch (_) { /* 诊断失败不影响主流程 */ }
 
 const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell, ipcMain } = require('electron');
-const { autoUpdater } = require('electron-updater');
+// 免安装版由 pack_portable.py 自行组装，可能未带 electron-updater 依赖。
+// 可选加载：依赖缺失时只禁用自更新，绝不让整个外壳启动崩溃。
+let autoUpdater = null;
+try {
+  autoUpdater = require('electron-updater').autoUpdater;
+} catch (err) {
+  console.warn('[jinghe] electron-updater 不可用，自更新已禁用:', String(err && err.message || err));
+}
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -146,12 +153,115 @@ function showWindow() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* 原生应用菜单（双语骨架）                                                    */
+/* -------------------------------------------------------------------------- */
+// 用户裁决 2026-11-25：菜单「可不用，但不能没有」，为后续迭代保留标准骨架。
+// 默认显示中文；网页切语言时经 menu:set-lang IPC 同步重建，避免菜单停留在英文。
+// 菜单能力保持克制：只放导航/视图/帮助等通用项，业务操作仍在页面内完成。
+const MENU_LABELS = {
+  zh: {
+    app: '精核', file: '文件', show: '显示主窗口', reload: '重新加载',
+    close: '关闭窗口', quit: '退出精核',
+    edit: '编辑', undo: '撤销', redo: '重做', cut: '剪切', copy: '复制',
+    paste: '粘贴', selectAll: '全选',
+    view: '视图', resetZoom: '重置缩放', zoomIn: '放大', zoomOut: '缩小',
+    fullscreen: '全屏',
+    window: '窗口', minimize: '最小化',
+    help: '帮助', homepage: '项目主页', about: '关于精核',
+  },
+  en: {
+    app: 'Jinghe', file: 'File', show: 'Show Window', reload: 'Reload',
+    close: 'Close Window', quit: 'Quit Jinghe',
+    edit: 'Edit', undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy',
+    paste: 'Paste', selectAll: 'Select All',
+    view: 'View', resetZoom: 'Reset Zoom', zoomIn: 'Zoom In', zoomOut: 'Zoom Out',
+    fullscreen: 'Fullscreen',
+    window: 'Window', minimize: 'Minimize',
+    help: 'Help', homepage: 'Project Home', about: 'About Jinghe',
+  },
+};
+
+let currentMenuLang = 'zh';
+
+function buildAppMenu(lang) {
+  currentMenuLang = (lang === 'en') ? 'en' : 'zh';
+  const t = MENU_LABELS[currentMenuLang];
+  const template = [
+    {
+      label: t.file,
+      submenu: [
+        { label: t.show, click: function () { showWindow(); } },
+        { label: t.reload, role: 'reload' },
+        { type: 'separator' },
+        { label: t.close, role: 'close' },
+        { label: t.quit, click: function () { shutdown(); } },
+      ],
+    },
+    {
+      label: t.edit,
+      submenu: [
+        { label: t.undo, role: 'undo' },
+        { label: t.redo, role: 'redo' },
+        { type: 'separator' },
+        { label: t.cut, role: 'cut' },
+        { label: t.copy, role: 'copy' },
+        { label: t.paste, role: 'paste' },
+        { label: t.selectAll, role: 'selectAll' },
+      ],
+    },
+    {
+      label: t.view,
+      submenu: [
+        { label: t.resetZoom, role: 'resetZoom' },
+        { label: t.zoomIn, role: 'zoomIn' },
+        { label: t.zoomOut, role: 'zoomOut' },
+        { type: 'separator' },
+        { label: t.fullscreen, role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: t.window,
+      role: 'window',
+      submenu: [
+        { label: t.minimize, role: 'minimize' },
+        { label: t.close, role: 'close' },
+      ],
+    },
+    {
+      label: t.help,
+      role: 'help',
+      submenu: [
+        { label: t.homepage, click: function () {
+          shell.openExternal('https://github.com/kong-city/jinghe');
+        } },
+        { label: t.about, click: function () {
+          // 跳到应用内「关于」页，而不是 Electron 原生关于面板。
+          showWindow();
+          if (mainWindow && !mainWindow.isDestroyed()) activatePageInRenderer('about');
+        } },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  shellLog('应用菜单已构建 lang=' + currentMenuLang);
+}
+
+// 让菜单的「关于」跳到网页内的 about 页；渲染进程未就绪时静默跳过。
+function activatePageInRenderer(name) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('menu:navigate', name);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* 自更新（方案 A）：electron-updater + GitHub latest.yml                       */
 /* -------------------------------------------------------------------------- */
 // 重要：关闭自动下载/自动安装，全部由网页经 IPC 显式驱动，避免「后台偷偷更新」
 // 与关窗回收进程树打架；检查到的版本只做展示，真正下载在用户点「立即更新」后。
-autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = false;
+if (autoUpdater) {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+}
 let updateBusy = false;        // 更新任务门闩：下载/安装期间拒绝重复触发
 
 // 把后端进程树回收抽成可复用函数：正常关窗与「安装更新前」都要用。
@@ -202,12 +312,19 @@ function compareVersion(a, b) {
 
 // 网页通过 preload 白名单调用；所有返回值都是纯数据，绝不回传 Electron 对象。
 function registerUpdateIPC() {
+  // 网页 applyLang 切语言后同步重建原生菜单（白名单由 preload.js 控制）。
+  ipcMain.handle('menu:set-lang', (_event, lang) => {
+    buildAppMenu(lang);
+    return { ok: true, lang: currentMenuLang };
+  });
+
   ipcMain.handle('update:check', async () => {
     // dev 未打包：没有 app-update.yml，updater 无法工作。如实告知，不假装失败。
     if (!app.isPackaged) {
       return { ok: true, dev: true, current: app.getVersion(),
                up_to_date: true, message: '开发模式不检查更新' };
     }
+    if (!autoUpdater) return { ok: false, error: '自更新组件不可用' };
     try {
       const result = await autoUpdater.checkForUpdates();
       const latest = (result && result.updateInfo && result.updateInfo.version) || '';
@@ -223,6 +340,7 @@ function registerUpdateIPC() {
 
   ipcMain.handle('update:download', async () => {
     if (!app.isPackaged) return { ok: false, dev: true, error: '开发模式不下载更新' };
+    if (!autoUpdater) return { ok: false, error: '自更新组件不可用' };
     if (updateBusy) return { ok: false, error: '已有更新任务在运行' };
     updateBusy = true;
     try {
@@ -238,6 +356,7 @@ function registerUpdateIPC() {
 
   ipcMain.handle('update:install', async () => {
     if (!app.isPackaged) return { ok: false, dev: true, error: '开发模式不安装更新' };
+    if (!autoUpdater) return { ok: false, error: '自更新组件不可用' };
     if (updateBusy) return { ok: false, error: '更新包尚未下载完成' };
     // 关键时序：先把后端进程树杀干净，再让 NSIS 覆盖随包 exe，否则必因占用失败。
     await stopBackendProcesses();
@@ -259,6 +378,7 @@ function registerUpdateIPC() {
 
 // 把 updater 事件转成纯数据推给渲染进程；网页侧只认 update:* 这几个频道。
 function bindUpdaterEvents() {
+  if (!autoUpdater) return;
   autoUpdater.on('checking-for-update', () => pushUpdate('update:status', { state: 'checking' }));
   autoUpdater.on('update-available', (info) =>
     pushUpdate('update:status', { state: 'available', version: info && info.version }));
@@ -556,7 +676,8 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     shellLog('外壳就绪 isPackaged=' + app.isPackaged + ' port=' + PORT);
-    registerUpdateIPC();   // 更新 IPC 白名单（update:check/download/install/cancel）
+    buildAppMenu('zh');    // 先建中文菜单骨架；网页设置返回语言后再经 IPC 同步
+    registerUpdateIPC();   // 更新 IPC 白名单（update:check/download/install/cancel）+ menu:set-lang
     bindUpdaterEvents();   // updater 进度 → 网页 update:status / update:progress
     const r = await startBackend();
     if (r.aborted) { shellLog('后端启动中止，外壳退出'); return; }
