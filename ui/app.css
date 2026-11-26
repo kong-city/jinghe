@@ -1061,6 +1061,16 @@ button, input { font-family: inherit; }
   grid-template-columns: minmax(132px, 1fr) 1fr;
 }
 
+/* v1.7.2：关于页主题快捷开关行（按钮 + 当前状态，沿用现有卡片风格） */
+.about-theme-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.about-theme-row b { font-size: 12px; color: #6B6A65; }
+html[data-theme="dark"] .about-theme-row b { color: #B8BDC2; }
+
 /* v0.4.9：轻量提示 toast——「当前是最新版本」等短反馈，3 秒自动消失 */
 .toast {
   position: fixed;

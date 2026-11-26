@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
 import time
 from pathlib import Path
 
@@ -94,14 +96,26 @@ def new_provenance() -> dict:
     }
 
 
+# 音频/视频/OCR 等多个能力可能并发写同一份出处清单；直接 write_text 覆盖
+# 会让读方看到半截 JSON。用进程内锁 + 临时文件原子替换消除这个竞态。
+_PROVENANCE_LOCK = threading.Lock()
+
+
 def write_provenance(outdir, entries=None) -> Path:
-    """写 ``out/derived/provenance_media.json``；失败项也通过 entries 留痕。"""
-    target = ensure_derived(outdir) / PROVENANCE_NAME
-    data = new_provenance()
-    data["entries"] = list(entries or [])
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                      encoding="utf-8")
-    return target
+    """写 ``out/derived/provenance_media.json``；失败项也通过 entries 留痕。
+
+    并发安全：进程内加锁串行化，落盘走「临时文件 → os.replace」原子替换，
+    读方要么看到旧完整 JSON、要么看到新完整 JSON，绝不会读到半截文件。
+    """
+    with _PROVENANCE_LOCK:
+        target = ensure_derived(outdir) / PROVENANCE_NAME
+        data = new_provenance()
+        data["entries"] = list(entries or [])
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, target)
+        return target
 
 
 def read_provenance(outdir) -> dict:

@@ -333,7 +333,8 @@ def _first_positions(sents: list[dict]) -> dict[str, list]:
 
 
 def top_keywords(sents: list[dict], limit: int = MAX_KEYWORDS,
-                 heads: set[str] | None = None) -> list[str]:
+                 heads: set[str] | None = None,
+                 global_scores: dict[str, float] | None = None) -> list[str]:
     """取全局 top 关键词。
 
     三路词源合并打分：**领域词表**（高置信）> **标题挖词**（概念名一致）> **二元组**（兜底），
@@ -341,8 +342,10 @@ def top_keywords(sents: list[dict], limit: int = MAX_KEYWORDS,
 
     每路词源都必须携带**真实命中位置**（句号 + 句内偏移）：
     位置造假会让不同句的词互相冲突，把整片标题词误杀。
+
+    ``global_scores`` 可选：由调用方复用已算好的 keyword_scores，避免重复计算。
     """
-    scores = keyword_scores(sents)
+    scores = global_scores if global_scores is not None else keyword_scores(sents)
     positions = _first_positions(sents)
     items: list[tuple[str, float, int, int, int]] = []
     head_set = heads or set()
@@ -426,9 +429,15 @@ def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
     return dot / (na * nb)
 
 
-def sentence_vectors(sents: list[dict]) -> list[dict[str, float]]:
-    """句向量 = 二元组 TF-IDF（用全局关键词分数做 IDF 近似）。"""
-    global_scores = keyword_scores(sents)
+def sentence_vectors(sents: list[dict],
+                     global_scores: dict[str, float] | None = None) -> list[dict[str, float]]:
+    """句向量 = 二元组 TF-IDF（用全局关键词分数做 IDF 近似）。
+
+    ``global_scores`` 可由调用方传入已算好的结果，避免同一份 sents 重复跑
+    keyword_scores（extract_core 里原本会算 3 遍）。不传时行为完全不变。
+    """
+    if global_scores is None:
+        global_scores = keyword_scores(sents)
     maxv = max(global_scores.values()) if global_scores else 1.0
     vecs: list[dict[str, float]] = []
     for s in sents:
@@ -588,7 +597,8 @@ def extract_core(md_text: str, top_k: int = DEFAULT_TOP_K) -> dict:
                                                       "elapsed": 0.0}}
 
     global_scores = keyword_scores(sents)
-    vecs = sentence_vectors(sents)
+    # 复用同一份分数：sentence_vectors / top_keywords 原本会各算一遍 keyword_scores
+    vecs = sentence_vectors(sents, global_scores=global_scores)
     ranks = textrank(sents, vecs)
     heads = heading_terms(blocks)
 
@@ -656,7 +666,7 @@ def extract_core(md_text: str, top_k: int = DEFAULT_TOP_K) -> dict:
     points.sort(key=lambda p: (-p["score"], p["block"]))
     return {
         "points": points,
-        "keywords": top_keywords(sents, heads=heads),
+        "keywords": top_keywords(sents, heads=heads, global_scores=global_scores),
         "stats": {
             "blocks": len(blocks),
             "sentences": len(sents),

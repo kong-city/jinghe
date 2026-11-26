@@ -109,6 +109,9 @@
     setLangEn: $("setLangEn"),
     setThemeLight: $("setThemeLight"),
     setThemeDark: $("setThemeDark"),
+    // v1.7.2：关于页主题快捷开关（与设置页共用同一真源）
+    aboutThemeToggle: $("aboutThemeToggle"),
+    aboutThemeState: $("aboutThemeState"),
     cmdOverlay: $("cmdOverlay"),
     cmdInput: $("cmdInput"),
     cmdList: $("cmdList"),
@@ -388,6 +391,13 @@
     }
     if (el.setThemeLight) el.setThemeLight.checked = (currentTheme === "light");
     if (el.setThemeDark) el.setThemeDark.checked = (currentTheme === "dark");
+    // v1.7.2：关于页快捷开关跟着一起同步，两处永不脱节
+    if (el.aboutThemeState) {
+      el.aboutThemeState.textContent = tr(currentTheme === "dark" ? "深色" : "浅色");
+    }
+    if (el.aboutThemeToggle) {
+      el.aboutThemeToggle.textContent = tr(currentTheme === "dark" ? "切换到浅色" : "切换到深色");
+    }
   }
 
   // v1.7.1：用户显式选择过的界面偏好（语言 / 主题）。
@@ -3850,6 +3860,13 @@
     });
     if (el.setThemeDark) el.setThemeDark.addEventListener("change", function () {
       if (el.setThemeDark.checked) { applyTheme("dark"); uiPrefOverride.theme = "dark"; persistUiPref("theme", "dark"); }
+    });
+    // v1.7.2：关于页快捷开关——和设置页走同一条落盘链路，不另建状态
+    if (el.aboutThemeToggle) el.aboutThemeToggle.addEventListener("click", function () {
+      var next = currentTheme === "dark" ? "light" : "dark";
+      applyTheme(next);
+      uiPrefOverride.theme = next;
+      persistUiPref("theme", next);
     });
     // v1.7.0：命令面板输入即时过滤；点遮罩空白处关闭
     if (el.cmdInput) el.cmdInput.addEventListener("input", function () {

@@ -794,6 +794,17 @@
         </div>
       </section>
 
+      <!-- v1.7.2：关于页主题快捷开关（入口此前只在设置页，用户在「关于」里找不到）。
+           复用设置页的 applyTheme / persistUiPref / settings.json 单一真源，不另建状态。 -->
+      <section class="card" id="aboutThemeCard">
+        <div class="card-title" data-i18n="界面主题">界面主题</div>
+        <div class="card-sub" data-i18n="切换后立即生效并保存到本机设置；与「设置 · 界面主题」同步。">切换后立即生效并保存到本机设置；与「设置 · 界面主题」同步。</div>
+        <div class="about-theme-row">
+          <button id="aboutThemeToggle" class="btn btn-ghost" type="button" data-i18n="切换到深色">切换到深色</button>
+          <b id="aboutThemeState" class="mono" data-i18n="浅色">浅色</b>
+        </div>
+      </section>
+
       <section class="card">
         <div class="card-title" data-i18n="版本更新">版本更新</div>
         <div class="about-grid about-grid-update">

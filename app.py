@@ -1055,6 +1055,18 @@ _UPDATE_LOCK = threading.Lock()
 _UPDATE_PLAN_CACHE: tuple[float, dict] | None = None
 _UPDATE_PLAN_TTL = 60.0
 
+# /api/state 是 400ms 高频轮询端点；platform.platform() 单次约 0.8ms
+# （实测，比 python_version 慢 200 倍），而它在进程生命周期内恒定不变。
+# 缓存一次，避免每次轮询都让内核做一遍系统版本探测。
+_PLATFORM_LABEL: str | None = None
+
+
+def _platform_label() -> str:
+    global _PLATFORM_LABEL
+    if _PLATFORM_LABEL is None:
+        _PLATFORM_LABEL = platform.platform()
+    return _PLATFORM_LABEL
+
 
 
 def _list_artifacts(outdir: str) -> dict:
@@ -2973,7 +2985,7 @@ class Handler(BaseHTTPRequestHandler):
             # v0.4.0：capabilities() 子进程探测失败会返回 unknown，统一回退到 extract.py
             "version": _current_version(),
             "python": platform.python_version(),
-            "platform": platform.platform(),
+            "platform": _platform_label(),
             "running": running,
             "input": job.input if job else _LAST_INPUT,
             "inputs": job.inputs if job else _LAST_INPUTS,

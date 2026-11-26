@@ -88,10 +88,14 @@ const doneText = makeNode("span");
 const doneBtn = makeNode("button");
 const themeLight = makeNode("input");
 const themeDark = makeNode("input");
+// v1.7.2：关于页主题快捷开关的 DOM stub
+const aboutToggle = makeNode("button");
+const aboutState = makeNode("b");
 
 const el = {
   cmdList, cmdInput, doneSummary, doneSummaryText: doneText,
   btnDoneOpenMerged: doneBtn, setThemeLight: themeLight, setThemeDark: themeDark,
+  aboutThemeToggle: aboutToggle, aboutThemeState: aboutState,
   pageTitle: makeNode("h1"), pageSub: makeNode("p"),
   setLangZh: makeNode("input"), setLangEn: makeNode("input"),
 };
@@ -205,8 +209,64 @@ check(doneBtn.hidden === false, "有产物时显示打开合并文档按钮");
 sandbox.__showDoneSummary({ success: 2, failed: 0, elapsed: 1.0, outdir: "" });
 check(doneBtn.hidden === true, "无产物时隐藏打开合并文档按钮");
 
+// ---- 场景 5：v1.7.2 关于页主题开关真跑点击链路 ----
+// 从 app.js 抽取真实的点击处理函数体（不是手抄副本），在最小 stub 上执行，
+// 断言：①切到 html[data-theme] ②关于页状态/按钮文案同步
+//      ③走 persistUiPref 落盘 ④设置页单选同步（单一真源）。
+(function testAboutThemeClick() {
+  const marker = 'if (el.aboutThemeToggle) el.aboutThemeToggle.addEventListener("click", function () {';
+  const start = js.indexOf(marker);
+  if (start < 0) { check(false, "关于页主题 click 绑定存在"); return; }
+  const bodyStart = js.indexOf("{", js.indexOf("function () {", start));
+  let depth = 0, inStr = false, q = "", esc = false, bodyEnd = -1;
+  for (let i = bodyStart; i < js.length; i++) {
+    const c = js[i];
+    if (inStr) { if (esc) { esc = false; continue; } if (c === "\\") { esc = true; continue; } if (c === q) inStr = false; continue; }
+    if (c === '"' || c === "'" || c === "`") { inStr = true; q = c; continue; }
+    if (c === "{") depth++;
+    else if (c === "}") { depth--; if (depth === 0) { bodyEnd = i; break; } }
+  }
+  const body = js.slice(bodyStart + 1, bodyEnd);
+  const clickSandbox = {
+    currentTheme: "light",
+    uiPrefOverride: { lang: null, theme: null },
+    el: {
+      aboutThemeState: aboutState,
+      setThemeLight: themeLight,
+      setThemeDark: themeDark,
+      aboutThemeToggle: aboutToggle,
+    },
+    document: { documentElement: htmlNode },
+    saved: [],
+    applyTheme(t) {
+      clickSandbox.currentTheme = (t === "dark") ? "dark" : "light";
+      htmlNode.setAttribute("data-theme", clickSandbox.currentTheme);
+      themeLight.checked = clickSandbox.currentTheme === "light";
+      themeDark.checked = clickSandbox.currentTheme === "dark";
+      aboutState.textContent = (clickSandbox.currentTheme === "dark") ? "Dark" : "Light";
+      aboutToggle.textContent = (clickSandbox.currentTheme === "dark") ? "Switch to light" : "Switch to dark";
+    },
+    persistUiPref(field, value) { clickSandbox.saved.push([field, value]); },
+  };
+  vm.createContext(clickSandbox);
+  try {
+    vm.runInContext(body, clickSandbox);
+  } catch (e) {
+    check(false, "关于页点击处理可执行（" + e.message + "）");
+    return;
+  }
+  check(clickSandbox.currentTheme === "dark", "关于页点击：浅色→深色");
+  check(htmlNode.getAttribute("data-theme") === "dark", "关于页点击落到 html[data-theme=dark]");
+  check(clickSandbox.saved.length === 1 && clickSandbox.saved[0][0] === "theme"
+        && clickSandbox.saved[0][1] === "dark", "关于页点击写盘 theme=dark");
+  check(clickSandbox.uiPrefOverride.theme === "dark", "关于页点击同步 uiPrefOverride");
+  check(themeDark.checked === true && themeLight.checked === false, "关于页点击同步设置页单选");
+  check(aboutState.textContent === "Dark" && aboutToggle.textContent === "Switch to light",
+        "关于页点击后按钮/状态同步为深色（英文）");
+})();
+
 if (failures) {
   console.error("\nUI 体验行为测试失败: " + failures + " 项");
   process.exit(1);
 }
-console.log("\nUI 体验行为测试全部通过（19 项断言）");
+console.log("\nUI 体验行为测试全部通过（25 项断言）");

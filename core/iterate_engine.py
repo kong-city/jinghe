@@ -128,7 +128,7 @@ def _build_candidates(md_text: str) -> tuple[list[dict], int]:
     if not sents:
         return [], 0
     global_scores = X.keyword_scores(sents)
-    vecs = X.sentence_vectors(sents)
+    vecs = X.sentence_vectors(sents, global_scores=global_scores)
     ranks = X.textrank(sents, vecs)
     max_rank = max(ranks) if ranks else 1.0
     excluded = _label_only(sents)

@@ -325,41 +325,44 @@ def ingest_md(kb_dir, md_path, *, include_ai=False, allowed_roots=None) -> dict:
         fts = bool(
             conn.execute("SELECT v FROM meta WHERE k='fts'").fetchone()[0] == "1"
         )
+        # 批量入库优化：原来逐条 SELECT + INSERT/UPDATE + FTS INSERT（3N 次
+        # execute），改为一次性取已有 id、再用 executemany 批量写入（3 次）。
+        # 语义保持逐字等价——包括「同一文件内重复 id」：原逻辑第一次 INSERT
+        # 后同事务内 SELECT 可见，第二次判 dup；这里用 seen 集合复刻该行为。
+        known = {row[0] for row in conn.execute("SELECT id FROM entries")}
+        new_rows: list[tuple] = []
+        new_fts: list[tuple] = []
+        dup_ids: list[tuple] = []
         for e in parsed["entries"]:
             if e["is_ai"] and not include_ai:
                 skipped_ai += 1
                 continue
-            exists = conn.execute(
-                "SELECT ref_count FROM entries WHERE id=?", (e["id"],)
-            ).fetchone()
-            if exists:
-                conn.execute(
-                    "UPDATE entries SET ref_count=ref_count+1 WHERE id=?", (e["id"],)
-                )
+            if e["id"] in known:
+                dup_ids.append((e["id"],))
+                known.add(e["id"])  # 同批次内后续重复也判 dup（幂等累加）
                 dup += 1
                 continue
-            conn.execute(
+            known.add(e["id"])
+            new_rows.append((
+                e["id"], e["doc_id"], e["block"], e["locator"], e["body"],
+                e["source_file"], e["sha256"], e["content_hash"], time.time(),
+            ))
+            if fts:
+                new_fts.append((e["id"], e["body"]))
+            added += 1
+        if new_rows:
+            conn.executemany(
                 """INSERT INTO entries
                    (id,doc_id,block,locator,body,source_file,sha256,content_hash,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                (
-                    e["id"],
-                    e["doc_id"],
-                    e["block"],
-                    e["locator"],
-                    e["body"],
-                    e["source_file"],
-                    e["sha256"],
-                    e["content_hash"],
-                    time.time(),
-                ),
-            )
-            if fts:
-                conn.execute(
-                    "INSERT INTO entries_fts(id,body) VALUES(?,?)",
-                    (e["id"], e["body"]),
-                )
-            added += 1
+                   VALUES(?,?,?,?,?,?,?,?,?)""", new_rows)
+        # UPDATE 必须在 INSERT 之后：同文件内重复 id 时，首次插入的行要先存在，
+        # 这里的 ref_count+1 才能命中（与原来逐条执行的时序语义一致）。
+        if dup_ids:
+            conn.executemany(
+                "UPDATE entries SET ref_count=ref_count+1 WHERE id=?", dup_ids)
+        if new_fts:
+            conn.executemany(
+                "INSERT INTO entries_fts(id,body) VALUES(?,?)", new_fts)
         conn.commit()
         if added == 0 and dup == 0 and skipped_ai == 0:
             # 诚实降级：该 md 没有 src 注释 / 块锚点，解析不出任何条目。
