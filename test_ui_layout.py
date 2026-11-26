@@ -103,13 +103,25 @@ class TestUILayout(unittest.TestCase):
         self.assertNotIn("btnTranscribe", proc)
 
     def test_09_nav_icon_colors_expand_vs_collapse(self):
-        # 用户 2026-11-23 裁决：展开态每个功能图标专属色，折叠态统一深色
+        # v1.7.7 用户裁决：展开/折叠两态、深浅两主题都保持功能专属色。
+        # 折叠后图标是唯一线索；深色侧栏底上近黑配色曾导致图标不可见。
         pages = ("home", "process", "refine", "revise", "kb", "settings", "about")
         for p in pages:
-            self.assertIn(".app:not(.nav-collapsed) .nav-item[data-page=\"%s\"] svg" % p,
-                          self.css, "展开态缺 %s 专属图标色" % p)
-        # 折叠态必须统一深色，且规则存在
-        self.assertIn(".app.nav-collapsed .nav-item svg { stroke: #1F1F1D; }", self.css)
+            self.assertIn(".nav-item[data-page=\"%s\"] svg" % p, self.css,
+                          "缺 %s 专属图标色" % p)
+            # 专属色规则不得再用 :not(.nav-collapsed) 限定展开态
+            self.assertNotIn(".app:not(.nav-collapsed) .nav-item[data-page=\"%s\"] svg" % p,
+                             self.css, "%s 图标色被限定在展开态，折叠后会回退" % p)
+            # 深色主题必须有自己的提亮版，否则深色底上看不清
+            self.assertIn("html[data-theme=\"dark\"] .nav-item[data-page=\"%s\"] svg" % p,
+                          self.css, "深色主题缺 %s 专属图标色" % p)
+        # 折叠态不得再统一压成近黑
+        self.assertNotIn(".app.nav-collapsed .nav-item svg", self.css,
+                         "折叠态不得单独改图标色")
+        self.assertNotIn(".app.nav-collapsed .nav-item { color: #1F1F1D; }", self.css,
+                         "折叠态不得把文字色写死为近黑")
+        # 折叠态布局规则保留（居中 + 隐藏文字）
+        self.assertIn(".app.nav-collapsed .nav-label { display: none; }", self.css)
 
 
 if __name__ == "__main__":

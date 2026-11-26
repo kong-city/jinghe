@@ -109,12 +109,16 @@
     setLangEn: $("setLangEn"),
     setThemeLight: $("setThemeLight"),
     setThemeDark: $("setThemeDark"),
-    // v1.7.2：关于页主题快捷开关（与设置页共用同一真源）
-    aboutThemeToggle: $("aboutThemeToggle"),
-    aboutThemeState: $("aboutThemeState"),
     cmdOverlay: $("cmdOverlay"),
     cmdInput: $("cmdInput"),
     cmdList: $("cmdList"),
+    // v1.7.3：首次启动组件向导
+    setupOverlay: $("setupOverlay"),
+    setupList: $("setupList"),
+    setupStatus: $("setupStatus"),
+    setupInstall: $("setupInstall"),
+    setupSkip: $("setupSkip"),
+    setupSkipX: $("setupSkipX"),
     doneSummary: $("doneSummary"),
     doneSummaryText: $("doneSummaryText"),
     btnDoneOpenMerged: $("btnDoneOpenMerged"),
@@ -265,6 +269,64 @@
     });
   }
 
+  // v1.7.6：原生标题栏隐藏后由页面显示标题文字，真源仍是 document.title
+  // （/api/state 返回版本时会更新），这里只做单向同步，不另建状态。
+  function syncShellTitle() {
+    var node = document.getElementById("shellTitleText");
+    if (node) node.textContent = document.title || "精核 · 文件提取";
+  }
+
+  // v1.7.6：标题栏上的菜单按钮是原生菜单的页面入口，标签由主进程下发，
+  // 与 Menu.setApplicationMenu 同一份双语模板，绝不在此复制一套翻译。
+  function syncShellMenu(payload) {
+    var nav = document.getElementById("shellMenu");
+    if (!nav) return;
+    var keys = ["file", "edit", "view", "window", "help"];
+    var labels = (payload && payload.labels) || payload || [];
+    var buttons = nav.querySelectorAll("[data-menu-key]");
+    for (var i = 0; i < buttons.length; i += 1) {
+      var idx = keys.indexOf(buttons[i].getAttribute("data-menu-key"));
+      if (idx >= 0 && labels[idx]) buttons[i].textContent = labels[idx];
+    }
+  }
+
+  function initShellMenu() {
+    var nav = document.getElementById("shellMenu");
+    if (!nav) return;
+    var menu = (typeof window !== "undefined") ? window.desktopMenu : null;
+    // 纯浏览器调试没有外壳桥，菜单行保持隐藏（原生菜单也不存在）。
+    if (!menu || !menu.available || typeof menu.open !== "function") return;
+    nav.hidden = false;
+    nav.addEventListener("click", function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest("[data-menu-key]") : null;
+      if (!btn) return;
+      menu.open(btn.getAttribute("data-menu-key"));
+    });
+    if (typeof menu.getLabels === "function") {
+      menu.getLabels().then(syncShellMenu).catch(function () {});
+    }
+    if (typeof menu.onLabelsChanged === "function") menu.onLabelsChanged(syncShellMenu);
+  }
+
+  // v1.7.6：组件状态读取重试。探测偶发超时/后端尚未就绪时，自动重试 3 次，
+  // 间隔递增（350ms / 700ms），最后一次仍失败才把错误与「重试」按钮交给用户。
+  // 只读 GET，不产生任何下载副作用；下载始终由用户点「启用」触发。
+  function apiWithRetry(path, body, timeoutMs, attempts, onRetry) {
+    var total = Math.max(1, attempts || 1);
+    function run(left) {
+      return api(path, body, timeoutMs).catch(function (err) {
+        if (left <= 1) throw err;
+        if (onRetry) onRetry(total - left, total, err);
+        return new Promise(function (resolve, reject) {
+          setTimeout(function () {
+            run(left - 1).then(resolve, reject);
+          }, 350 * (total - left));
+        });
+      });
+    }
+    return run(total);
+  }
+
   function pad(n) { return n < 10 ? "0" + n : String(n); }
 
   function nowHMS() {
@@ -391,12 +453,13 @@
     }
     if (el.setThemeLight) el.setThemeLight.checked = (currentTheme === "light");
     if (el.setThemeDark) el.setThemeDark.checked = (currentTheme === "dark");
-    // v1.7.2：关于页快捷开关跟着一起同步，两处永不脱节
-    if (el.aboutThemeState) {
-      el.aboutThemeState.textContent = tr(currentTheme === "dark" ? "深色" : "浅色");
-    }
-    if (el.aboutThemeToggle) {
-      el.aboutThemeToggle.textContent = tr(currentTheme === "dark" ? "切换到浅色" : "切换到深色");
+    // v1.7.5 / v1.7.6：原生菜单条由 Electron 绘制、标题栏由 OS 外框绘制，
+    // 网页 CSS 都管不到；经 preload 白名单把主题同步给主进程，分别切
+    // themeSource（菜单）与 titleBarOverlay（标题栏）。浏览器调试时静默跳过。
+    if (typeof window !== "undefined" && window.desktopMenu &&
+        window.desktopMenu.available &&
+        typeof window.desktopMenu.setTheme === "function") {
+      window.desktopMenu.setTheme(currentTheme);
     }
   }
 
@@ -1919,6 +1982,123 @@
     if (cmdOpen) closeCmdPalette(); else openCmdPalette();
   }
 
+  /* -------------------- v1.7.3：首次启动组件向导 -------------------- */
+  // 设计：把用户原本要点 N 次的「启用」合并成一次勾选。
+  // 只弹一次（component_setup_done 标记），只装用户勾选的组件——
+  // 每个 id 仍走 /api/components/setup-batch → install() → 手动令牌 → 白名单，
+  // 绝不自动下载未勾选组件，包体积不变，红线不破。
+  var SETUP_LIGHT_IDS = ["ffmpeg", "ocr", "yt-dlp"];  // 默认勾选的轻量组件
+  var SETUP_HEAVY_IDS = ["whisper"];                  // 默认不勾（体积大）
+
+  function setupMarkDone() {
+    // 点「安装选中」或「跳过」都落标记：下次启动不再弹。
+    // 用 persistUiPref 同款的单字段 POST，绝不整体覆盖其他设置。
+    return api("/api/settings", { settings: { component_setup_done: true } }, 10000);
+  }
+
+  function closeSetupWizard(markDone) {
+    if (el.setupOverlay) el.setupOverlay.hidden = true;
+    if (markDone) {
+      setupMarkDone().catch(function () { /* 落标记失败不影响本会话继续 */ });
+    }
+  }
+
+  function renderSetupList(components) {
+    if (!el.setupList) return;
+    el.setupList.textContent = "";
+    var byId = {};
+    (components || []).forEach(function (c) { byId[c.id] = c; });
+    // 展示顺序：轻量在前、whisper 殿后，与「默认勾选」直觉一致
+    var order = SETUP_LIGHT_IDS.concat(SETUP_HEAVY_IDS);
+    order.forEach(function (id) {
+      var c = byId[id];
+      if (!c) return;
+      if (c.installed) return;  // 已装的不列入向导
+      var heavy = SETUP_HEAVY_IDS.indexOf(id) >= 0;
+      var checked = !heavy;     // 轻量默认勾选，whisper 默认不勾
+      var label = makeEl("label", "setup-item");
+      var cb = makeEl("input");
+      cb.type = "checkbox";
+      cb.value = id;
+      cb.checked = checked;
+      cb.setAttribute("data-role", "setup-cb");
+      cb.setAttribute("data-cid", id);
+      if (heavy) cb.setAttribute("data-heavy", "true");
+      var info = makeEl("span", "setup-item-info");
+      info.appendChild(makeEl("span", "setup-item-name", c.name || id));
+      info.appendChild(makeEl("span", "setup-item-desc", c.desc || ""));
+      var sizeTip = heavy ? "约 810 MB + 模型，占用大，建议按需再装"
+                          : "轻量组件，推荐默认安装";
+      var size = makeEl("span", "setup-item-size" + (heavy ? " is-heavy" : ""), sizeTip);
+      size.setAttribute("data-i18n", heavy ? "约 810 MB + 模型，占用大，建议按需再装"
+                                            : "轻量组件，推荐默认安装");
+      info.appendChild(size);
+      label.appendChild(cb);
+      label.appendChild(info);
+      el.setupList.appendChild(label);
+    });
+  }
+
+  function openSetupWizard(components) {
+    if (!el.setupOverlay) return;
+    renderSetupList(components);
+    if (el.setupStatus) { el.setupStatus.textContent = ""; el.setupStatus.classList.remove("is-error"); }
+    el.setupOverlay.hidden = false;
+  }
+
+  // 首次启动判定：settings.component_setup_done=false 时，拉一次组件状态，
+  // 若有缺失组件则弹向导；组件齐全则直接落标记（不打扰）。
+  function maybeShowSetupWizard() {
+    if (!el.setupOverlay) return;
+    if (settings.component_setup_done !== false) {
+      el.setupOverlay.hidden = true;
+      return;
+    }
+    api("/api/components?refresh=1", undefined, 15000).then(function (r) {
+      var all = (r && r.ok) ? (r.components || []) : [];
+      var missing = all.filter(function (c) { return !c.installed; });
+      if (!missing.length) { closeSetupWizard(true); return; }
+      openSetupWizard(all);
+    }).catch(function () {
+      // 组件状态读取失败就别弹，避免空向导打扰；标记不落，下次可重试
+      el.setupOverlay.hidden = true;
+    });
+  }
+
+  function bindSetupWizard() {
+    if (el.setupInstall) el.setupInstall.addEventListener("click", function () {
+      if (!el.setupList) return;
+      var boxes = el.setupList.querySelectorAll('input[data-role="setup-cb"]:checked');
+      var ids = [];
+      for (var i = 0; i < boxes.length; i += 1) ids.push(boxes[i].value);
+      if (!ids.length) {
+        if (el.setupStatus) {
+          el.setupStatus.textContent = "未勾选任何组件，可直接跳过";
+          el.setupStatus.setAttribute("data-i18n", "未勾选任何组件，可直接跳过");
+          el.setupStatus.classList.remove("is-error");
+        }
+        return;
+      }
+      if (el.setupInstall) { el.setupInstall.disabled = true; el.setupInstall.textContent = "安装中…"; }
+      if (el.setupStatus) { el.setupStatus.textContent = "正在启动安装…"; el.setupStatus.classList.remove("is-error"); }
+      api("/api/components/setup-batch", { ids: ids }, 20000).then(function (r) {
+        // 无论成功失败都落标记：用户已明确操作过一次，不再反复弹。
+        closeSetupWizard(true);
+        var started = (r && r.started) || [];
+        var already = (r && r.already) || [];
+        var msg = "已开始安装 " + started.length + " 个组件"
+                + (already.length ? "（" + already.length + " 个已装）" : "");
+        if (r && r.skipped && r.skipped.length) msg += "，失败 " + r.skipped.length + " 个";
+        showNotice(msg);
+      }).catch(function (err) {
+        closeSetupWizard(true);
+        showNotice("组件安装请求失败：" + (err.message || err));
+      });
+    });
+    if (el.setupSkip) el.setupSkip.addEventListener("click", function () { closeSetupWizard(true); });
+    if (el.setupSkipX) el.setupSkipX.addEventListener("click", function () { closeSetupWizard(true); });
+  }
+
   /* ------------------------------ 阶段 2 / 3 后处理 ------------------------------ */
   // S1：工具健康探测结果。缺工具 / 能力未接入时，按钮必须诚实显示「未启用」。
   var toolState = null;
@@ -2019,13 +2199,26 @@
     if (!el.componentList) return;
     // v1.5.0：OCR 已纳入统一组件清单（id=ocr），不再单独探测 ocrState，
     // 全部组件的真实状态统一从 /api/components 读取。
-    api("/api/components?refresh=1", undefined, 15000).then(function (r) {
+    apiWithRetry("/api/components?refresh=1", undefined, 15000, 3,
+      function (done, total, err) {
+        el.componentList.textContent = tr("组件状态读取失败，正在重试") +
+          "（" + done + "/" + total + "）：" + (err.message || err);
+      }).then(function (r) {
       componentState = (r && r.ok) ? r : null;
       renderComponents();
       if ((componentState && componentState.job && componentState.job.running) ||
           anyComponentRunning()) startComponentPolling();
     }).catch(function (err) {
-      el.componentList.textContent = "组件状态读取失败：" + (err.message || err);
+      // v1.7.6：失败时保留可点的「重试」按钮，不再让用户干等或重开软件。
+      el.componentList.textContent = "";
+      var box = makeEl("div", "component-error");
+      box.appendChild(makeEl("div", "component-msg",
+                             tr("组件状态读取失败：") + (err.message || err)));
+      var retry = makeEl("button", "btn btn-ghost component-retry", tr("重试"));
+      retry.type = "button";
+      retry.addEventListener("click", loadComponents);
+      box.appendChild(retry);
+      el.componentList.appendChild(box);
     });
     // v1.6.1：只读清单对齐比对。失败时静默隐藏状态条，不影响组件列表本身。
     // 绝不因此触发任何下载/安装——补缺仍由用户点各组件的「启用」按钮。
@@ -2089,6 +2282,9 @@
     list.forEach(function (c) {
       var j = componentJobs[c.id] || {};
       var installing = !!j.running;
+      // v1.7.6：安装失败后按钮变「重试」（不自动重下，避免无谓流量；
+      // 用户点一次才走全新的 install() 令牌链路）。
+      var failed = j.state === "failed" && !installing;
       var row = makeEl("div", "component-row" + (c.installed ? "" : " is-missing"));
       row.setAttribute("data-cid", c.id);
 
@@ -2126,7 +2322,8 @@
 
       var compState = c.state || (c.installed ? "ok" : "missing");
       var badgeText = c.installed ? "已安装"
-                     : (compState === "timeout" ? "探测超时" : "未安装");
+                     : (compState === "timeout" ? "探测超时"
+                        : (compState === "error" ? tr("探测异常") : "未安装"));
       var badge = makeEl("span", "component-badge" + (c.installed ? "" : " is-off"),
                          installing ? "安装中" : badgeText);
       badge.setAttribute("data-role", "badge");
@@ -2134,7 +2331,8 @@
 
       // 只禁用"正在安装的那个"与"已安装的"，其他未装组件保持可点 → 真并发
       var btn = makeEl("button", "btn component-toggle",
-                       installing ? "安装中…" : (c.installed ? "已启用" : "启用"));
+                       installing ? "安装中…" : (failed ? tr("重试")
+                                                : (c.installed ? "已启用" : "启用")));
       btn.type = "button";
       btn.setAttribute("data-role", "toggle");
       btn.setAttribute("data-cid", c.id);
@@ -2173,6 +2371,9 @@
     if (btn && (st.running || st.state === "running")) {
       btn.disabled = true;
       btn.textContent = "安装中…";
+    } else if (btn && !st.running && st.state === "failed") {
+      btn.disabled = false;
+      btn.textContent = tr("重试");
     }
   }
 
@@ -3717,6 +3918,8 @@
     // v1.6.2：统一提取台——四类来源 tab + 视频子切换（纯展示层，不碰任务状态）
     bindExtractSourceTabs();
     applyLang("zh");  // 默认中文；后端设置返回后由 applySettings 覆盖
+    syncShellTitle();
+    initShellMenu();
 
     el.btnPreview.addEventListener("click", function () { doPreview(); });
     // v0.4.9：清单标题栏的「预览分流」只对勾选文件生效；未识别任何文件时回退全量。
@@ -3861,13 +4064,6 @@
     if (el.setThemeDark) el.setThemeDark.addEventListener("change", function () {
       if (el.setThemeDark.checked) { applyTheme("dark"); uiPrefOverride.theme = "dark"; persistUiPref("theme", "dark"); }
     });
-    // v1.7.2：关于页快捷开关——和设置页走同一条落盘链路，不另建状态
-    if (el.aboutThemeToggle) el.aboutThemeToggle.addEventListener("click", function () {
-      var next = currentTheme === "dark" ? "light" : "dark";
-      applyTheme(next);
-      uiPrefOverride.theme = next;
-      persistUiPref("theme", next);
-    });
     // v1.7.0：命令面板输入即时过滤；点遮罩空白处关闭
     if (el.cmdInput) el.cmdInput.addEventListener("input", function () {
       cmdActive = 0;
@@ -3961,6 +4157,8 @@
     setState("idle");
     updateFeatureButtons();
 
+    // v1.7.3：绑定首次启动组件向导的事件（安装选中 / 跳过 / 关闭 ×）
+    bindSetupWizard();
     // 启动即读后端设置：决定「默认输出目录」与「是否记住路径」
     api("/api/settings", undefined, 10000).then(function (r) {
       if (!r || !r.ok) return;
@@ -3969,6 +4167,9 @@
         el.outPath.value = settings.default_outdir;
         refreshMergedButton();
       }
+      // v1.7.3：首次启动（component_setup_done=false）弹一次组件向导。
+      // 放在设置加载后，确保 applySettings 已把标记写入 settings。
+      maybeShowSetupWizard();
     }).catch(function () { /* 读不到设置就用默认值，不影响使用 */ });
 
     // 桌面端「关窗即退」心跳：每 2 秒上报一次「窗口还开着」。
@@ -3986,6 +4187,7 @@
       // 全局标签，否则首页的 headerTag 会一直停留在占位符「—」。
       if (st.version && st.version !== "unknown") {
         document.title = "精核 · 文件提取 v" + st.version;
+        syncShellTitle();
         if (el.headerTag) el.headerTag.textContent = "v" + st.version;
       }
       if (st.log_file) {

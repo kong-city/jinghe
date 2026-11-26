@@ -323,4 +323,21 @@ EN = {
     "从 md 里抽出核心知识点。默认抽取式：原文原句、逐字可回溯，零依赖离线。": "Extracts the key points from md. Extractive by default: original sentences, word-for-word traceable, fully offline with zero dependencies.",
     "在提纯结果上做术语归一 / 合并去重 / 结构重排。可信模式只改写法不动事实；大模型模式可补写，改动以颜色标记。": "Normalizes terms, merges duplicates and restructures the refined result. Trusted mode only rewrites wording without touching facts; LLM mode may add content, with every change colour-marked.",
     "把产物沉淀为本机知识库条目，可全文检索、按文档浏览块、点块回跳原文位置。": "Distills artifacts into local knowledge base entries you can full-text search, browse block by block, and jump back to the source position.",
+    # v1.7.3：首次启动组件向导
+    "初始化组件": "Initialize components",
+    "首次使用 · 组件初始化": "First run · Component setup",
+    "跳过": "Skip",
+    "勾选需要的组件，一次装齐。轻量组件默认已选；Whisper 体积较大，建议按需再装。不勾选也不会下载任何东西，可随时到「设置 → 相关组件」单独启用。": "Select the components you need and install them all at once. Lightweight ones are pre-selected; Whisper is large, so install it only if needed. Nothing is downloaded unless you select it - you can always enable components later under Settings > Components.",
+    "组件列表": "Component list",
+    "安装选中组件": "Install selected",
+    "未勾选任何组件，可直接跳过": "No components selected - you can skip this step",
+    "约 810 MB + 模型，占用大，建议按需再装": "~810 MB plus model; large, install only if needed",
+    "轻量组件，推荐默认安装": "Lightweight, recommended",
+    # v1.7.4：关于页主题快捷开关已移除（主题入口收敛到设置页唯一一处），
+    # 对应的「切换到深色/浅色」「与设置同步」三条英译一并删除；i18n.js 自动段重建后不再出现。
+    # v1.7.6：组件状态重试 / 探测异常提示
+    "重试": "Retry",
+    "探测异常": "Probe error",
+    "组件状态读取失败，正在重试": "Component status read failed, retrying",
+    "组件状态读取失败：": "Component status read failed: ",
 }

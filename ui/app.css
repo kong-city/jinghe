@@ -24,6 +24,7 @@
   --c-page: #F4F6F8;
   --c-nav-active: #EAF1F8;
   --c-input-bg: #FFFFFF;
+  --shell-titlebar-h: 28px;
 }
 
 * { box-sizing: border-box; }
@@ -46,6 +47,40 @@ body {
 
 button, input { font-family: inherit; }
 
+/* v1.7.6：自定义标题栏文字行（原生 titleBarOverlay 只负责右侧窗口按钮）。
+   app-region 让整行可拖动窗口；宽度避开 overlay 的按钮区，防止标题压在按钮下。 */
+.shell-titlebar {
+  height: var(--shell-titlebar-h);
+  width: env(titlebar-area-width, 100%);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-3);
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  user-select: none;
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+.shell-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 16px; }
+/* v1.7.6：原生菜单条被隐藏后，页面按钮只负责「弹出」同一套原生菜单 */
+.shell-menu { display: flex; align-items: center; gap: 2px; }
+.shell-menu-btn {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
+  padding: 3px 9px;
+  line-height: 1.4;
+  cursor: default;
+}
+.shell-menu-btn:hover { background: var(--c-nav-active); color: var(--c-text); }
+
 /* ---------- 应用骨架：左侧导航 + 右侧内容 ---------- */
 .app {
   /* 侧栏宽度由 JS 拖拽后写入 --sidebar-w；折叠态由 .nav-collapsed 覆盖为 58px */
@@ -54,7 +89,7 @@ button, input { font-family: inherit; }
   align-items: stretch;
   /* 桌面应用布局：整页不滚，视口高度锁死，右侧内容独立滚动。
      这样左侧导航栏始终固定在原位，不随右侧内容上下移动。 */
-  height: 100vh;
+  height: calc(100vh - var(--shell-titlebar-h));
   overflow: hidden;
 }
 
@@ -63,7 +98,7 @@ button, input { font-family: inherit; }
   top: 0;
   flex: 0 0 auto;
   width: var(--sidebar-w);
-  height: 100vh;
+  height: 100%;
   /* 导航栏固定不滚动：内容始终在视口内，无上下/左右滚动条。
      必须显式写 overflow-x: hidden —— CSS 规范下 overflow-y:hidden 会把
      默认 overflow-x:visible 隐式计算为 auto，导致底部冒出横向滚动条。 */
@@ -163,20 +198,17 @@ button, input { font-family: inherit; }
   stroke-linejoin: round;
 }
 
-/* 导航图标配色（用户 2026-11-23 裁决：折叠态统一深色，展开态每个功能各自彩色）
-   - 展开：7 个功能图标各有专属色，一眼区分入口
-   - 折叠：文字隐藏后图标是唯一线索，统一加深到近黑提升辨识度
-   用 :not(.nav-collapsed) 限定展开态，与折叠态规则天然互斥，不依赖优先级覆盖。 */
-.app:not(.nav-collapsed) .nav-item[data-page="home"] svg { stroke: #185FA5; }
-.app:not(.nav-collapsed) .nav-item[data-page="process"] svg { stroke: #0F8A8A; }
-.app:not(.nav-collapsed) .nav-item[data-page="refine"] svg { stroke: #8257A8; }
-.app:not(.nav-collapsed) .nav-item[data-page="revise"] svg { stroke: #C2701C; }
-.app:not(.nav-collapsed) .nav-item[data-page="kb"] svg { stroke: #2E7D52; }
-.app:not(.nav-collapsed) .nav-item[data-page="settings"] svg { stroke: #5C6B7A; }
-.app:not(.nav-collapsed) .nav-item[data-page="about"] svg { stroke: #9A3F3F; }
-
-.app.nav-collapsed .nav-item svg { stroke: #1F1F1D; }
-.app.nav-collapsed .nav-item { color: #1F1F1D; }
+/* 导航图标配色（v1.7.7 用户裁决：展开/折叠一致，深浅两主题都彩色）
+   - 每个功能一个专属色，折叠后图标是唯一线索，必须一眼可辨；
+   - 折叠态曾统一写成近黑 #1F1F1D，在深色侧栏底 #1E2226 上几乎隐形，已取消该规则；
+   - 深色主题换用同色相提亮版（见下方 dark 段），保证在深色底上对比度 ≥ 3:1。 */
+.nav-item[data-page="home"] svg { stroke: #185FA5; }
+.nav-item[data-page="process"] svg { stroke: #0F8A8A; }
+.nav-item[data-page="refine"] svg { stroke: #8257A8; }
+.nav-item[data-page="revise"] svg { stroke: #C2701C; }
+.nav-item[data-page="kb"] svg { stroke: #2E7D52; }
+.nav-item[data-page="settings"] svg { stroke: #5C6B7A; }
+.nav-item[data-page="about"] svg { stroke: #9A3F3F; }
 
 .nav-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -774,6 +806,9 @@ button, input { font-family: inherit; }
 }
 .component-list { margin-top: 4px; }
 .component-empty { padding: 14px 2px; font-size: 13px; color: #6F6D66; }
+/* v1.7.6：状态读取失败时可点的重试区（与组件行同一真源，不另建状态） */
+.component-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 8px 0; }
+.component-retry { min-width: 88px; }
 .component-row {
   display: flex;
   align-items: center;
@@ -1060,16 +1095,6 @@ button, input { font-family: inherit; }
 .about-grid-update {
   grid-template-columns: minmax(132px, 1fr) 1fr;
 }
-
-/* v1.7.2：关于页主题快捷开关行（按钮 + 当前状态，沿用现有卡片风格） */
-.about-theme-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 10px;
-}
-.about-theme-row b { font-size: 12px; color: #6B6A65; }
-html[data-theme="dark"] .about-theme-row b { color: #B8BDC2; }
 
 /* v0.4.9：轻量提示 toast——「当前是最新版本」等短反馈，3 秒自动消失 */
 .toast {
@@ -1411,8 +1436,15 @@ html[data-theme="dark"] .nav-item { color: var(--c-text); }
 html[data-theme="dark"] .nav-item:hover { background: #2B3036; color: var(--c-text); }
 html[data-theme="dark"] .nav-item.active { background: var(--c-nav-active); color: var(--c-accent); }
 html[data-theme="dark"] .nav-group-title { color: var(--c-muted); }
-html[data-theme="dark"] .app:not(.nav-collapsed) .nav-item svg { stroke: var(--c-text); }
-html[data-theme="dark"] .app:not(.nav-collapsed) .nav-item.active svg { stroke: var(--c-accent); }
+/* 深色主题下的导航图标：同色相提亮版，保证深色侧栏底上对比度 ≥ 3:1。
+   v1.7.7 前这里把图标压成单色 var(--c-text)，彩色丢失；折叠态更是近黑不可见。 */
+html[data-theme="dark"] .nav-item[data-page="home"] svg { stroke: #7FB4EE; }
+html[data-theme="dark"] .nav-item[data-page="process"] svg { stroke: #5AC8C8; }
+html[data-theme="dark"] .nav-item[data-page="refine"] svg { stroke: #BB92E0; }
+html[data-theme="dark"] .nav-item[data-page="revise"] svg { stroke: #EDA253; }
+html[data-theme="dark"] .nav-item[data-page="kb"] svg { stroke: #5CC08A; }
+html[data-theme="dark"] .nav-item[data-page="settings"] svg { stroke: #9EAAB8; }
+html[data-theme="dark"] .nav-item[data-page="about"] svg { stroke: #E08A8A; }
 html[data-theme="dark"] .brand-text h1,
 html[data-theme="dark"] .history-name,
 html[data-theme="dark"] .component-name { color: var(--c-text); }
@@ -1780,3 +1812,128 @@ html[data-theme="dark"] .pipe-meta { background: #2B3036; color: var(--c-muted);
   .extract-panel[data-extract-panel="file"] > .progress { grid-row: auto; }
   .extract-panel[data-extract-panel="file"] > .done-summary { grid-row: auto; }
 }
+
+/* ===== v1.7.3：首次启动组件向导 ===== */
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(20, 22, 25, .45);
+}
+.setup-overlay[hidden] { display: none; }
+.setup-box {
+  width: min(520px, calc(100vw - 40px));
+  max-height: 82vh;
+  overflow-y: auto;
+  background: #FFFFFF;
+  border: 1px solid #D8DBDF;
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .22);
+}
+.setup-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px 10px;
+}
+.setup-title { font-size: 15px; font-weight: 600; color: #1F1F1D; }
+.setup-x {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 22px; line-height: 1; color: #6F6D66; padding: 0 4px;
+}
+.setup-x:focus-visible { outline: 2px solid #185FA5; outline-offset: 2px; border-radius: 4px; }
+.setup-desc {
+  margin: 0; padding: 0 18px 12px;
+  font-size: 12.5px; line-height: 1.6; color: #5F5E5A;
+}
+.setup-list { padding: 0 18px; }
+.setup-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 10px; margin-bottom: 8px;
+  border: 1px solid #E5E3DC; border-radius: 8px; cursor: pointer;
+}
+.setup-item:last-child { margin-bottom: 0; }
+.setup-item:has(input:checked) { border-color: #185FA5; background: #F3F8FE; }
+.setup-item input { margin: 2px 0 0; flex: none; accent-color: #185FA5; }
+.setup-item input:focus-visible { outline: 2px solid #185FA5; outline-offset: 2px; }
+.setup-item-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.setup-item-name { font-size: 13px; font-weight: 500; color: #1F1F1D; }
+.setup-item-desc { font-size: 11.5px; color: #6F6D66; line-height: 1.45; }
+.setup-item-size {
+  font-size: 11px; color: #6F6D66;
+}
+.setup-item-size.is-heavy { color: #B5651D; font-weight: 500; }
+.setup-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px 16px; margin-top: 12px;
+  border-top: 1px solid #E5E3DC;
+}
+.setup-status { font-size: 12px; color: #5F5E5A; min-height: 16px; }
+.setup-status.is-error { color: #C0392B; }
+.setup-actions { display: flex; gap: 8px; flex: none; }
+html[data-theme="dark"] .setup-box { background: #22262B; border-color: #3A4048; }
+html[data-theme="dark"] .setup-title { color: #ECEDEE; }
+html[data-theme="dark"] .setup-desc,
+html[data-theme="dark"] .setup-item-desc,
+html[data-theme="dark"] .setup-status { color: #B6B9BE; }
+html[data-theme="dark"] .setup-x { color: #B6B9BE; }
+html[data-theme="dark"] .setup-item { border-color: #3A4048; }
+html[data-theme="dark"] .setup-item:has(input:checked) { border-color: #5C8EC4; background: #233348; }
+html[data-theme="dark"] .setup-item-name { color: #ECEDEE; }
+html[data-theme="dark"] .setup-item-size.is-heavy { color: #E0A45C; }
+html[data-theme="dark"] .setup-foot { border-color: #3A4048; }
+
+@media (max-width: 560px) {
+  .setup-foot { flex-direction: column; align-items: stretch; }
+  .setup-actions { justify-content: flex-end; }
+}
+
+/* ========================================================================== */
+/* v1.7.4：深色主题补齐浅色硬编码卡片                                           */
+/* 根因：这些内层卡片用硬编码浅色底（#F7F9FB / #EAECEF），v1.7.0 的深色集中覆写   */
+/*       只覆盖了 .card 外层，内层信息格漏掉 → 用户切深色后仍看到白块。            */
+/* ========================================================================== */
+html[data-theme="dark"] .about-item {
+  background: var(--c-input-bg);
+  border-color: var(--c-border);
+}
+html[data-theme="dark"] .update-status {
+  background: var(--c-input-bg);
+  border-color: var(--c-border);
+  color: var(--c-muted);
+}
+html[data-theme="dark"] .update-status.is-ok {
+  background: #223021; border-color: #4A6B3E; color: #C5E3B4;
+}
+html[data-theme="dark"] .update-status.is-new {
+  background: var(--c-nav-active); border-color: #3E5B7A; color: var(--c-accent);
+}
+html[data-theme="dark"] .update-status.is-err {
+  background: #3A2424; border-color: #6B3E3E; color: #E8B4B4;
+}
+html[data-theme="dark"] .bar-warn {
+  background: #3A2E1C; border-color: #6B5327; color: #E8C78A;
+}
+html[data-theme="dark"] .bar-ok {
+  background: #223021; border-color: #4A6B3E; color: #C5E3B4;
+}
+/* 其余内层容器：指标格 / 功能按钮 / 工具状态 / 组件提示与进度轨道 */
+html[data-theme="dark"] .metric,
+html[data-theme="dark"] .feature-btn,
+html[data-theme="dark"] .feature-btn.is-soon,
+html[data-theme="dark"] .tool-status,
+html[data-theme="dark"] .component-hint,
+html[data-theme="dark"] .manifest-status,
+html[data-theme="dark"] .manifest-status.has-gap,
+html[data-theme="dark"] .kb-rel-item {
+  background: var(--c-input-bg);
+  border-color: var(--c-border);
+  color: var(--c-text);
+}
+html[data-theme="dark"] .manifest-status.has-gap { color: #E8C78A; }
+html[data-theme="dark"] .component-progress-track,
+html[data-theme="dark"] .update-progress-track { background: #2B3036; }
+html[data-theme="dark"] .toast.is-err { background: #3A2424; border-color: #6B3E3E; color: #E8B4B4; }
+html[data-theme="dark"] .cmd-item.is-active .cmd-icon { background: #2F5C86; color: #FFFFFF; }

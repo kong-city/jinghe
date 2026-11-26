@@ -111,6 +111,12 @@ const sandbox = {
   window: {
     setTimeout(fn, ms) { return 0; },
     clearTimeout() {},
+    // v1.7.5：原生主题同步桥桩，记录 applyTheme 下发的主题值。
+    desktopMenu: {
+      available: true,
+      setLang() {},
+      setTheme(t) { sandbox.__nativeTheme = t; },
+    },
   },
   currentLang: "zh",
   currentTheme: "light",
@@ -167,8 +173,10 @@ function flatten(node, out) {
 sandbox.__applyTheme("dark");
 check(htmlNode.getAttribute("data-theme") === "dark", "applyTheme('dark') 落到 html[data-theme=dark]");
 check(themeDark.checked === true && themeLight.checked === false, "深色单选被选中");
+check(sandbox.__nativeTheme === "dark", "applyTheme('dark') 同步原生菜单主题为 dark");
 sandbox.__applyTheme("light");
 check(htmlNode.getAttribute("data-theme") === "light", "applyTheme('light') 切回浅色");
+check(sandbox.__nativeTheme === "light", "applyTheme('light') 同步原生菜单主题为 light");
 sandbox.currentLang = "en";
 
 // ---- 场景 2：命令注册表 + 模糊搜索 ----
@@ -209,14 +217,16 @@ check(doneBtn.hidden === false, "有产物时显示打开合并文档按钮");
 sandbox.__showDoneSummary({ success: 2, failed: 0, elapsed: 1.0, outdir: "" });
 check(doneBtn.hidden === true, "无产物时隐藏打开合并文档按钮");
 
-// ---- 场景 5：v1.7.2 关于页主题开关真跑点击链路 ----
-// 从 app.js 抽取真实的点击处理函数体（不是手抄副本），在最小 stub 上执行，
-// 断言：①切到 html[data-theme] ②关于页状态/按钮文案同步
-//      ③走 persistUiPref 落盘 ④设置页单选同步（单一真源）。
-(function testAboutThemeClick() {
-  const marker = 'if (el.aboutThemeToggle) el.aboutThemeToggle.addEventListener("click", function () {';
+// ---- 场景 5：v1.7.4 主题入口唯一化——关于页按钮已删，设置页单选链路真跑 ----
+// 从 app.js 抽取真实的设置页 setThemeDark change 处理函数体（不是手抄副本），
+// 在最小 stub 上执行，断言：①关于页按钮引用已消失 ②切到 html[data-theme]
+//      ③走 persistUiPref 落盘 ④uiPrefOverride 同步 ⑤设置页单选同步。
+(function testThemeEntryUnique() {
+  check(js.indexOf("aboutThemeToggle") < 0 && js.indexOf("aboutThemeState") < 0,
+        "关于页主题按钮引用已从 app.js 移除");
+  const marker = 'if (el.setThemeDark) el.setThemeDark.addEventListener("change", function () {';
   const start = js.indexOf(marker);
-  if (start < 0) { check(false, "关于页主题 click 绑定存在"); return; }
+  if (start < 0) { check(false, "设置页深色单选绑定存在"); return; }
   const bodyStart = js.indexOf("{", js.indexOf("function () {", start));
   let depth = 0, inStr = false, q = "", esc = false, bodyEnd = -1;
   for (let i = bodyStart; i < js.length; i++) {
@@ -227,24 +237,18 @@ check(doneBtn.hidden === true, "无产物时隐藏打开合并文档按钮");
     else if (c === "}") { depth--; if (depth === 0) { bodyEnd = i; break; } }
   }
   const body = js.slice(bodyStart + 1, bodyEnd);
+  themeDark.checked = true;
+  themeLight.checked = false;
+  htmlNode.attrs = {};
   const clickSandbox = {
-    currentTheme: "light",
     uiPrefOverride: { lang: null, theme: null },
-    el: {
-      aboutThemeState: aboutState,
-      setThemeLight: themeLight,
-      setThemeDark: themeDark,
-      aboutThemeToggle: aboutToggle,
-    },
+    el: { setThemeLight: themeLight, setThemeDark: themeDark },
     document: { documentElement: htmlNode },
     saved: [],
     applyTheme(t) {
-      clickSandbox.currentTheme = (t === "dark") ? "dark" : "light";
-      htmlNode.setAttribute("data-theme", clickSandbox.currentTheme);
-      themeLight.checked = clickSandbox.currentTheme === "light";
-      themeDark.checked = clickSandbox.currentTheme === "dark";
-      aboutState.textContent = (clickSandbox.currentTheme === "dark") ? "Dark" : "Light";
-      aboutToggle.textContent = (clickSandbox.currentTheme === "dark") ? "Switch to light" : "Switch to dark";
+      htmlNode.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+      themeLight.checked = t === "light";
+      themeDark.checked = t === "dark";
     },
     persistUiPref(field, value) { clickSandbox.saved.push([field, value]); },
   };
@@ -252,21 +256,18 @@ check(doneBtn.hidden === true, "无产物时隐藏打开合并文档按钮");
   try {
     vm.runInContext(body, clickSandbox);
   } catch (e) {
-    check(false, "关于页点击处理可执行（" + e.message + "）");
+    check(false, "设置页主题 change 处理可执行（" + e.message + "）");
     return;
   }
-  check(clickSandbox.currentTheme === "dark", "关于页点击：浅色→深色");
-  check(htmlNode.getAttribute("data-theme") === "dark", "关于页点击落到 html[data-theme=dark]");
+  check(htmlNode.getAttribute("data-theme") === "dark", "设置页单选落到 html[data-theme=dark]");
   check(clickSandbox.saved.length === 1 && clickSandbox.saved[0][0] === "theme"
-        && clickSandbox.saved[0][1] === "dark", "关于页点击写盘 theme=dark");
-  check(clickSandbox.uiPrefOverride.theme === "dark", "关于页点击同步 uiPrefOverride");
-  check(themeDark.checked === true && themeLight.checked === false, "关于页点击同步设置页单选");
-  check(aboutState.textContent === "Dark" && aboutToggle.textContent === "Switch to light",
-        "关于页点击后按钮/状态同步为深色（英文）");
+        && clickSandbox.saved[0][1] === "dark", "设置页单选写盘 theme=dark");
+  check(clickSandbox.uiPrefOverride.theme === "dark", "设置页单选同步 uiPrefOverride");
+  check(themeDark.checked === true && themeLight.checked === false, "设置页单选状态同步");
 })();
 
 if (failures) {
   console.error("\nUI 体验行为测试失败: " + failures + " 项");
   process.exit(1);
 }
-console.log("\nUI 体验行为测试全部通过（25 项断言）");
+console.log("\nUI 体验行为测试全部通过（26 项断言）");

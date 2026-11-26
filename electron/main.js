@@ -27,7 +27,7 @@ try {
     `[${new Date().toISOString()}] main.js 已加载\n`, 'utf8');
 } catch (_) { /* 诊断失败不影响主流程 */ }
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell, ipcMain, nativeTheme } = require('electron');
 // 免安装版由 pack_portable.py 自行组装，可能未带 electron-updater 依赖。
 // 可选加载：依赖缺失时只禁用自更新，绝不让整个外壳启动崩溃。
 let autoUpdater = null;
@@ -72,6 +72,31 @@ let tray = null;               // 右下角托盘图标（关窗后程序在后�
 let trayNotified = false;      // 「已最小化到托盘」提示只弹一次
 let quitting = false;          // 退出流程防重入
 let cleanupDone = false;       // 子进程回收完成，before-quit 才放行
+
+// v1.7.6：Windows 标题栏由 OS 绘制，themeSource 改不动它（用户截图实测）。
+// 用 titleBarOverlay 接管外框配色：色值与网页暗色 token 同源，切主题时经
+// win.setTitleBarOverlay() 实时更新。DOM 里的标题文字见 ui/index.html 的
+// #shellTitlebar（overlay 只画右侧窗口按钮，不画标题文字）。
+const TITLEBAR_THEME = Object.freeze({
+  light: { color: '#f5f6f8', symbolColor: '#2A2E33' },
+  dark: { color: '#1E2226', symbolColor: '#ECEDEE' },
+});
+function applyTitleBarTheme(theme) {
+  const source = (theme === 'dark') ? 'dark' : 'light';
+  if (!mainWindow || mainWindow.isDestroyed()) return source;
+  if (typeof mainWindow.setTitleBarOverlay !== 'function') return source;
+  const colors = TITLEBAR_THEME[source];
+  try {
+    mainWindow.setTitleBarOverlay({
+      color: colors.color,
+      symbolColor: colors.symbolColor,
+    });
+    shellLog('原生标题栏配色已同步 color=' + colors.color);
+  } catch (err) {
+    shellLog('标题栏配色同步失败（已忽略）：' + String(err));
+  }
+  return source;
+}
 
 /* -------------------------------------------------------------------------- */
 /* 托盘（用户裁决 2026-11-22）：关窗不再退出，缩到右下角图标，后台继续同步订阅   */
@@ -182,6 +207,14 @@ const MENU_LABELS = {
 };
 
 let currentMenuLang = 'zh';
+// v1.7.6：Windows 隐藏标题栏后原生菜单条被 OS 一并拿掉（截图实测），
+// 页面顶栏保留同名按钮，点击时仍弹出下面这套原生菜单——骨架/双语不丢。
+const MENU_TOP_KEYS = Object.freeze(['file', 'edit', 'view', 'window', 'help']);
+
+function menuLabels(lang) {
+  const t = MENU_LABELS[(lang === 'en') ? 'en' : 'zh'];
+  return MENU_TOP_KEYS.map(function (key) { return t[key]; });
+}
 
 function buildAppMenu(lang) {
   currentMenuLang = (lang === 'en') ? 'en' : 'zh';
@@ -315,7 +348,45 @@ function registerUpdateIPC() {
   // 网页 applyLang 切语言后同步重建原生菜单（白名单由 preload.js 控制）。
   ipcMain.handle('menu:set-lang', (_event, lang) => {
     buildAppMenu(lang);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('menu:labels-changed',
+        { keys: MENU_TOP_KEYS, labels: menuLabels(currentMenuLang) });
+    }
     return { ok: true, lang: currentMenuLang };
+  });
+
+  // v1.7.6：页面顶栏菜单按钮 → 弹出同一套原生菜单（不另建命令，杜绝行为分叉）。
+  ipcMain.handle('menu:labels', () => ({
+    keys: MENU_TOP_KEYS, labels: menuLabels(currentMenuLang),
+  }));
+  ipcMain.handle('menu:open', (_event, key) => {
+    const idx = MENU_TOP_KEYS.indexOf(key);
+    const menu = Menu.getApplicationMenu();
+    if (idx < 0 || !menu || !menu.items[idx] || !menu.items[idx].submenu) {
+      return { ok: false, error: '菜单项不可用' };
+    }
+    try {
+      // 不传 x/y 时 Electron 默认在鼠标位置弹出；窗口归属显式指定，避免弹出后失焦。
+      // 日志写在 popup 前：Windows 上 popup 会阻塞到菜单关闭，写后面无法证明已触发。
+      shellLog('页面入口弹出原生菜单 key=' + key);
+      menu.items[idx].submenu.popup({ window: mainWindow });
+      return { ok: true };
+    } catch (err) {
+      shellLog('弹出原生菜单失败：' + String(err));
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  // v1.7.5：网页 applyTheme 切主题后同步原生菜单/标题栏配色。
+  // Windows 上原生菜单由 Electron/Chromium 绘制，只认 themeSource，网页 CSS 管不到；
+  // 值已在 preload 归一化为 dark/light，这里再兜一层防御。
+  ipcMain.handle('menu:set-theme', (_event, theme) => {
+    const source = (theme === 'dark') ? 'dark' : 'light';
+    nativeTheme.themeSource = source;
+    shellLog('原生主题已同步 themeSource=' + source);
+    // v1.7.6：菜单归 themeSource 管，标题栏归 titleBarOverlay 管，两条链路一起切。
+    applyTitleBarTheme(source);
+    return { ok: true, themeSource: source, shouldUseDarkColors: nativeTheme.shouldUseDarkColors };
   });
 
   ipcMain.handle('update:check', async () => {
@@ -612,7 +683,17 @@ function createWindow() {
     minWidth: 720,
     minHeight: 480,
     title: '精核',
+    // 品牌图标：开发态跑通用 electron.exe（默认图标），必须显式指定才能显示精核图标；
+    // 打包态 electron-builder 也会用同一张真源图生成 exe 图标，两处同源不冲突。
+    icon: nativeImage.createFromPath(trayIconPath()),
     backgroundColor: '#f5f6f8',
+    // v1.7.6：标题栏由 overlay 绘制，颜色可随主题实时改；标题文字由页面 #shellTitlebar 承担。
+    // Windows/Linux 下 hidden 必须与 titleBarOverlay 同用，否则窗口按钮会整排消失。
+    ...(process.platform === 'win32' ? {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: TITLEBAR_THEME.light.color,
+                         symbolColor: TITLEBAR_THEME.light.symbolColor },
+    } : {}),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -624,6 +705,10 @@ function createWindow() {
     },
   });
 
+  // 隐藏原生标题栏后显式保住菜单条（B 方案：菜单可不用但不能没有）。
+  try { if (process.platform === 'win32') mainWindow.setMenuBarVisibility(true); } catch (err) {
+    shellLog('菜单条显式保活失败（已忽略）：' + String(err));
+  }
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.loadURL(APP_URL);
 
@@ -676,6 +761,8 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     shellLog('外壳就绪 isPackaged=' + app.isPackaged + ' port=' + PORT);
+    // 默认浅色，与 settings.theme 默认值一致；网页加载设置后会经 menu:set-theme 同步真实值。
+    nativeTheme.themeSource = 'light';
     buildAppMenu('zh');    // 先建中文菜单骨架；网页设置返回语言后再经 IPC 同步
     registerUpdateIPC();   // 更新 IPC 白名单（update:check/download/install/cancel）+ menu:set-lang
     bindUpdaterEvents();   // updater 进度 → 网页 update:status / update:progress

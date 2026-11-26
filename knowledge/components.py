@@ -801,10 +801,15 @@ def list_components(refresh: bool = False) -> dict:
     ensure_component_path()
     items = []
     for c in COMPONENTS:
-        if c["kind"] == "pylib":
-            st = _probe_pylib(c)
-        else:
-            st = _probe_one(c["probe"])
+        # v1.7.6：单项探测失败不得拖垮整个清单。典型场景：本机没装系统
+        # Python 时 _probe_pylib() → _python_for_pip() 抛 RuntimeError，
+        # 旧行为让 /api/components 整条 500，设置页只剩一句「状态读取失败」，
+        # 连 ffmpeg 等正常组件也看不见。这里逐项隔离，如实给出可读原因。
+        try:
+            st = _probe_pylib(c) if c["kind"] == "pylib" else _probe_one(c["probe"])
+        except Exception as exc:  # noqa: BLE001 - 探测失败必须降级为单项状态
+            st = {"available": False, "version": "", "path": "",
+                  "reason": str(exc) or "探测异常", "state": "error"}
         items.append({
             "id": c["id"],
             "name": c["name"],
@@ -1598,6 +1603,54 @@ def auto_install_missing(*, enabled: bool = False) -> dict:
             skipped.append({"id": cid, "reason": r.get("error", "")})
     return {"ok": True, "enabled": True, "missing": missing,
             "started": started, "already": already, "skipped": skipped}
+
+
+def batch_enable(component_ids) -> dict:
+    """用户在「首次启动向导」一次性勾选后的批量启用（v1.7.3）。
+
+    与 :func:`auto_install_missing` 的本质区别：
+      * 本函数**只由用户点击触发**（前端向导的「安装选中组件」按钮），
+        绝不参与启动 / 探测 / 定时任务，因此不读任何「静默开关」；
+      * 每个 id 仍逐一走 :func:`install` → 手动令牌 → 白名单 URL，
+        下载闸门 ``_require_opt_in`` 完全生效，不新增任何网络路径；
+      * 只接受内置白名单 id，前端传来的任意值先过滤，杜绝任意安装。
+
+    这一步的语义是「把用户原本要点 N 次的『启用』合并成一次点击」，
+    不是自动下载——用户没勾选的组件绝不会被安装。
+
+    :param component_ids: 用户勾选的组件 id 序列（可含重复/非法值，均被收敛）
+    :return: {ok, requested, started, already, skipped, invalid}
+    """
+    if not isinstance(component_ids, (list, tuple)):
+        return {"ok": False, "error": "组件列表格式错误", "requested": [],
+                "started": [], "already": [], "skipped": [], "invalid": []}
+    # 去重保序 + 白名单过滤：非法 id 不安装、单独回报
+    requested, invalid = [], []
+    seen = set()
+    for raw in component_ids:
+        cid = str(raw).strip()
+        if cid in seen:
+            continue
+        seen.add(cid)
+        if cid in _BY_ID:
+            requested.append(cid)
+        else:
+            invalid.append(cid)
+    if not requested:
+        return {"ok": False, "error": "没有可安装的组件", "requested": [],
+                "started": [], "already": [], "skipped": [], "invalid": invalid}
+    started, already, skipped = [], [], []
+    for cid in requested:
+        try:
+            r = install(cid)
+            if r.get("ok"):
+                (already if r.get("already_installed") else started).append(cid)
+            else:
+                skipped.append({"id": cid, "reason": r.get("error", "")})
+        except Exception as exc:  # 单组件失败不影响其余勾选
+            skipped.append({"id": cid, "reason": type(exc).__name__})
+    return {"ok": True, "requested": requested, "started": started,
+            "already": already, "skipped": skipped, "invalid": invalid}
 
 
 # --------------------------------------------------------------------------- #

@@ -5241,7 +5241,10 @@ class AppContractTest(unittest.TestCase):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
         # .app 锁视口、整页不滚
         app_block = css[css.index(".app {"):css.index(".sidebar {")]
-        self.assertIn("height: 100vh", app_block)
+        # v1.7.6：标题栏行占 --shell-titlebar-h，内容区锁剩余视口高度。
+        self.assertTrue(("height: 100vh" in app_block) or
+                        ("height: calc(100vh - var(--shell-titlebar-h))" in app_block),
+                        ".app 必须锁视口高度（含标题栏扣减）")
         self.assertIn("overflow: hidden", app_block)
         # .content 独立滚动
         content_block = css[css.index(".content {"):css.index(".page {")]
@@ -5340,7 +5343,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn("right: 0", rz)
 
     # ------------------------------------------------------------------ #
-    # 66) 折叠交互改为双击导航项；折叠态图标变深色（展开恢复原色）
+    # 66) 折叠交互改为双击导航项；折叠态图标保持功能专属色（v1.7.7 裁决）
     # ------------------------------------------------------------------ #
     def test_66_toggle_button_fixed_alignment(self):
         css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
@@ -5352,10 +5355,12 @@ class AppContractTest(unittest.TestCase):
         # 双击任意导航项折叠/展开
         self.assertIn('addEventListener("dblclick"', js, "应绑定双击折叠")
         self.assertIn("setNavCollapsed", js, "双击应触发折叠切换")
-        # 折叠态图标变深色（用户 2026-11-23 裁决）
-        self.assertIn(".app.nav-collapsed .nav-item svg", css,
-                      "折叠态缺图标变深规则")
-        self.assertIn("#1F1F1D", css, "折叠态图标深色调缺失")
+        # v1.7.7：折叠态图标不再统一压成近黑（深色底上不可见），保持功能专属色。
+        # 折叠态只保留「居中 + 隐藏文字」的布局规则，不得再有单独改色的规则。
+        self.assertNotIn(".app.nav-collapsed .nav-item svg", css,
+                         "折叠态不得单独改图标色，应与展开态共用专属色")
+        self.assertNotIn(".app.nav-collapsed .nav-item { color: #1F1F1D; }", css,
+                         "折叠态不得把文字色写死为近黑")
         # side-top 保留占位（min-height 维持基准线，不跳动）
         top = css[css.index(".side-top {"):css.index(".nav {")]
         self.assertIn("min-height: 40px", top, "side-top 占位高度应保留")

@@ -209,6 +209,15 @@ class NativeMenuI18nTest(unittest.TestCase):
         self.assertNotIn("exposeInMainWorld('desktopMenu', ipcRenderer", self.preload)
         self.assertIn("(lang === 'en') ? 'en' : 'zh'", self.preload)
 
+    def test_06_native_theme_follows_app_theme(self):
+        """v1.7.5：原生菜单条跟随应用主题——applyTheme → 白名单 → themeSource 全链路。"""
+        self.assertIn("window.desktopMenu.setTheme(currentTheme)", JS_CODE)
+        self.assertIn("setTheme: 'menu:set-theme'", self.preload)
+        self.assertIn("(theme === 'dark') ? 'dark' : 'light'", self.preload)
+        self.assertIn("ipcMain.handle('menu:set-theme'", self.main)
+        self.assertIn("nativeTheme.themeSource = source", self.main)
+        self.assertIn("nativeTheme.themeSource = 'light'", self.main)
+
 
 class UiDiagnosticsTest(unittest.TestCase):
     """v1.7.0：借鉴竞品的界面改造守护——逐文件诊断徽标 + 同源块反向引用。

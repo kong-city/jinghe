@@ -32,6 +32,7 @@ for _jinghe_sub in ("core", "media", "knowledge", "link", "subs"):
 # END JINGHE_LAYOUT_BOOTSTRAP
 import argparse
 import atexit
+import concurrent.futures
 import ctypes
 import json
 import os
@@ -1357,6 +1358,11 @@ DEFAULT_SETTINGS = {
     # v1.6.3：后台静默补齐缺失组件。**默认 False**——客户安装后行为
     # 完全不变（仍须手动点「启用」）；仅测试/显式授权场景才打开。
     "auto_install_components": False,
+    # v1.7.3：首次启动组件向导是否已处理。默认 False → 前端首次启动弹一次
+    # 「一键勾选轻量组件」引导；用户点「安装选中」或「跳过」后写 True，
+    # 之后不再弹。只为减少操作步骤，不改变「绝不主动下载」红线——
+    # 向导里的安装仍逐一走用户点击 → install() → 令牌。
+    "component_setup_done": False,
 }
 _SETTINGS_LOCK = threading.Lock()
 _SETTINGS_CACHE: dict | None = None
@@ -1371,7 +1377,8 @@ def _validate_settings(data: object) -> dict:
         out["lang"] = "en" if str(data["lang"]).strip().lower() == "en" else "zh"
     if "theme" in data:
         out["theme"] = "dark" if str(data["theme"]).strip().lower() == "dark" else "light"
-    for key in ("auto_exit", "remember_paths", "auto_install_components"):
+    for key in ("auto_exit", "remember_paths", "auto_install_components",
+                "component_setup_done"):
         if key in data:
             out[key] = bool(data[key])
     if "exit_grace_seconds" in data:
@@ -1670,6 +1677,41 @@ def _ocr_guidance(available: bool, reason: str = "") -> str:
             + ("当前组件不可用（%s）。" % reason if reason else "当前组件不可用。"))
 
 
+def _ocr_parallel_limit(paths: list[str]) -> int:
+    """决定 OCR 并发路数：按 CPU 核数自动，上限 4；小批量不值得开多进程。
+
+    每个 OCR 子进程会加载 RapidOCR 模型（约 200-400MB），并发过高会吃紧内存。
+    策略：单文件串行；2 个及以上才并行，路数 = min(CPU 核数, 4, 文件数)。
+    """
+    if len(paths) < 2:
+        return 1
+    try:
+        cores = os.cpu_count() or 1
+    except Exception:
+        cores = 1
+    return max(1, min(cores, 4, len(paths)))
+
+
+def _ocr_one(src: str, outdir: str, force: bool) -> tuple[str, dict]:
+    """单文件 OCR 包装：返回 (源文件名, 结果 dict)，异常也转成 dict 不外抛。"""
+    name = Path(src).name
+    try:
+        return name, pdf_ocr.ocr_pdf_to_md(src, outdir, force=force)
+    except Exception as exc:  # noqa: BLE001 - 单件失败不能拖垮整批
+        return name, {"ok": False, "error": str(exc)}
+
+
+def _log_ocr_result(job: "Job", name: str, res: dict) -> None:
+    """把单件 OCR 结果写进任务日志（含置信度提示，线程安全由 Job.add 保证）。"""
+    if res.get("ok") and not res.get("skipped"):
+        job.add("log", "OCR 补充产物：%s（%s）" % (
+            Path(res["path"]).name, res.get("state", "")), raw="")
+    elif res.get("ok") and res.get("skipped"):
+        pass   # 已有文本产物，无需补
+    else:
+        job.add("log", "OCR 未成功：%s（%s）" % (name, res.get("error", "")), raw="")
+
+
 def _error_tail(lines: list[str]) -> str:
     for line in reversed(lines):
         if line.startswith("[ERROR]"):
@@ -1753,27 +1795,38 @@ def _run_job_inner(job: Job, enc_dir: Path) -> None:
         else:
             job.state = "done"
             # 可选 OCR 后处理（不碰冻结内核：内核只标注降级，这里负责补救与诊断）。
-            # 组件可用 → 对所有 PDF 尝试 OCR（ocr_pdf_to_md 内部按「产物是否已存在」
-            # 决定跳过，无需在调用侧按"有无文字层"分流）；
+            # 组件可用 → 对 PDF 批量 OCR，并发路数按 CPU 核数自动（上限 4）：
+            #   * 内核标记降级的 PDF（CID 乱码 / 疑似扫描件）用 force=True 强制重跑，
+            #     修复「部分乱码但过 0.6 门禁、因已有 >40 字产物被跳过」的漏洞；
+            #   * 其余 PDF 沿用「产物已存在则跳过」的旧行为。
             # 组件不可用 → 对降级的 PDF 给出准确诊断 + 引导（此前整段静默，用户
             # 只看到内核那句误导性的 onnxruntime 归因，不知道该去启用 OCR 组件）。
             try:
                 ocr_st = pdf_ocr.status()
+                degraded = _ocr_degraded_names(job.outdir)
                 if ocr_st.get("available"):
-                    for src in list(job.inputs or []):
-                        if str(src).lower().endswith(".pdf"):
-                            res = pdf_ocr.ocr_pdf_to_md(src, job.outdir)
-                            if res.get("ok") and not res.get("skipped"):
-                                job.add("log", "OCR 补充产物：%s（%s）" % (
-                                    Path(res["path"]).name, res.get("state", "")),
-                                    raw="")
-                            elif res.get("ok") and res.get("skipped"):
-                                pass   # 已有文本产物，无需补
-                            else:
-                                job.add("log", "OCR 未成功：%s（%s）" % (
-                                    Path(src).name, res.get("error", "")), raw="")
+                    pdfs = [str(s) for s in list(job.inputs or [])
+                            if str(s).lower().endswith(".pdf")]
+                    if pdfs:
+                        limit = _ocr_parallel_limit(pdfs)
+                        tasks = [(src, Path(src).name in degraded) for src in pdfs]
+                        if limit == 1:
+                            for src, force in tasks:
+                                name, res = _ocr_one(src, job.outdir, force)
+                                _log_ocr_result(job, name, res)
+                        else:
+                            # 多线程派发独立子进程；Job.add 自带锁，日志顺序可能交错但事件序号唯一。
+                            with concurrent.futures.ThreadPoolExecutor(
+                                    max_workers=limit) as pool:
+                                futures = [pool.submit(_ocr_one, src, job.outdir, force)
+                                           for src, force in tasks]
+                                for fut in concurrent.futures.as_completed(futures):
+                                    name, res = fut.result()
+                                    _log_ocr_result(job, name, res)
+                        job.add("log", "OCR 完成：%d 个 PDF，并发 %d 路" % (
+                            len(pdfs), limit), raw="")
                 else:
-                    degraded = _ocr_degraded_names(job.outdir)
+                    # 组件不可用：只对降级的 PDF 输出诊断（空集合时静默）
                     if degraded:
                         guidance = _ocr_guidance(False, ocr_st.get("reason", ""))
                         for name in sorted(degraded):
@@ -3301,6 +3354,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/components/install":
                 # S10：启用组件——只接受内置 id，下载源由 components.py 固定，杜绝任意 URL
                 self._send_json(components.install(str(data.get("id") or "").strip()))
+            elif path == "/api/components/setup-batch":
+                # v1.7.3：首次启动向导的批量启用——用户一次性勾选后调用。
+                # 语义 = 把用户原本要点 N 次的「启用」合并成一次点击：
+                # 每个 id 仍逐一走 install() → 手动令牌 → 白名单 URL，
+                # 绝不读静默开关、绝不自动下载未勾选组件。
+                self._send_json(components.batch_enable(data.get("ids")))
             elif path == "/api/pdf/ocr":
                 # 可选 OCR：对指定扫描件 PDF 做识别，结果写入 outdir 的同名 md。
                 # 路径围栏：只接受本机存在的 .pdf，输出目录必须存在。

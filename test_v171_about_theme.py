@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""v1.7.2 · 关于页界面主题快捷开关 · 守护测试。
+"""v1.7.4 · 主题入口唯一化 + 深色卡片补齐 · 守护测试。
 
-背景：主题切换控件此前只在「设置」页，用户在顶部导航栏「关于」里找不到，
-误以为「设置深色没有修改」。本轮在关于页加入口，且必须：
-- 与设置页共用单一真源（applyTheme / persistUiPref / settings.json），
-  不得另建状态、不得重复 id（测试已全局锁定 id="setThemeDark" 唯一）；
-- 中英双语齐全；
-- 不破坏关于页既有结构断言（日志/设置/导出三行等）。
+背景：
+- v1.7.2 曾在「关于」页加过一个主题快捷开关；v1.7.4 用户裁决：设置页已有
+  浅色/深色按钮，关于页那颗重复且文案易混淆，**移除**，主题入口全局唯一。
+- 同轮发现深色模式下 .about-item / .metric 等内层卡片硬编码浅色底未随主题，
+  切深色仍呈白块——本轮集中补齐，本文件守护其不回退。
+
+注意：文件名保留 v171（CI 显式模块清单已锁定），内容随 v1.7.4 契约更新。
 """
 import unittest
 from pathlib import Path
@@ -24,53 +25,73 @@ class TestAboutTheme(unittest.TestCase):
         self.i18n = (ROOT / "ui" / "i18n.js").read_text(encoding="utf-8")
         self.about = self.html[self.html.index('id="page-about"'):]
 
-    def test_01_about_has_theme_entry(self):
-        self.assertIn('id="aboutThemeCard"', self.about)
-        self.assertIn('id="aboutThemeToggle"', self.about)
-        self.assertIn('id="aboutThemeState"', self.about)
-        self.assertIn("界面主题", self.about)
+    def test_01_about_has_no_theme_entry(self):
+        """关于页不得再有主题切换控件——设置页是唯一入口。"""
+        for token in ("aboutThemeCard", "aboutThemeToggle", "aboutThemeState", "about-theme-row"):
+            self.assertNotIn(token, self.about, "关于页残留主题控件：%s" % token)
+        self.assertNotIn("界面主题", self.about, "关于页不应出现「界面主题」卡片")
 
-    def test_02_no_duplicate_theme_ids(self):
-        """设置页的 setThemeDark/Light 是全局锁定 id，关于页不得复用。"""
+    def test_02_settings_theme_entry_is_unique_and_intact(self):
+        """设置页浅色/深色单选仍在，且全局唯一。"""
         self.assertEqual(self.html.count('id="setThemeDark"'), 1)
         self.assertEqual(self.html.count('id="setThemeLight"'), 1)
-        self.assertEqual(self.html.count('id="aboutThemeToggle"'), 1)
+        self.assertEqual(self.html.count('name="setTheme"'), 2)
+        self.assertIn('id="themeRow"', self.html)
 
-    def test_03_shares_single_source_of_truth(self):
-        """关于页按钮必须走 applyTheme + persistUiPref，不能自建状态。"""
-        seg = self.js[self.js.index('aboutThemeToggle.addEventListener'):]
-        seg = seg[:seg.index("});", seg.index("persistUiPref")) + 3]
-        self.assertIn("applyTheme(next)", seg)
-        self.assertIn('uiPrefOverride.theme = next', seg)
-        self.assertIn('persistUiPref("theme", next)', seg)
+    def test_03_no_stale_js_wiring(self):
+        """JS 里不得残留关于页按钮的引用、同步与事件绑定。"""
+        for token in ("aboutThemeToggle", "aboutThemeState", "about-theme-row"):
+            self.assertNotIn(token, self.js, "JS 残留失效引用：%s" % token)
 
-    def test_04_apply_theme_syncs_about_widget(self):
+    def test_04_apply_theme_still_drives_settings_only(self):
+        """applyTheme 仍同步设置页单选，且不再触碰关于页控件。"""
         fn = self.js[self.js.index("function applyTheme"):self.js.index("// v1.7.1")]
-        self.assertIn("el.aboutThemeState", fn)
-        self.assertIn("el.aboutThemeToggle", fn)
+        self.assertIn("el.setThemeLight.checked", fn)
+        self.assertIn("el.setThemeDark.checked", fn)
+        self.assertNotIn("aboutTheme", fn)
 
-    def test_05_i18n_complete(self):
-        # 词条三个都必须在字典里：「切换到浅色」由 JS tr() 动态取，
-        # 不经过 HTML 的 data-i18n 属性。
+    def test_05_i18n_stale_keys_removed(self):
+        """三条失效英译从构建产物中消失。"""
         for key in ("切换到深色", "切换到浅色",
                     "切换后立即生效并保存到本机设置；与「设置 · 界面主题」同步。"):
-            self.assertIn('"%s"' % key, self.i18n, "i18n 缺词条：%s" % key)
-        for key in ("切换到深色",
-                    "切换后立即生效并保存到本机设置；与「设置 · 界面主题」同步。"):
-            self.assertIn('data-i18n="%s"' % key, self.html,
-                          "HTML 未挂 i18n：%s" % key)
-        self.assertIn('tr(currentTheme === "dark" ? "切换到浅色" : "切换到深色")',
-                      self.js, "动态文案未走 i18n")
+            self.assertNotIn('"%s"' % key, self.i18n, "i18n 残留失效词条：%s" % key)
 
-    def test_06_css_present_and_dark_aware(self):
-        self.assertIn(".about-theme-row", self.css)
-        self.assertIn('html[data-theme="dark"] .about-theme-row b', self.css)
+    def test_06_no_stale_css(self):
+        self.assertNotIn(".about-theme-row", self.css)
 
     def test_07_about_existing_structure_intact(self):
-        """不破坏既有三行日志/设置/导出结构断言。"""
+        """删主题卡片不破坏关于页既有结构断言。"""
         self.assertEqual(self.about.count('class="about-log-row"'), 3)
         self.assertIn('id="btnCheckUpdate"', self.about)
         self.assertIn('id="aboutVersion"', self.about)
+        self.assertIn('class="about-grid"', self.about)
+
+
+class TestDarkThemeCards(unittest.TestCase):
+    """v1.7.4：深色下内层卡片不得再呈白块。"""
+
+    def setUp(self) -> None:
+        self.css = (ROOT / "ui" / "app.css").read_text(encoding="utf-8")
+
+    def test_08_about_item_dark_covered(self):
+        self.assertIn('html[data-theme="dark"] .about-item', self.css)
+
+    def test_09_update_status_dark_covered(self):
+        self.assertIn('html[data-theme="dark"] .update-status', self.css)
+
+    def test_10_common_inner_cards_dark_covered(self):
+        """指标格 / 功能按钮 / 工具状态 / 组件提示 / 进度轨道全部补齐。"""
+        for cls in (".metric", ".feature-btn", ".tool-status", ".component-hint",
+                    ".manifest-status", ".kb-rel-item", ".component-progress-track",
+                    ".update-progress-track", ".toast.is-err"):
+            self.assertIn('html[data-theme="dark"] ' + cls, self.css,
+                          "深色覆盖缺失：%s" % cls)
+
+    def test_11_dark_uses_theme_variables(self):
+        """补齐的卡片用主题变量而非新的硬编码浅色。"""
+        block = self.css[self.css.index("v1.7.4：深色主题补齐浅色硬编码卡片"):]
+        self.assertIn("var(--c-input-bg)", block)
+        self.assertIn("var(--c-border)", block)
 
 
 if __name__ == "__main__":

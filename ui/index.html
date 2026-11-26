@@ -8,6 +8,20 @@
 <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
+<!-- v1.7.6：Windows 原生标题栏改为 titleBarOverlay（只画右侧窗口按钮，颜色随主题）。
+     标题文字与拖拽区由这一行承担；纯浏览器调试时同样可见，不影响任何功能属性。 -->
+<div class="shell-titlebar" id="shellTitlebar">
+  <span class="shell-title" id="shellTitleText">精核 · 文件提取</span>
+  <!-- Windows 隐藏原生标题栏时菜单条会被一起移除；这一行是同一套原生菜单的
+       页面入口（点击经白名单 IPC 弹原生菜单，语言/命令均不另建副本）。 -->
+  <nav class="shell-menu" id="shellMenu" aria-label="应用菜单" hidden>
+    <button class="shell-menu-btn" type="button" data-menu-key="file">文件</button>
+    <button class="shell-menu-btn" type="button" data-menu-key="edit">编辑</button>
+    <button class="shell-menu-btn" type="button" data-menu-key="view">视图</button>
+    <button class="shell-menu-btn" type="button" data-menu-key="window">窗口</button>
+    <button class="shell-menu-btn" type="button" data-menu-key="help">帮助</button>
+  </nav>
+</div>
 <div class="app" id="appShell">
 
   <!-- 左侧可折叠导航：折叠时只显图标，展开显示图标 + 文字 -->
@@ -794,16 +808,9 @@
         </div>
       </section>
 
-      <!-- v1.7.2：关于页主题快捷开关（入口此前只在设置页，用户在「关于」里找不到）。
-           复用设置页的 applyTheme / persistUiPref / settings.json 单一真源，不另建状态。 -->
-      <section class="card" id="aboutThemeCard">
-        <div class="card-title" data-i18n="界面主题">界面主题</div>
-        <div class="card-sub" data-i18n="切换后立即生效并保存到本机设置；与「设置 · 界面主题」同步。">切换后立即生效并保存到本机设置；与「设置 · 界面主题」同步。</div>
-        <div class="about-theme-row">
-          <button id="aboutThemeToggle" class="btn btn-ghost" type="button" data-i18n="切换到深色">切换到深色</button>
-          <b id="aboutThemeState" class="mono" data-i18n="浅色">浅色</b>
-        </div>
-      </section>
+      <!-- v1.7.4：主题入口收敛为设置页唯一一处（用户裁决）。
+           v1.7.2 曾在此处加快捷开关，与设置页重复且切换按钮文案易混淆，已移除；
+           主题状态仍由设置页 setThemeLight/Dark 单一入口驱动，持久化链路不变。 -->
 
       <section class="card">
         <div class="card-title" data-i18n="版本更新">版本更新</div>
@@ -866,6 +873,26 @@
         </div>
         <div id="cmdList" class="cmd-list" role="listbox" aria-label="命令列表" data-i18n-aria="命令列表"></div>
         <div class="cmd-foot" data-i18n="↑↓ 选择 · Enter 执行 · Esc 关闭">↑↓ 选择 · Enter 执行 · Esc 关闭</div>
+      </div>
+    </div>
+
+    <!-- v1.7.3：首次启动组件向导。只在 component_setup_done=false 时弹一次，
+         一次勾选批量装齐轻量组件；whisper 默认不勾并标注体积。所有安装仍走用户点击 → 令牌。 -->
+    <div id="setupOverlay" class="setup-overlay" hidden>
+      <div class="setup-box" role="dialog" aria-modal="true" aria-label="初始化组件" data-i18n-aria="初始化组件">
+        <div class="setup-head">
+          <span class="setup-title" data-i18n="首次使用 · 组件初始化">首次使用 · 组件初始化</span>
+          <button id="setupSkipX" class="setup-x" type="button" aria-label="跳过" data-i18n-aria="跳过" title="跳过">×</button>
+        </div>
+        <p class="setup-desc" data-i18n="勾选需要的组件，一次装齐。轻量组件默认已选；Whisper 体积较大，建议按需再装。不勾选也不会下载任何东西，可随时到「设置 → 相关组件」单独启用。">勾选需要的组件，一次装齐。轻量组件默认已选；Whisper 体积较大，建议按需再装。不勾选也不会下载任何东西，可随时到「设置 → 相关组件」单独启用。</p>
+        <div id="setupList" class="setup-list" role="group" aria-label="组件列表" data-i18n-aria="组件列表"></div>
+        <div class="setup-foot">
+          <span id="setupStatus" class="setup-status" aria-live="polite"></span>
+          <div class="setup-actions">
+            <button id="setupSkip" class="btn" type="button" data-i18n="跳过">跳过</button>
+            <button id="setupInstall" class="btn btn-primary" type="button" data-i18n="安装选中组件">安装选中组件</button>
+          </div>
+        </div>
       </div>
     </div>
 

@@ -25,9 +25,14 @@ const UPDATE_CHANNELS = Object.freeze({
 });
 
 // 原生菜单通道：页面切语言时同步菜单，菜单「关于」时通知页面跳页。
+// v1.7.5：setTheme 让原生菜单/标题栏跟随应用主题（themeSource 由主进程接管）。
 const MENU_CHANNELS = Object.freeze({
   setLang: 'menu:set-lang',
+  setTheme: 'menu:set-theme',
   navigate: 'menu:navigate',
+  labels: 'menu:labels',
+  labelsChanged: 'menu:labels-changed',
+  open: 'menu:open',
 });
 
 // 把 event 剥掉，只把 data 交给页面回调；返回退订函数供页面清理监听器。
@@ -51,7 +56,21 @@ contextBridge.exposeInMainWorld('desktopMenu', Object.freeze({
     var normalized = (lang === 'en') ? 'en' : 'zh';
     return ipcRenderer.invoke(MENU_CHANNELS.setLang, normalized);
   },
+  // 只接受白名单枚举后的主题值，避免任意字符串污染主进程 themeSource。
+  setTheme: function (theme) {
+    var normalized = (theme === 'dark') ? 'dark' : 'light';
+    return ipcRenderer.invoke(MENU_CHANNELS.setTheme, normalized);
+  },
   onNavigate: function (cb) { return subscribe(MENU_CHANNELS.navigate, cb); },
+
+  // v1.7.6：标题栏上的菜单按钮只认五个白名单 key，主进程按同一模板弹出原生菜单。
+  getLabels: function () { return ipcRenderer.invoke(MENU_CHANNELS.labels); },
+  onLabelsChanged: function (cb) { return subscribe(MENU_CHANNELS.labelsChanged, cb); },
+  open: function (key) {
+    var allowed = ['file', 'edit', 'view', 'window', 'help'];
+    return ipcRenderer.invoke(MENU_CHANNELS.open,
+      allowed.indexOf(key) >= 0 ? key : 'file');
+  },
 }));
 
 contextBridge.exposeInMainWorld('desktopUpdater', Object.freeze({
