@@ -9,7 +9,7 @@
   一律不下载任何组件；只有用户在设置页**手动点击「启用」按钮**，才触发下载。
   技术上以 ``_USER_OPT_IN`` 令牌强制：任何下载路径必须先经 :func:`install`
   写入令牌，绕过者（含未来误调）直接拒绝。
-* 内置固定源仅供手动安装使用：ffmpeg=gyan.dev 静态 zip；whisper/yt-dlp=pip
+* 内置固定源仅供手动安装使用：ffmpeg=阿里云 PyPI 镜像 wheel；whisper/yt-dlp=pip
   阿里镜像。下载地址只从本文件的 COMPONENTS 常量取，前端不能传任意 URL（防 SSRF）。
 * 安装到 %LOCALAPPDATA%/Jinghe/components/bin，不写系统目录、不需要管理员权限。
   **工具二进制不进 exe、不进 Release、不随 GitHub 上传**（build.spec binaries=[]）。
@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -59,10 +60,12 @@ MODELS_DIR = COMPONENT_DIR / "models"
 # 仅在系统找不到 Python 时才会触发，且必须经用户点击授权（绝不主动下载）。
 RUNTIME_DIR = COMPONENT_DIR / "runtime"
 RUNTIME_PYTHON = RUNTIME_DIR / "python.exe"
-# 官方 embeddable 包（固定版本，前端不可改；3.11.9 兼容主流组件版本窗口）
+# v1.8.1：便携 Python 改走**清华 TUNA 镜像**（python.org/ftp 的官方文件镜像）。
+# 实测 1597 KB/s，比 python.org 直连 49 KB/s 快约 33×；文件名与官方完全一致。
 RUNTIME_PY_VERSION = "3.11.9"
-RUNTIME_URL = ("https://www.python.org/ftp/python/%s/"
+RUNTIME_URL = ("https://mirrors.tuna.tsinghua.edu.cn/python/%s/"
                "python-%s-embed-amd64.zip" % (RUNTIME_PY_VERSION, RUNTIME_PY_VERSION))
+RUNTIME_SHA256 = ("009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b")
 
 # venv 内部布局
 VENV_SCRIPTS = VENV_DIR / "Scripts"
@@ -125,7 +128,30 @@ _DLL_DEPS_BY_COMPONENT = {
 # 内置固定源——前端不可改。pip 镜像用于装 whisper / yt-dlp（两者都会生成 CLI 到 Scripts/）。
 PIP_INDEX = "https://mirrors.aliyun.com/pypi/simple/"
 PIP_TRUSTED_HOST = "mirrors.aliyun.com"
-FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+# v1.8.1：ffmpeg 改走**阿里云 PyPI 镜像**的 imageio-ffmpeg wheel（内置 ffmpeg 9.0.2）。
+# 实测 1740 KB/s，比 gyan.dev 68 KB/s 快约 25×；标准 zip 可复用现有解压逻辑。
+# 固定 SHA256 来自 PyPI index 的 fragment，防止镜像内容被替换。
+# wheel 内二进制名为 ffmpeg-win-x86_64-v9.0.2.exe，解压时统一重命名为 ffmpeg.exe。
+FFMPEG_URL = ("https://mirrors.aliyun.com/pypi/packages/82/0c/"
+              "a1d49f3dd2688bd750b4986f8e271ad11f8e729a896070ea25f587b44da8/"
+              "imageio_ffmpeg-0.8.1-py3-none-win_amd64.whl")
+FFMPEG_SHA256 = ("f27ca4cb85e2d4946deedbce1a81245dfd942a2bcf94b53676fb3956aa95bf1b")
+
+# v1.8.0：VC++ 运行库是**系统级依赖**，不属于 pip/zip 组件框架。
+# 无法装进 components/ 自管目录、需要管理员权限写 System32；因此只做
+# 「探测 + 给出官方下载入口」，绝不进 install() 令牌链路、绝不静默安装。
+# 官方直链（微软 aka.ms 短链，始终指向最新版 vc_redist.x64.exe）。
+VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+# 探测口径：whisper/torch 实际加载时需要的 4 个关键 DLL。
+# 本机实测缺 vcruntime140_threads.dll + msvcp140_atomic_wait.dll → torch
+# 报 WinError 126 → whisper「装了也用不了」。这 4 个齐全才算运行库可用。
+_VC_PROBE_DLLS = (
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "vcruntime140_threads.dll",
+    "msvcp140.dll",
+    "msvcp140_atomic_wait.dll",
+)
 
 # 组件定义（顺序即 UI 展示顺序）
 COMPONENTS = (
@@ -136,6 +162,7 @@ COMPONENTS = (
         "probe": "ffmpeg",
         "kind": "zip",
         "url": FFMPEG_URL,
+        "sha256": FFMPEG_SHA256,
         "exe": "ffmpeg.exe",
     },
     {
@@ -168,6 +195,18 @@ COMPONENTS = (
         "probe_module": "fitz,rapidocr_onnxruntime",
         "kind": "pylib",
         "package": "pymupdf rapidocr-onnxruntime",
+        "exe": "",
+    },
+    {
+        # v1.8.0：VC++ 运行库是系统级依赖，与上面 4 个 pip/zip 组件性质不同。
+        # kind=system → 只探测 + 打开官方下载页；install() 显式拒绝，
+        # 不下载、不弹 UAC、不写系统目录。用户下载后自行安装并重启软件。
+        "id": "vc-runtime",
+        "name": "VC++ 运行库",
+        "desc": "Whisper 等组件所需的系统运行库（需管理员权限，按官方指引安装）",
+        "probe": "",              # 无 CLI；探测走 _probe_vc_runtime()
+        "kind": "system",
+        "url": VC_REDIST_URL,     # 前端按钮打开此官方下载页，不触发安装
         "exe": "",
     },
 )
@@ -704,6 +743,52 @@ def _probe_pylib(comp: dict) -> dict:
             "path": py, "state": "ok"}
 
 
+def _vc_dlls_present() -> tuple[str, ...]:
+    """返回系统目录里实际存在的 VC++ 关键 DLL 名（纯文件扫描，零网络）。
+
+    单独抽出是为了可测试：测试 mock 本函数即可构造「齐全 / 缺失」两态，
+    不依赖跑测试那台机器是否装了 VC++ 运行库。
+    """
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    scan_dirs = [Path(root) / "System32", Path(root) / "SysWOW64"]
+    return tuple(
+        dll for dll in _VC_PROBE_DLLS
+        if any(d.is_dir() and (d / dll).is_file() for d in scan_dirs)
+    )
+
+
+def _probe_vc_runtime() -> dict:
+    """探测系统 VC++ 运行库（kind=system，纯文件扫描，零网络、毫秒级）。
+
+    v1.8.0：这是**系统级依赖**，探测结果只用于界面提示与引导下载，
+    绝不进入 install() 令牌链路。判定口径是 whisper/torch 实际需要的
+    5 个关键 DLL 是否齐全（System32 或 SysWOW64 任一处存在即算有）。
+    缺任一 DLL → installed=False，reason 给出可操作的官方安装指引。
+    """
+    if os.name != "nt":
+        return {"available": False, "version": "", "path": "",
+                "reason": "VC++ 运行库仅适用于 Windows", "state": "missing"}
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    system32 = str(Path(root) / "System32")
+    found = _vc_dlls_present()
+    missing = tuple(dll for dll in _VC_PROBE_DLLS if dll not in found)
+    if missing:
+        return {
+            "available": False,
+            "version": "",
+            "path": system32,
+            "reason": (
+                "缺少 VC++ 运行库文件：%s。\n"
+                "Whisper 依赖的 torch 需要这些 DLL，缺失会导致"
+                "「装了组件却用不了」（WinError 126）。"
+                "请在设置页点「下载安装」，用微软官方安装包补齐后重启软件。"
+                % "、".join(missing)),
+            "state": "missing",
+        }
+    return {"available": True, "version": "Visual C++ Redistributable",
+            "path": system32, "reason": "", "state": "ok"}
+
+
 def _probe_one(probe_name: str, deep: bool = False) -> dict:
     """用统一的 ToolAdapter 探测，结果归一为 {available, version, reason, path}。
 
@@ -806,7 +891,11 @@ def list_components(refresh: bool = False) -> dict:
         # 旧行为让 /api/components 整条 500，设置页只剩一句「状态读取失败」，
         # 连 ffmpeg 等正常组件也看不见。这里逐项隔离，如实给出可读原因。
         try:
-            st = _probe_pylib(c) if c["kind"] == "pylib" else _probe_one(c["probe"])
+            if c["kind"] == "system":
+                # v1.8.0：系统级依赖（VC++）走独立文件探测，不涉及 pip/PATH。
+                st = _probe_vc_runtime()
+            else:
+                st = _probe_pylib(c) if c["kind"] == "pylib" else _probe_one(c["probe"])
         except Exception as exc:  # noqa: BLE001 - 探测失败必须降级为单项状态
             st = {"available": False, "version": "", "path": "",
                   "reason": str(exc) or "探测异常", "state": "error"}
@@ -814,6 +903,9 @@ def list_components(refresh: bool = False) -> dict:
             "id": c["id"],
             "name": c["name"],
             "desc": c["desc"],
+            # v1.8.0：前端据此区分「可安装组件」与「系统依赖引导项」。
+            "kind": c["kind"],
+            "url": c.get("url", ""),
             "installed": st["available"],
             "version": st["version"],
             "path": st["path"],
@@ -928,7 +1020,7 @@ def _require_opt_in(component_id: str) -> None:
         raise RuntimeError("未获用户手动启用授权，拒绝下载（软件绝不主动下载）")
 
 
-def _download(url: str, dest: Path, component_id: str) -> None:
+def _download(url: str, dest: Path, component_id: str, sha256: str = "") -> None:
     """流式下载（走环境变量代理），写 .part 后原子替换。必须持手动令牌。
 
     **``.part`` 必须在任何失败路径都被清理（缺陷 1，用户 2026-11-23 实测）**：
@@ -939,6 +1031,9 @@ def _download(url: str, dest: Path, component_id: str) -> None:
     现在改为：``finally`` 中无条件清理「尚未改名」的临时文件。
     成功路径已 ``tmp.replace(dest)``（临时文件不存在，``missing_ok`` 兜底），
     失败路径则真正删除，绝不留下垃圾。
+
+    v1.8.1：新增可选 ``sha256`` 参数——下载完成后、原子替换**之前**校验摘要，
+    不匹配直接抛错（.part 由 finally 清理）。杜绝镜像内容被替换后静默安装。
     """
     _require_opt_in(component_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -963,6 +1058,16 @@ def _download(url: str, dest: Path, component_id: str) -> None:
                     else:
                         _emit("progress", "已下载 %.1f MB" % (got / 1024 / 1024),
                               None, component_id)
+        if sha256:
+            digest = hashlib.sha256()
+            with open(tmp, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            actual = digest.hexdigest().lower()
+            if actual != sha256.lower():
+                raise RuntimeError(
+                    "下载校验失败：sha256 不匹配（期望 %s…，实际 %s…），已丢弃文件"
+                    % (sha256[:16], actual[:16]))
         tmp.replace(dest)
     finally:
         # 成功路径：tmp 已被 replace 走，文件不存在 → missing_ok 静默跳过
@@ -998,23 +1103,43 @@ def _cleanup_stale_parts() -> list[str]:
 
 
 def _extract_ffmpeg(zip_path: Path) -> str:
-    """从静态 zip 里取出 ffmpeg.exe（及 ffprobe.exe，顺带增强）。"""
+    """从静态 zip / PyPI wheel 里取出 ffmpeg.exe（及 ffprobe.exe，顺带增强）。
+
+    v1.8.1：阿里云 PyPI 的 imageio-ffmpeg wheel 内置
+    ``imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v9.0.2.exe``，与原 gyan.dev
+    zip 的 ``bin/ffmpeg.exe`` 命名不同；这里统一识别并重命名为 ``ffmpeg.exe``，
+    保证下游探测/调用口径完全不变。
+    """
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     copied = []
     with zipfile.ZipFile(zip_path) as zf:
-        members = [m for m in zf.namelist()
+        names = zf.namelist()
+        members = [m for m in names
                    if m.lower().endswith(("ffmpeg.exe", "ffprobe.exe"))
                    and "/" not in m.rstrip("/").replace("\\", "/")[:-10]]
         # 只取文件名就匹配的目标（允许 bin/ 前缀）
-        targets = [m for m in zf.namelist()
+        targets = [m for m in names
                    if m.lower().endswith(("/ffmpeg.exe", "/ffprobe.exe"))]
+        if not targets:
+            # wheel 内置二进制：ffmpeg-win-x86_64-v*.exe / ffprobe-win-x86_64-v*.exe
+            targets = [m for m in names
+                       if m.replace("\\", "/").rsplit("/", 1)[-1].lower().startswith(
+                           ("ffmpeg-win-", "ffprobe-win-"))
+                       and m.lower().endswith(".exe")]
         for m in (targets or members):
             name = m.replace("\\", "/").rsplit("/", 1)[-1]
-            if name.lower() not in ("ffmpeg.exe", "ffprobe.exe"):
+            low = name.lower()
+            if low in ("ffmpeg.exe", "ffprobe.exe"):
+                out_name = name
+            elif low.startswith("ffmpeg-win-"):
+                out_name = "ffmpeg.exe"
+            elif low.startswith("ffprobe-win-"):
+                out_name = "ffprobe.exe"
+            else:
                 continue
-            with zf.open(m) as src, open(BIN_DIR / name, "wb") as dst:
+            with zf.open(m) as src, open(BIN_DIR / out_name, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-            copied.append(name)
+            copied.append(out_name)
     zip_path.unlink(missing_ok=True)
     if "ffmpeg.exe" not in copied:
         raise RuntimeError("压缩包内未找到 ffmpeg.exe")
@@ -1109,7 +1234,7 @@ def _ensure_runtime_python(component_id: str) -> str:
 
     _emit("progress", "本机未找到 Python，正在准备便携运行环境…", 0.005, component_id)
     zip_path = RUNTIME_DIR / ("python-%s-embed.zip" % RUNTIME_PY_VERSION)
-    _download(RUNTIME_URL, zip_path, component_id)
+    _download(RUNTIME_URL, zip_path, component_id, sha256=RUNTIME_SHA256)
 
     try:
         import zipfile
@@ -1459,7 +1584,8 @@ def _install_worker(component_id: str) -> None:
         _emit("progress", "准备安装 %s…" % comp["name"], 0.01, component_id)
         if comp["kind"] == "zip":
             dest = COMPONENT_DIR / (comp["id"] + ".zip")
-            _download(comp["url"], dest, component_id)
+            _download(comp["url"], dest, component_id,
+                      sha256=comp.get("sha256", ""))
             _emit("progress", "解压中…", 0.9, component_id)
             detail = _extract_ffmpeg(dest)
         else:
@@ -1543,6 +1669,13 @@ def install(component_id: str) -> dict:
     comp = _BY_ID.get(component_id)
     if not comp:
         return {"ok": False, "error": "未知组件"}
+    # v1.8.0：系统级依赖（VC++ 运行库）绝不走 pip/zip 安装链路。
+    # 它需要管理员权限写 System32、无法干净回滚，软件只提供官方下载入口；
+    # 这里显式拒绝，杜绝前端误调或向导传 id 触发静默下载。
+    if comp["kind"] == "system":
+        return {"ok": False,
+                "error": "%s 是系统级依赖，请在设置页点「下载安装」按官方指引操作。"
+                         % comp["name"]}
     # v0.10：按组件维度判断是否已在装——不同组件可并发，同一组件仍拒绝重复点击
     with _LOCK:
         existing = _JOBS.get(component_id)
@@ -1633,7 +1766,11 @@ def batch_enable(component_ids) -> dict:
             continue
         seen.add(cid)
         if cid in _BY_ID:
-            requested.append(cid)
+            # v1.8.0：系统依赖（VC++）不进批量安装，前端只给下载引导。
+            if _BY_ID[cid]["kind"] == "system":
+                invalid.append(cid)
+            else:
+                requested.append(cid)
         else:
             invalid.append(cid)
     if not requested:

@@ -340,4 +340,7 @@ EN = {
     "探测异常": "Probe error",
     "组件状态读取失败，正在重试": "Component status read failed, retrying",
     "组件状态读取失败：": "Component status read failed: ",
+    # v1.8.0：VC++ 系统依赖引导项（kind=system，按钮打开官方下载页）
+    "下载安装": "Download installer",
+    "已安装": "Installed",
 }

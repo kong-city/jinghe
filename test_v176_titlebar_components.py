@@ -86,14 +86,20 @@ class TestComponentResilience(unittest.TestCase):
     def test_06_probe_exception_isolated_per_component(self):
         """单项探测抛异常时，其余组件仍正常返回，状态接口不再是 500。"""
         real_pylib, real_one = self.c._probe_pylib, self.c._probe_one
-        def boom(_arg):
+        # v1.8.0：system 项（VC++）走独立探测函数，同样纳入异常隔离验证。
+        real_vc = getattr(self.c, "_probe_vc_runtime", None)
+        def boom(_arg=None):
             raise RuntimeError("未在本机找到可用于 pip 的 Python 解释器")
         try:
             self.c._probe_pylib = boom
             self.c._probe_one = boom
+            if real_vc is not None:
+                self.c._probe_vc_runtime = boom
             r = self.c.list_components(refresh=False)
         finally:
             self.c._probe_pylib, self.c._probe_one = real_pylib, real_one
+            if real_vc is not None:
+                self.c._probe_vc_runtime = real_vc
         self.assertTrue(r.get("ok"))
         self.assertTrue(r.get("components"))
         for item in r["components"]:

@@ -97,7 +97,7 @@ class TestV160Features(unittest.TestCase):
         import components as c
         self.assertTrue(str(c.RUNTIME_DIR).endswith("runtime"))
         self.assertTrue(c.RUNTIME_PYTHON.name.lower() == "python.exe")
-        self.assertIn("python.org", c.RUNTIME_URL)
+        self.assertIn("mirrors.tuna.tsinghua.edu.cn", c.RUNTIME_URL)
         self.assertIn("embed", c.RUNTIME_URL)
         self.assertTrue(hasattr(c, "_ensure_runtime_python"))
 

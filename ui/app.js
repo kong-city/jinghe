@@ -2009,10 +2009,12 @@
     var byId = {};
     (components || []).forEach(function (c) { byId[c.id] = c; });
     // 展示顺序：轻量在前、whisper 殿后，与「默认勾选」直觉一致
+    // v1.8.0：系统级依赖（kind=system，如 VC++ 运行库）不进向导勾选列表——
+    // 它需要管理员权限手动安装，不能伪装成「点一下就装好」的组件。
     var order = SETUP_LIGHT_IDS.concat(SETUP_HEAVY_IDS);
     order.forEach(function (id) {
       var c = byId[id];
-      if (!c) return;
+      if (!c || c.kind === "system") return;
       if (c.installed) return;  // 已装的不列入向导
       var heavy = SETUP_HEAVY_IDS.indexOf(id) >= 0;
       var checked = !heavy;     // 轻量默认勾选，whisper 默认不勾
@@ -2280,6 +2282,9 @@
     var list = componentState.components || [];
     el.componentList.textContent = "";
     list.forEach(function (c) {
+      // v1.8.0：系统级依赖（VC++ 运行库）与普通组件分流——
+      // 它不进 install 令牌链路，按钮是「下载安装」打开官方页面。
+      var isSystem = c.kind === "system";
       var j = componentJobs[c.id] || {};
       var installing = !!j.running;
       // v1.7.6：安装失败后按钮变「重试」（不自动重下，避免无谓流量；
@@ -2329,13 +2334,19 @@
       badge.setAttribute("data-role", "badge");
       if (!c.installed && c.reason) badge.title = c.reason;
 
-      // 只禁用"正在安装的那个"与"已安装的"，其他未装组件保持可点 → 真并发
+      // v1.8.0：系统依赖项用独立按钮角色，点击打开官方下载页，绝不触发安装。
+      // 已装时禁用（无需再下），未装时按钮始终可点。
       var btn = makeEl("button", "btn component-toggle",
-                       installing ? "安装中…" : (failed ? tr("重试")
-                                                : (c.installed ? "已启用" : "启用")));
+                       isSystem ? (c.installed ? tr("已安装") : tr("下载安装"))
+                       : (installing ? "安装中…" : (failed ? tr("重试")
+                          : (c.installed ? "已启用" : "启用"))));
       btn.type = "button";
-      btn.setAttribute("data-role", "toggle");
+      btn.setAttribute("data-role", isSystem ? "download" : "toggle");
       btn.setAttribute("data-cid", c.id);
+      if (isSystem) {
+        btn.setAttribute("data-url", c.url || "");
+        btn.setAttribute("data-system", "true");
+      }
       if (c.installed || installing) btn.disabled = true;
 
       row.appendChild(info);
@@ -2433,8 +2444,16 @@
   function bindComponentEvents() {
     if (!el.componentList) return;
     el.componentList.addEventListener("click", function (e) {
-      var btn = e.target && e.target.closest ? e.target.closest('[data-role="toggle"]') : null;
+      var btn = e.target && e.target.closest
+        ? e.target.closest('[data-role="toggle"], [data-role="download"]') : null;
       if (!btn || btn.disabled) return;
+      // v1.8.0：系统依赖（VC++）只打开官方下载页，弹给系统浏览器，
+      // 不进入 install 令牌链路、不下载、不弹 UAC。
+      if (btn.getAttribute("data-role") === "download") {
+        var url = btn.getAttribute("data-url") || "";
+        if (/^https?:\/\//.test(url)) window.open(url, "_blank");
+        return;
+      }
       enableComponent(btn.getAttribute("data-cid"));
     });
   }
