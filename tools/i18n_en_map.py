@@ -343,4 +343,21 @@ EN = {
     # v1.8.0：VC++ 系统依赖引导项（kind=system，按钮打开官方下载页）
     "下载安装": "Download installer",
     "已安装": "Installed",
+    # v1.8.2：环境检测与自动重试
+    "环境诊断": "Environment check",
+    "检测本机 Python、组件环境、VC++ 与目录权限，不联网": "Check local Python, component env, VC++ and folder permissions; no network access",
+    "正在检测环境…": "Checking environment...",
+    "环境检测失败": "Environment check failed",
+    "系统": "System",
+    "组件目录": "Component folder",
+    "可写": "writable",
+    "不可写": "not writable",
+    "Python 解释器": "Python interpreter",
+    "未找到": "not found",
+    "组件环境": "Component environment",
+    "运行库": "runtime",
+    "正常": "OK",
+    "缺失": "missing",
+    "自动重试": "Auto retry",
+    "下载": "Download",
 }

@@ -804,6 +804,16 @@ button, input { font-family: inherit; }
   background: #FAEEDA;
   border-color: #E8C98A;
 }
+.component-env-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 8px; }
+.component-env-note { font-size: 12px; color: #6F6D66; }
+.component-env-report {
+  margin: 0 0 10px; padding: 10px 12px; max-height: 220px; overflow: auto;
+  font: 12px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap;
+  color: #275A3B; background: #F4F8F5; border: 1px solid #CBDCCF; border-radius: 8px;
+}
+html[data-theme="dark"] .component-env-report {
+  color: var(--c-text); background: var(--c-input-bg); border-color: var(--c-border);
+}
 .component-list { margin-top: 4px; }
 .component-empty { padding: 14px 2px; font-size: 13px; color: #6F6D66; }
 /* v1.7.6：状态读取失败时可点的重试区（与组件行同一真源，不另建状态） */

@@ -784,6 +784,11 @@
       <section class="card" id="componentsCard">
         <div class="card-title" data-i18n="相关组件">相关组件</div>
         <div id="componentManifestStatus" class="manifest-status" aria-live="polite" hidden></div>
+        <div class="component-env-toolbar">
+          <button id="btnComponentEnv" class="btn btn-ghost" type="button" data-i18n="环境诊断">环境诊断</button>
+          <span class="component-env-note" data-i18n="检测本机 Python、组件环境、VC++ 与目录权限，不联网">检测本机 Python、组件环境、VC++ 与目录权限，不联网</span>
+        </div>
+        <pre id="componentEnvReport" class="component-env-report" aria-live="polite" hidden></pre>
         <div id="componentList" class="component-list" aria-live="polite">
           <div class="component-empty" data-i18n="正在检测组件…">正在检测组件…</div>
         </div>

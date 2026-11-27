@@ -137,6 +137,8 @@
     componentList: $("componentList"),
     componentsCard: $("componentsCard"),
     componentManifestStatus: $("componentManifestStatus"),  // v1.6.1：清单对齐状态
+    btnComponentEnv: $("btnComponentEnv"),               // v1.8.2：环境诊断
+    componentEnvReport: $("componentEnvReport"),
     // S7d：精读 / 修订页 + 后端配置
     refineCap: $("refineCap"),
     refineSource: $("refineSource"),
@@ -2441,7 +2443,36 @@
     }).catch(function (err) { showError("启动安装失败：" + (err.message || err)); });
   }
 
+  function loadEnvironmentReport() {
+    var box = el.componentEnvReport;
+    if (!box) return;
+    box.hidden = false;
+    box.textContent = tr("正在检测环境…");
+    api("/api/components/environment", undefined, 15000).then(function (r) {
+      if (!r || !r.ok) { box.textContent = tr("环境检测失败"); return; }
+      var v = r.venv || {}, vc = r.vc_runtime || {}, rt = r.retries || {};
+      var lines = [
+        tr("系统") + ": " + (r.os || "-") + " · Python " + (r.python_version || "-"),
+        tr("组件目录") + ": " + (r.component_dir || "-") +
+          "（" + (r.dir_writable ? tr("可写") : tr("不可写")) + "）",
+        tr("Python 解释器") + ": " + (r.python_exe || tr("未找到")),
+        tr("组件环境") + ": " + (v.healthy ? tr("正常")
+          : tr("异常") + " — " + (v.reason || "")),
+        "VC++ " + tr("运行库") + ": " + (vc.available ? tr("正常")
+          : tr("缺失") + " — " + (vc.reason || "")),
+        tr("自动重试") + ": " + tr("下载") + " " + (rt.download || 0) +
+          " / pip " + (rt.pip || 0)
+      ];
+      box.textContent = lines.join("\n");
+    }).catch(function (err) {
+      box.textContent = tr("环境检测失败") + "：" + (err.message || err);
+    });
+  }
+
   function bindComponentEvents() {
+    if (el.btnComponentEnv) {
+      el.btnComponentEnv.addEventListener("click", loadEnvironmentReport);
+    }
     if (!el.componentList) return;
     el.componentList.addEventListener("click", function (e) {
       var btn = e.target && e.target.closest

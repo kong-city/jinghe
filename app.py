@@ -3009,6 +3009,11 @@ class Handler(BaseHTTPRequestHandler):
                 refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
                 self._send_json(components.list_components(refresh=refresh))
                 return
+            if path == "/api/components/environment":
+                # v1.8.2：本机环境诊断（Python / venv / VC++ / 权限 / PATH）。
+                # 纯本地只读、零网络；点设置页「环境诊断」按钮才调用。
+                self._send_json(components.environment_report())
+                return
             if path == "/api/components/manifest":
                 # v1.6.1：组件与环境清单比对（**只读**，零下载副作用）。
                 # 读 docs/组件与环境清单.md 顶部的机器可读块，与本机真实探测

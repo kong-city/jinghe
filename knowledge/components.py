@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -76,6 +77,18 @@ VENV_PYTHON = VENV_SCRIPTS / "python.exe"
 # 以「解释器 + 包目录」的 mtime 作为失效依据：包被重装/升级后 mtime 变化 → 自动重校。
 _IMPORT_CHECK_CACHE: dict[tuple[str, str], tuple[float, bool, str]] = {}
 _IMPORT_CHECK_TTL = 300.0  # 5 分钟兜底过期（防止手工改环境后缓存不更新）
+
+# v1.8.2：组件安装的环境韧性（用户 2026-11-27 裁决）。
+# 换一台电脑/换一个环境，网络抖动、坏 venv、缺 VC++、安全软件拦截都可能发生；
+# 一次失败不能变成永久失败。下载网络类失败重试 2 次、pip 失败重试 1 次；
+# 摘要不符 / 用户取消绝不重试（安全红线不变）。
+DOWNLOAD_RETRIES = 2
+PIP_RETRIES = 1
+RETRY_BACKOFF = (1.0, 2.0)
+# venv 槽位：坏环境换目录重建，绝不原地删除（安全软件常拦删除）。
+VENV_MAX_SLOTS = 4
+_VENV_HEALTH_CACHE: dict[str, tuple[float, float, bool, str]] = {}
+_VENV_HEALTH_TTL = 300.0
 
 # 需要做「导入可用性校验」的组件：它们的包 import 会连带加载原生扩展，
 # 而原生扩展可能因缺 DLL / 版本不匹配而加载失败 —— 此时「文件在」≠「能用」。
@@ -876,6 +889,118 @@ def _external_install_hint(comp: dict) -> str:
             "不重新安装也不影响使用。" % (comp["name"], found))
 
 
+def _invalidate_probe_cache() -> None:
+    """安装成功后清工具探测缓存：下一次刷新即见新组件，不再要求重启。"""
+    try:
+        with media_tools._LOCK:
+            media_tools._CACHE = None
+    except Exception:
+        pass
+
+
+def preflight(component_id: str) -> dict:
+    """安装前一次性环境预检（v1.8.2，纯本地只读、零网络）。
+
+    把「装到一半才炸」前移成「点启用就告诉用户缺什么」。
+    blockers 会阻止安装（避免注定失败的大下载）；
+    warnings 不阻止（有自愈机制兜底，但要如实告知）。
+    """
+    comp = _BY_ID.get(component_id)
+    if not comp:
+        return {"ok": False, "component_id": component_id,
+                "blockers": [{"code": "unknown-component", "message": "未知组件"}],
+                "warnings": [], "message": "未知组件"}
+    if comp["kind"] == "system":
+        return {"ok": True, "component_id": component_id,
+                "blockers": [], "warnings": [], "message": ""}
+    blockers: list[dict] = []
+    warnings: list[dict] = []
+    # 目录可写（安全软件/权限问题在此暴露，别等下载完才发现写不进去）
+    try:
+        COMPONENT_DIR.mkdir(parents=True, exist_ok=True)
+        probe = COMPONENT_DIR / ".preflight-write.tmp"
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        blockers.append({"code": "dir-unwritable",
+                         "message": "组件目录不可写：%s。请检查 %s 的权限或安全软件设置。"
+                                    % (exc, COMPONENT_DIR)})
+    # Python / venv（pip 类与纯库类都需要）
+    if comp["kind"] in ("pip", "pylib"):
+        try:
+            _find_python_for_pip()
+        except RuntimeError as exc:
+            blockers.append({"code": "no-python", "message": str(exc)})
+        ok, reason = _venv_pip_health()
+        if not ok:
+            warnings.append({"code": "venv-broken",
+                             "message": "组件环境需要修复，安装时会自动换用新环境"
+                                        "（旧环境保留不删）：%s" % reason})
+    # VC++ 是 whisper/torch 的硬依赖：缺了装也白装（实测 WinError 126）
+    if comp["id"] == "whisper":
+        vc = _probe_vc_runtime()
+        if not vc["available"]:
+            blockers.append({
+                "code": "vc-runtime",
+                "message": "安装 Whisper 前请先安装 VC++ 运行库，否则装好也用不了"
+                           "（WinError 126）。请在设置页点「下载安装」，"
+                           "按微软官方指引装完并重启软件后再试。",
+                "url": VC_REDIST_URL,
+            })
+    return {
+        "ok": not blockers,
+        "component_id": component_id,
+        "blockers": blockers,
+        "warnings": warnings,
+        "message": blockers[0]["message"] if blockers else "",
+    }
+
+
+def environment_report() -> dict:
+    """本机组件环境诊断（v1.8.2，纯本地只读、零网络）。
+
+    供设置页「环境诊断」按钮与用户反馈使用：一眼看清 Python / venv /
+    VC++ / 目录权限 / PATH 注入是否就绪，不用再靠猜。
+    """
+    ensure_component_path()
+    vc = _probe_vc_runtime()
+    healthy, reason = _venv_pip_health()
+    writable = False
+    write_error = ""
+    try:
+        COMPONENT_DIR.mkdir(parents=True, exist_ok=True)
+        probe = COMPONENT_DIR / ".env-write.tmp"
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("")
+        probe.unlink(missing_ok=True)
+        writable = True
+    except OSError as exc:
+        write_error = str(exc)
+    try:
+        python_exe = _python_for_pip()
+    except RuntimeError:
+        python_exe = ""
+    return {
+        "ok": True,
+        "os": os.name,
+        "python_version": sys.version.split()[0],
+        "python_exe": python_exe,
+        "component_dir": str(COMPONENT_DIR),
+        "bin_dir": str(BIN_DIR),
+        "dir_writable": writable,
+        "dir_write_error": write_error,
+        "venv": {"path": str(VENV_DIR), "healthy": healthy,
+                 "reason": "" if healthy else reason},
+        "vc_runtime": {"available": vc["available"], "reason": vc["reason"],
+                       "present_dlls": list(_vc_dlls_present()),
+                       "required_dlls": list(_VC_PROBE_DLLS)},
+        "bin_dir_in_path": str(BIN_DIR).lower() in (
+            os.environ.get("PATH") or "").lower(),
+        "retries": {"download": DOWNLOAD_RETRIES, "pip": PIP_RETRIES},
+    }
+
+
 def list_components(refresh: bool = False) -> dict:
     """组件清单；installed 以真实探测为准，不缓存安装状态。"""
     if refresh:
@@ -1020,59 +1145,79 @@ def _require_opt_in(component_id: str) -> None:
         raise RuntimeError("未获用户手动启用授权，拒绝下载（软件绝不主动下载）")
 
 
-def _download(url: str, dest: Path, component_id: str, sha256: str = "") -> None:
+def _download(url: str, dest: Path, component_id: str, sha256: str = "",
+              retries: int = DOWNLOAD_RETRIES) -> None:
     """流式下载（走环境变量代理），写 .part 后原子替换。必须持手动令牌。
 
-    **``.part`` 必须在任何失败路径都被清理（缺陷 1，用户 2026-11-23 实测）**：
-    原实现只在「主动取消」分支里 ``tmp.unlink()``，而网络断开、进程被杀、
-    用户关窗等异常中断**不经过该分支** → ``.part`` 永久残留
-    （本机实测残留 13.6 MB 的 ``ffmpeg.zip.part``）。
+    **.part 必须在任何失败路径都被清理**（缺陷 1，用户 2026-11-23 实测）：
+    原实现只在「主动取消」分支清理，网络断开/进程被杀会永久残留 .part。
+    现在 finally 无条件清理尚未改名的临时文件。
 
-    现在改为：``finally`` 中无条件清理「尚未改名」的临时文件。
-    成功路径已 ``tmp.replace(dest)``（临时文件不存在，``missing_ok`` 兜底），
-    失败路径则真正删除，绝不留下垃圾。
-
-    v1.8.1：新增可选 ``sha256`` 参数——下载完成后、原子替换**之前**校验摘要，
-    不匹配直接抛错（.part 由 finally 清理）。杜绝镜像内容被替换后静默安装。
+    v1.8.1：可选 sha256 在原子替换**之前**校验，不符抛错、丢弃文件。
+    v1.8.2：网络类失败自动重试 DOWNLOAD_RETRIES 次（指数退避，事件可见）；
+    **用户取消与摘要不符绝不重试**——安全红线不因重试放宽。令牌只在入口
+    校验一次，重试循环内不再触碰，避免第二次重试被误判为「未授权下载」。
     """
     _require_opt_in(component_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "jinghe-component-installer"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            total = int(resp.headers.get("Content-Length") or 0)
-            got = 0
-            with open(tmp, "wb") as f:
-                while True:
-                    if _cancelled(component_id):
-                        raise RuntimeError("cancelled")
-                    chunk = resp.read(256 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    got += len(chunk)
-                    if total:
-                        _emit("progress", "下载中 %d%%" % int(got * 100 / total),
-                              got / total, component_id)
-                    else:
-                        _emit("progress", "已下载 %.1f MB" % (got / 1024 / 1024),
-                              None, component_id)
-        if sha256:
-            digest = hashlib.sha256()
-            with open(tmp, "rb") as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            actual = digest.hexdigest().lower()
-            if actual != sha256.lower():
-                raise RuntimeError(
-                    "下载校验失败：sha256 不匹配（期望 %s…，实际 %s…），已丢弃文件"
-                    % (sha256[:16], actual[:16]))
-        tmp.replace(dest)
-    finally:
-        # 成功路径：tmp 已被 replace 走，文件不存在 → missing_ok 静默跳过
-        # 失败路径：删除残留的半截文件
-        tmp.unlink(missing_ok=True)
+    last: Exception | None = None
+    for attempt in range(max(0, retries) + 1):
+        if _cancelled(component_id):
+            raise RuntimeError("cancelled")
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "jinghe-component-installer"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                total = int(resp.headers.get("Content-Length") or 0)
+                got = 0
+                with open(tmp, "wb") as f:
+                    while True:
+                        if _cancelled(component_id):
+                            raise RuntimeError("cancelled")
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                        if total:
+                            _emit("progress", "下载中 %d%%" % int(got * 100 / total),
+                                  got / total, component_id)
+                        else:
+                            _emit("progress", "已下载 %.1f MB" % (got / 1024 / 1024),
+                                  None, component_id)
+            if sha256:
+                digest = hashlib.sha256()
+                with open(tmp, "rb") as f:
+                    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                actual = digest.hexdigest().lower()
+                if actual != sha256.lower():
+                    raise RuntimeError(
+                        "下载校验失败：sha256 不匹配（期望 %s…，实际 %s…），已丢弃文件"
+                        % (sha256[:16], actual[:16]))
+            tmp.replace(dest)
+            return
+        except RuntimeError as exc:
+            if str(exc) == "cancelled" or "下载校验失败" in str(exc):
+                raise  # 取消与摘要不符绝不重试
+            last = exc
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            last = exc
+        finally:
+            tmp.unlink(missing_ok=True)
+        if attempt < retries:
+            delay = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+            _emit("progress",
+                  "下载中断，%.0f 秒后重试（%d/%d）：%s"
+                  % (delay, attempt + 1, retries, str(last)[:100]),
+                  None, component_id)
+            time.sleep(delay)
+    _emit("error", "下载失败（已重试 %d 次）：%s" % (retries, last), None, component_id)
+    # 向后兼容：原实现把 OSError 原样抛出，调用方/旧测试依赖该异常类型。
+    if isinstance(last, OSError):
+        raise last
+    raise RuntimeError("下载失败（已重试 %d 次）：%s" % (retries, last))
 
 
 def _cleanup_stale_parts() -> list[str]:
@@ -1161,6 +1306,41 @@ def _python_root_has_exe(root: Path) -> str:
 # --------------------------------------------------------------------------- #
 # venv 管理（v1.4.0 组件收口核心）
 # --------------------------------------------------------------------------- #
+def _venv_pip_health() -> tuple[bool, str]:
+    """venv 内的 pip 是否真能跑（v1.8.2 环境检测）。
+
+    实测故障：残留空壳 venv 的 python.exe 能执行、pyvenv.cfg 也在，
+    但 site-packages/pip 残缺（``No module named pip._internal``），
+    旧版判为「可用」→ pip install 必失败且用户无法自愈。
+    结果按 site-packages 的 mtime 缓存，避免每次探测都起解释器。
+    """
+    try:
+        sp = VENV_DIR / "Lib" / "site-packages"
+        fp = os.path.normcase(str(sp))
+        stamp = sp.stat().st_mtime if sp.is_dir() else 0.0
+    except OSError:
+        fp, stamp = str(VENV_DIR), 0.0
+    cached = _VENV_HEALTH_CACHE.get(fp)
+    now = time.monotonic()
+    if cached and (now - cached[0]) < _VENV_HEALTH_TTL and cached[1] == stamp:
+        return cached[2], cached[3]
+    ok, reason = True, ""
+    try:
+        r = subprocess.run(
+            [str(VENV_PYTHON), "-m", "pip", "--version"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", timeout=30,
+            creationflags=_CREATE_NO_WINDOW)
+        if r.returncode != 0:
+            ok = False
+            lines = (r.stdout or "").strip().splitlines()
+            reason = lines[-1][:200] if lines else "pip 自检失败"
+    except (OSError, subprocess.SubprocessError) as exc:
+        ok, reason = False, "%s：%s" % (type(exc).__name__, exc)
+    _VENV_HEALTH_CACHE[fp] = (now, stamp, ok, reason)
+    return ok, reason
+
+
 def _venv_python_usable() -> bool:
     """venv 是否存在且可用。
 
@@ -1181,7 +1361,11 @@ def _venv_python_usable() -> bool:
             [str(VENV_PYTHON), "-c", "pass"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=30, creationflags=_CREATE_NO_WINDOW)
-        return proc.returncode == 0
+        if proc.returncode != 0:
+            return False
+        # v1.8.2：能跑 ≠ 能装。pip 残缺必须判坏，否则安装必失败且不自愈。
+        ok, _ = _venv_pip_health()
+        return ok
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -1293,6 +1477,12 @@ def _ensure_venv(component_id: str = "") -> str:
     """
     if _venv_python_usable():
         return str(VENV_PYTHON)
+    # v1.8.2：坏 venv 不再原地重建（安全软件常拦删除；实测 SHFileOperationW 0x78）。
+    # 先找已健康的备用槽位；没有则选一个全新槽位重建，旧目录一律保留。
+    healthy = _healthy_venv_slot()
+    if healthy:
+        _select_venv_slot(healthy)
+        return str(VENV_PYTHON)
     try:
         base = _find_python_for_pip()
     except RuntimeError:
@@ -1305,10 +1495,60 @@ def _ensure_venv(component_id: str = "") -> str:
                 "重启软件后再点启用。")
         # 用户点击安装中 → 下载便携 Python 兜底（带令牌，红线内）
         base = _ensure_runtime_python(component_id)
+    target = _next_venv_slot()
+    _select_venv_slot(target)
     try:
         return _create_venv(base)
     except RuntimeError as exc:
         raise RuntimeError("%s\n（用到的 Python：%s）" % (exc, base))
+
+
+def _venv_slot_dir(slot: int) -> Path:
+    """第 slot 个 venv 目录：1 → venv，2..N → venv2..venvN。"""
+    return COMPONENT_DIR / ("venv" if slot <= 1 else "venv%d" % slot)
+
+
+def _select_venv_slot(slot: int) -> None:
+    """把当前 venv 路径常量切换到指定槽位（只切运行时选择，不删任何目录）。"""
+    global VENV_DIR, VENV_SCRIPTS, VENV_PYTHON
+    d = _venv_slot_dir(slot)
+    VENV_DIR = d
+    VENV_SCRIPTS = d / "Scripts"
+    VENV_PYTHON = VENV_SCRIPTS / ("python.exe" if os.name == "nt" else "python")
+    _VENV_HEALTH_CACHE.clear()
+
+
+def _probe_venv_slot(slot: int) -> bool:
+    """临时切换常量探测某个槽位是否健康，随后恢复。"""
+    global VENV_DIR, VENV_SCRIPTS, VENV_PYTHON
+    old = (VENV_DIR, VENV_SCRIPTS, VENV_PYTHON)
+    try:
+        _select_venv_slot(slot)
+        return _venv_python_usable()
+    finally:
+        VENV_DIR, VENV_SCRIPTS, VENV_PYTHON = old
+        _VENV_HEALTH_CACHE.clear()
+
+
+def _healthy_venv_slot() -> int:
+    """返回第一个健康槽位（默认槽优先），没有则 0。"""
+    for slot in range(1, VENV_MAX_SLOTS + 1):
+        try:
+            if _probe_venv_slot(slot):
+                return slot
+        except Exception:
+            continue
+    return 0
+
+
+def _next_venv_slot() -> int:
+    """选一个尚不存在的槽位重建；全占用则报错，绝不覆盖/删除旧环境。"""
+    for slot in range(1, VENV_MAX_SLOTS + 1):
+        if not _venv_slot_dir(slot).exists():
+            return slot
+    raise RuntimeError(
+        "组件环境槽位已用满（venv~venv%d）。请清理 %s 下损坏的 venv 目录后重试。"
+        % (VENV_MAX_SLOTS, COMPONENT_DIR))
 
 
 def _python_for_pip() -> str:
@@ -1469,55 +1709,60 @@ def _pip_cmd_install(package: str) -> list[str]:
     return cmd
 
 
-def _pip_install(package: str, component_id: str) -> str:
+def _pip_install(package: str, component_id: str,
+                 retries: int = PIP_RETRIES) -> str:
     """用内置镜像装 Python 包，解析 pip 输出映射为 5%~95% 的进度。必须持手动令牌。
 
-    **v1.4.0 收口**：安装目标解释器切到 **venv 内的 python** ——
-    新装的包一律落在 ``components\\venv``，**不再污染宿主 Python**
-    （改造前 whisper+torch 共 554MB 会留在系统 site-packages，卸载清不掉）。
-
-    venv 不可用时（如用户机器没有 Python）由 :func:`_ensure_venv` 抛出
-    带指引的异常，**绝不静默降级**到宿主 Python —— 降级会重新引入
-    「装 A 处探 B 处」的病根。
+    v1.4.0：一律装进 venv，不污染宿主 Python；venv 不可用由 _ensure_venv
+    抛带指引异常，绝不静默降级。
+    v1.8.2：pip 网络/镜像抖动自动重试 PIP_RETRIES 次，重试事件写进进度；
+    用户取消立即终止，不重试。令牌只在入口校验一次。
     """
     _require_opt_in(component_id)
-    cmd = _pip_cmd_install(package)
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-        bufsize=1, creationflags=_CREATE_NO_WINDOW,
-    )
-    steps = ("Collecting", "Downloading", "Installing", "Successfully installed")
-    reached = set()
-    errors: list[str] = []   # 收集 pip 的 ERROR 行，失败时回显真实原因
-    assert proc.stdout is not None
-    for line in proc.stdout:
+    last = ""
+    for attempt in range(max(0, retries) + 1):
         if _cancelled(component_id):
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
             raise RuntimeError("cancelled")
-        text = line.rstrip()
-        if "ERROR" in text or "error:" in text.lower():
-            errors.append(text[:200])
-            _emit("progress", text[:120], None, component_id)
-        for i, kw in enumerate(steps):
-            if kw in text and kw not in reached:
-                reached.add(kw)
-                _emit("progress", text[:120],
-                      min(0.95, (i + 1) / (len(steps) + 1)), component_id)
-                break
-        else:
-            if "Downloading" in text or "MB" in text:
+        cmd = _pip_cmd_install(package)
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            bufsize=1, creationflags=_CREATE_NO_WINDOW)
+        steps = ("Collecting", "Downloading", "Installing", "Successfully installed")
+        reached = set()
+        errors: list[str] = []   # 收集 pip 的 ERROR 行，失败时回显真实原因
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if _cancelled(component_id):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                raise RuntimeError("cancelled")
+            text = line.rstrip()
+            if "ERROR" in text or "error:" in text.lower():
+                errors.append(text[:200])
                 _emit("progress", text[:120], None, component_id)
-    rc = proc.wait()
-    if rc != 0:
-        # 用户要能看到 pip 的真实报错，而不是只有「退出码 2」这种谜语
-        detail = errors[-1] if errors else "（pip 未输出 ERROR 行）"
-        raise RuntimeError("pip 安装失败（退出码 %d）：%s" % (rc, detail))
-    return "安装完成"
+            for i, kw in enumerate(steps):
+                if kw in text and kw not in reached:
+                    reached.add(kw)
+                    _emit("progress", text[:120],
+                          min(0.95, (i + 1) / (len(steps) + 1)), component_id)
+                    break
+            else:
+                if "Downloading" in text or "MB" in text:
+                    _emit("progress", text[:120], None, component_id)
+        rc = proc.wait()
+        if rc == 0:
+            return "安装完成"
+        last = errors[-1] if errors else "（pip 未输出 ERROR 行，退出码 %d）" % rc
+        if attempt < retries and not _cancelled(component_id):
+            _emit("progress",
+                  "安装中断，准备重试（%d/%d）：%s" % (attempt + 1, retries, last[:100]),
+                  None, component_id)
+            time.sleep(RETRY_BACKOFF[0])
+    raise RuntimeError("pip 安装失败（已重试 %d 次）：%s" % (retries, last))
 
 
 def _ensure_console_script(python_exe: str, package: str, exe_name: str) -> str:
@@ -1587,7 +1832,15 @@ def _install_worker(component_id: str) -> None:
             _download(comp["url"], dest, component_id,
                       sha256=comp.get("sha256", ""))
             _emit("progress", "解压中…", 0.9, component_id)
-            detail = _extract_ffmpeg(dest)
+            try:
+                detail = _extract_ffmpeg(dest)
+            except Exception:
+                # v1.8.2：解压失败也清掉下载的 zip，别留半截占空间
+                try:
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
         else:
             # v1.4.0 收口：pip 类组件一律装进 **venv**（软件专属目录），
             # 不再污染宿主 Python。venv 不存在/失效时在此创建（用系统 Python）。
@@ -1643,6 +1896,8 @@ def _install_worker(component_id: str) -> None:
                 "请重启软件后重试；若仍失败，请把以上诊断信息反馈给开发者。"
                 % (comp["exe"], py, " | ".join(dirs) or "(无)",
                    (Path(dirs[0]) / comp["exe"]).is_file() if dirs else "未知"))
+        # v1.8.2：装完即刷新探测缓存——不要求用户重启软件才看到新组件。
+        _invalidate_probe_cache()
         with _LOCK:
             job["state"] = "done"
             job["percent"] = 100.0
@@ -1690,6 +1945,15 @@ def install(component_id: str) -> dict:
             _JOB = job
         _emit("done", "%s 已安装" % comp["name"], 1.0, component_id)
         return {"ok": True, "already_installed": True}
+    # v1.8.2：安装前预检——阻断项一次说清，避免注定失败的大下载。
+    # 放在「已安装」判断之后：已装但环境异常（如缺 VC++）仍照常显示，
+    # 由组件状态/ transcribe 路径给出诊断，不在这里拦住查看。
+    pre = preflight(component_id)
+    if not pre["ok"]:
+        return {"ok": False, "error": pre["message"],
+                "blockers": pre["blockers"], "code": pre["blockers"][0]["code"]}
+    for w in pre["warnings"]:
+        _emit("info", w["message"], None, component_id)
     # 只有走到这里（用户点了启用 + 组件确实未安装）才发令牌。
     # 并发：每组件独立令牌写入 set；兼容视图 _USER_OPT_IN 指向最近一个。
     with _LOCK:
