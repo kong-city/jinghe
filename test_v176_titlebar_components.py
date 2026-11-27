@@ -39,8 +39,9 @@ class TestTitlebarTheme(unittest.TestCase):
         self.assertIn("applyTitleBarTheme(source)", self.main)
 
     def test_02_overlay_colors_follow_theme_tokens(self):
-        self.assertIn("dark: { color: '#1E2226'", self.main)
-        self.assertIn("light: { color: '#f5f6f8'", self.main)
+        # v1.8.3：overlay 色值改为与网页 --c-surface 同源（见 v183 守护测试）。
+        self.assertIn("dark: { color: '#22262B'", self.main)
+        self.assertIn("light: { color: '#FFFFFF'", self.main)
         self.assertIn("symbolColor", self.main)
 
     def test_03_menu_survives_hidden_titlebar(self):

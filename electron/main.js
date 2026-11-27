@@ -74,12 +74,15 @@ let quitting = false;          // 退出流程防重入
 let cleanupDone = false;       // 子进程回收完成，before-quit 才放行
 
 // v1.7.6：Windows 标题栏由 OS 绘制，themeSource 改不动它（用户截图实测）。
-// 用 titleBarOverlay 接管外框配色：色值与网页暗色 token 同源，切主题时经
-// win.setTitleBarOverlay() 实时更新。DOM 里的标题文字见 ui/index.html 的
-// #shellTitlebar（overlay 只画右侧窗口按钮，不画标题文字）。
+// 用 titleBarOverlay 接管外框配色，切主题时经 win.setTitleBarOverlay() 实时更新。
+// DOM 里的标题文字见 ui/index.html 的 #shellTitlebar（overlay 只画右侧窗口按钮）。
+// v1.8.3：overlay 的 color 必须与 ui/app.css 的 --c-surface 严格同源——
+// 左侧标题栏（网页画）用 --c-surface，右侧按钮区（OS 画）用这里的 color，
+// 两者一旦不同源就会出现「左白右灰」的硬色差分界线（用户截图实测）。
+// 守护测试 test_v183_titlebar_color_sync 会从 CSS 反解色值强制校验，勿硬改。
 const TITLEBAR_THEME = Object.freeze({
-  light: { color: '#f5f6f8', symbolColor: '#2A2E33' },
-  dark: { color: '#1E2226', symbolColor: '#ECEDEE' },
+  light: { color: '#FFFFFF', symbolColor: '#2A2E33' },
+  dark: { color: '#22262B', symbolColor: '#ECEDEE' },
 });
 function applyTitleBarTheme(theme) {
   const source = (theme === 'dark') ? 'dark' : 'light';
@@ -686,7 +689,7 @@ function createWindow() {
     // 品牌图标：开发态跑通用 electron.exe（默认图标），必须显式指定才能显示精核图标；
     // 打包态 electron-builder 也会用同一张真源图生成 exe 图标，两处同源不冲突。
     icon: nativeImage.createFromPath(trayIconPath()),
-    backgroundColor: '#f5f6f8',
+    backgroundColor: '#FFFFFF',
     // v1.7.6：标题栏由 overlay 绘制，颜色可随主题实时改；标题文字由页面 #shellTitlebar 承担。
     // Windows/Linux 下 hidden 必须与 titleBarOverlay 同用，否则窗口按钮会整排消失。
     ...(process.platform === 'win32' ? {
