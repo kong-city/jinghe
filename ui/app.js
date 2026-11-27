@@ -3310,6 +3310,11 @@
       });
       el.kbDocTree.appendChild(node);
     });
+    // v1.8.4：侧栏文档目录与知识库页文档树共享选中态，点哪边都同步高亮。
+    var sideNodes = document.querySelectorAll(".side-kb-item");
+    for (var si = 0; si < sideNodes.length; si += 1) {
+      sideNodes[si].classList.toggle("active", sideNodes[si].getAttribute("data-doc-id") === kbView.activeDoc);
+    }
     if (!kbView.docs.length) {
       var empty = document.createElement("div");
       empty.className = "hint";
@@ -3466,6 +3471,59 @@
       renderKbThreeCol(r.results, r.docs, "browse");
     }).catch(function (err) {
       if (el.kbDocTree) el.kbDocTree.textContent = "浏览失败：" + (err.message || err);
+    });
+  }
+
+  // v1.8.4：思源式左侧文档目录——点开折叠区才加载，数据复用 /api/kb/browse。
+  // 显示的是文档标题（source_file basename 去掉 .refine.md/.md），提纯目录本次不处理。
+  var sideKbLoading = false, sideKbLoaded = false;
+  function loadSideKbTree() {
+    var list = document.getElementById("sideKbList");
+    if (!list || sideKbLoading || sideKbLoaded) return;
+    sideKbLoading = true;
+    api("/api/kb/browse?limit=200", undefined, 15000).then(function (r) {
+      sideKbLoading = false;
+      if (!r || !r.ok) {
+        list.textContent = "载入失败；稍后再点开重试";
+        return;
+      }
+      var docs = (r.docs || []).slice();
+      list.textContent = "";
+      sideKbLoaded = true;
+      if (!docs.length) {
+        var empty = document.createElement("div");
+        empty.className = "side-kb-empty";
+        empty.textContent = "知识库为空";
+        list.appendChild(empty);
+        return;
+      }
+      docs.forEach(function (doc) {
+        var raw = String(doc.source_file || doc.doc_id);
+        var name = raw.split(/[\\/]/).pop()
+                      .replace(/\.refine\.md$/i, "").replace(/\.md$/i, "");
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "side-kb-item";
+        btn.setAttribute("data-doc-id", doc.doc_id);
+        btn.setAttribute("data-full", name);
+        btn.title = name;
+        var title = document.createElement("span");
+        title.className = "side-kb-title";
+        title.textContent = name;
+        btn.appendChild(title);
+        btn.addEventListener("click", function () {
+          kbView.activeDoc = doc.doc_id;
+          var nodes = document.querySelectorAll(".side-kb-item");
+          for (var i = 0; i < nodes.length; i += 1) {
+            nodes[i].classList.toggle("active", nodes[i] === btn);
+          }
+          activatePage("kb");
+        });
+        list.appendChild(btn);
+      });
+    }).catch(function (err) {
+      sideKbLoading = false;
+      list.textContent = "载入失败：" + (err && err.message || err);
     });
   }
 
@@ -4047,6 +4105,18 @@
       });
       navItems[n].addEventListener("dblclick", function () {
         setNavCollapsed(!el.appShell.classList.contains("nav-collapsed"));
+      });
+    }
+    // v1.8.4：左侧文档目录折叠区——第一次点开才请求数据，之后只切换显隐。
+    var sideKbToggle = document.getElementById("sideKbToggle");
+    if (sideKbToggle) {
+      sideKbToggle.addEventListener("click", function () {
+        var list = document.getElementById("sideKbList");
+        if (!list) return;
+        var opening = list.hidden;
+        list.hidden = !opening;
+        sideKbToggle.setAttribute("aria-expanded", opening ? "true" : "false");
+        if (opening) loadSideKbTree();
       });
     }
     // S14：流程指引卡片的跨页跳转

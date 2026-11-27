@@ -1,6 +1,6 @@
 {
   "name": "jinghe-desktop-shell",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "description": "精核 · Electron 桌面外壳（自带 Chromium 内核，摒弃系统 Edge 依赖）",
   "main": "main.js",
   "author": "kong-city",

@@ -360,4 +360,9 @@ EN = {
     "缺失": "missing",
     "自动重试": "Auto retry",
     "下载": "Download",
+    # v1.8.4：左侧思源式文档目录（独立标识，不占 data-page）
+    "文档目录": "Documents",
+    "载入失败；稍后再点开重试": "Load failed; reopen to retry",
+    "知识库为空": "Knowledge base is empty",
+    "载入失败：": "Load failed: ",
 }

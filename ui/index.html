@@ -75,6 +75,17 @@
         </svg>
         <span class="nav-label" data-i18n="nav.kb">知识库</span>
       </button>
+      <!-- v1.8.4：思源式左侧文档目录——独立标识，不占 data-page；
+           默认折叠，点开才加载；提纯目录本次不处理。 -->
+      <div class="side-kb-tree" id="sideKbTree">
+        <button class="side-kb-toggle" id="sideKbToggle" type="button"
+                aria-expanded="false" aria-controls="sideKbList"
+                title="文档目录" data-i18n-title="sideKb.title">
+          <span class="side-kb-caret" aria-hidden="true"></span>
+          <span class="side-kb-toggle-label" data-i18n="sideKb.title">文档目录</span>
+        </button>
+        <div class="side-kb-list" id="sideKbList" hidden></div>
+      </div>
       </div>
       <div class="nav-group" data-group="system">
         <span class="nav-group-title" data-i18n="group.system">系统</span>
