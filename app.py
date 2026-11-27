@@ -71,6 +71,7 @@ import self_update  # v0.4.8：自更新（查版本 → 下载 → 替换运行
 import kb  # S9：阶段 4 知识库（独立后处理层，冻结内核 / SPEC 零改动）
 import components  # S10：设置页可选组件安装（ffmpeg / whisper / yt-dlp）
 import pdf_ocr  # 可选 OCR 增强：扫描件 PDF 图片页识别（独立后处理层）
+import pdf_layout  # PDF 版面后处理：断行重连 + 目录层级还原（独立后处理层，不改冻结内核）
 import subscription_store  # S12a：订阅注册表（落盘，含 last_seen 指纹）
 import channel_discovery  # S12a：频道发现（yt-dlp flat-playlist，只枚举不下载）
 import subscription_engine  # S12a：订阅增量编排（发现→下载→转写→入库，调度无关）
@@ -1712,6 +1713,112 @@ def _log_ocr_result(job: "Job", name: str, res: dict) -> None:
         job.add("log", "OCR 未成功：%s（%s）" % (name, res.get("error", "")), raw="")
 
 
+def _pdf_layout_sources(job: "Job") -> list[tuple[Path, Path]]:
+    """找出本次任务里需要做版面后处理的 PDF 文本来源。
+
+    返回 [(源 md, 对应 PDF 路径)]。优先 derived/ 下的 OCR 产物（质量更高、
+    断行是物理换行），其次 out/md/ 下的阶段 1 PDF 产物。两者都只读，
+    新产物另落 derived/，不污染阶段 1 对账。
+    """
+    outdir = Path(job.outdir or "")
+    if not outdir.is_dir():
+        return []
+    pdfs = [Path(str(s)) for s in list(job.inputs or [])
+            if str(s).lower().endswith(".pdf")]
+    if not pdfs:
+        return []
+    sources: list[tuple[Path, Path]] = []
+    derived = media_runtime.derived_dir(outdir)
+
+    def norm(s: str) -> str:
+        return "".join(c for c in s
+                       if c.isalnum() or "\u4e00" <= c <= "\u9fff").lower()
+
+    for pdf in pdfs:
+        # OCR 产物命名：<stem>.md。实测 pdf_ocr.ocr_pdf_to_md() 写在 **outdir 根**
+        # （不是 derived/）——早期只在 derived/ 找，导致扫描件/CID 降级件的主来源
+        # 永远落空。两处都查，优先 outdir 根的精确同名产物。
+        cand_root = outdir / (pdf.stem + ".md")
+        cand_derived = derived / (pdf.stem + ".md")
+        ocr_cand = cand_root if cand_root.is_file() else cand_derived
+        if ocr_cand.is_file():
+            sources.append((ocr_cand, pdf))
+            continue
+        # 阶段 1 产物：out/md/ 下按扫描顺序编号，且文件名做过清洗
+        # （《》：→ _，前缀序号）——两边都归一化成「中文/字母数字」再比对。
+        md_dir = outdir / "md"
+        if md_dir.is_dir():
+            pdf_key = norm(pdf.stem)
+            matches = []
+            for p in md_dir.glob("*.md"):
+                md_key = norm(p.stem)
+                # 严格匹配：清洗后完全相等，或「数字编号前缀 + 同名」。
+                # 早期用子串包含会让 a.pdf 误匹配 a2.pdf 的产物（实测隐患）。
+                stripped = re.sub(r"^\d+", "", md_key)
+                if pdf_key and md_key and (md_key == pdf_key or stripped == pdf_key):
+                    matches.append(p)
+            if matches:
+                sources.append((sorted(matches)[0], pdf))
+    return sources
+
+
+def _pdf_layout_postprocess(job: "Job") -> None:
+    """对 PDF 产物做「断行重连 + 目录层级还原」，产出独立 md 到 derived/。
+
+    只在任务成功结束时调用；任何异常都只写日志，绝不影响主任务状态。
+    幂等：目标已存在且内容一致时跳过。
+    """
+    try:
+        sources = _pdf_layout_sources(job)
+        if not sources:
+            return
+        outdir = Path(job.outdir or "")
+        derived = media_runtime.ensure_derived(outdir)
+        done = 0
+        for src_md, pdf in sources:
+            # 单件失败只影响这一件，不能中断整批（多 PDF 任务常见）。
+            try:
+                text = src_md.read_text(encoding="utf-8", errors="replace")
+                reflowed, toc = pdf_layout.postprocess(text)
+                if not reflowed.strip():
+                    continue
+                target = derived / (pdf.stem + "_目录与连贯.md")
+                header = pdf_layout.render_toc(toc) if toc else ""
+                payload = (
+                    "<!-- source: %s | format: .pdf | layout: 断行重连+目录层级 | "
+                    "generator: pdf_layout.py -->\n\n" % pdf.name
+                    + header + "\n" + reflowed
+                )
+                if (target.is_file()
+                        and target.read_text(encoding="utf-8",
+                                             errors="replace") == payload):
+                    continue
+                tmp = target.with_name(target.name + ".tmp")
+                try:
+                    tmp.write_text(payload, encoding="utf-8")
+                    os.replace(tmp, target)
+                finally:
+                    # 写盘/替换失败时清掉 .tmp，避免残留在 derived/ 被当产物列出
+                    if tmp.exists():
+                        try:
+                            tmp.unlink()
+                        except OSError:
+                            pass
+                done += 1
+                job.add("log", "版面后处理：%s（目录 %d 项，断行合并 %d 行）" % (
+                    target.name, len(toc),
+                    len(text.splitlines()) - len(reflowed.splitlines())), raw="")
+            except Exception as exc:  # noqa: BLE001 - 单件异常不拖垮整批
+                job.add("log", "版面后处理跳过（%s）：%s · %s" % (
+                    pdf.name, type(exc).__name__, exc), raw="")
+                continue
+        if done:
+            job.add("log", "PDF 版面后处理完成：%d 个产物（落 derived/，不参与阶段 1 对账）" % done,
+                    raw="")
+    except Exception as exc:  # noqa: BLE001 - 可选增强，绝不影响主任务
+        job.add("log", "PDF 版面后处理跳过：%s" % exc, raw="")
+
+
 def _error_tail(lines: list[str]) -> str:
     for line in reversed(lines):
         if line.startswith("[ERROR]"):
@@ -1834,6 +1941,9 @@ def _run_job_inner(job: Job, enc_dir: Path) -> None:
             except Exception as exc:
                 # OCR 是可选增强，任何异常都不能影响主任务成功状态
                 job.add("log", "OCR 后处理跳过：%s" % exc, raw="")
+            # PDF 版面后处理（独立后处理层）：断行重连 + 目录层级还原。
+            # 与 OCR 平级、互不干涉；产物落 derived/，不动冻结内核与阶段 1 对账。
+            _pdf_layout_postprocess(job)
     except Exception as exc:
         # 兜底异常路径：state 必须落为 failed，不能残留 "running"。
         # 只处理「任务体抛出未捕获异常」，正常 done/cancelled/failed 判定不受影响。

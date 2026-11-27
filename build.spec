@@ -15,7 +15,7 @@ a = Analysis(
     datas=[('ui', 'ui'), ('vendor', 'vendor'), ('tools/ocr_worker.py', 'tools'),
            ('tools/clean_ocr.py', 'tools'),
            ('docs/组件与环境清单.md', 'docs')],
-    hiddenimports=['extract', 'format_registry', 'media_tools', 'media_runtime', 'word_input', 'word_export', 'audio_transcribe', 'video_transcribe', 'self_update', 'kb', 'components', 'pdf_ocr', 'iterate_engine', 'subscription_store', 'channel_discovery', 'subscription_engine', 'subscription_scheduler'],
+    hiddenimports=['extract', 'format_registry', 'media_tools', 'media_runtime', 'word_input', 'word_export', 'audio_transcribe', 'video_transcribe', 'self_update', 'kb', 'components', 'pdf_ocr', 'pdf_layout', 'iterate_engine', 'subscription_store', 'channel_discovery', 'subscription_engine', 'subscription_scheduler'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

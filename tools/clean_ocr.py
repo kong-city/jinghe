@@ -15,7 +15,8 @@ WATERMARK_PATTERNS = (
     re.compile(r"(?:www\s*\.\s*)?epubit\s*\.\s*com(?:\s*\.\s*cn)?", re.I),
     # OCR 错序碎片：pubit.com. / bit.com. / ubit.com.cn 等
     re.compile(r"\bp-?u?bit\s*\.\s*com(?:\s*\.\s*cn)?\.?", re.I),
-    re.compile(r"www\s*\.\s*epu[bhil]?\b", re.I),
+    # 水印开头碎片：www.epul / WWW.ep / WWW.epubit…（OCR 截断到任意长度）
+    re.compile(r"www\s*\.\s*ep\w*", re.I),
     re.compile(r"异步社区", re.I),  # 水印同源的营销文字（正文引用除外，见 WHITELIST）
 )
 # 这些上下文里出现的水印词是正版内容，不能删
@@ -34,7 +35,10 @@ TYPO_FIXES = (
     (r"广衰的世界", "广袤的世界"),
     (r"神毫上", "神坛上"),
     (r"一一这可是", "——这可是"),
-    (r"步社区", "异步社区"),
+    # 目录页把「异步社区」缩成「步社区」/重复成「异异步社区」：
+    # 先修重复「异异」，再修孤立「步」（前面无「异」），顺序保证不叠加。
+    (r"异异步社区", "异步社区"),
+    (r"(?<!异)步社区", "异步社区"),
 )
 
 
@@ -47,7 +51,12 @@ def clean(text: str) -> str:
             continue
         # 水印：整行只有水印 → 丢掉；行内水印 → 抹除后若剩空也丢掉
         cleaned = line
-        for pat in WATERMARK_PATTERNS[:2]:
+        # 必须跑全部水印模式（此前 bug：只跑 [:2]，导致 www.epul / WWW.ep /
+        # 异步社区水印整行残留）。白名单行（如「异步社区全站所有…」的促销正文）
+        # 要保留，故只把「整行几乎只剩水印」的行抹空。
+        for pat in WATERMARK_PATTERNS:
+            if any(w in cleaned for w in WHITELIST):
+                break
             cleaned = pat.sub("", cleaned)
         cleaned = re.sub(r"[\s.。]+$", "", cleaned).strip()
         if not cleaned:
