@@ -342,6 +342,8 @@ EN = {
     "组件状态读取失败：": "Component status read failed: ",
     # v1.8.0：VC++ 系统依赖引导项（kind=system，按钮打开官方下载页）
     "下载安装": "Download installer",
+    # v1.8.5：国内镜像补齐入口（system 组件仍不进 install 令牌链路）
+    "镜像补齐": "Mirror repair",
     "已安装": "Installed",
     # v1.8.2：环境检测与自动重试
     "环境诊断": "Environment check",
@@ -365,4 +367,8 @@ EN = {
     "载入失败；稍后再点开重试": "Load failed; reopen to retry",
     "知识库为空": "Knowledge base is empty",
     "载入失败：": "Load failed: ",
+    # v1.8.6：页头右上角中英切换按钮的悬浮提示
+    "切换界面语言": "Switch interface language",
+    # v1.8.7：页头右上角深浅主题切换按钮的悬浮提示
+    "切换界面主题": "Switch interface theme",
 }

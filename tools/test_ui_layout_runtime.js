@@ -115,7 +115,7 @@ stripHome.className = "strip-step";
 stripHome.setAttribute("data-goto", "home");
 const stripProcess = makeNode("button");
 stripProcess.className = "strip-step";
-stripProcess.setAttribute("data-goto", "process");
+stripProcess.setAttribute("data-goto", "refine");
 const stripKb = makeNode("button");
 stripKb.className = "strip-step";
 stripKb.setAttribute("data-goto", "kb");
@@ -235,7 +235,7 @@ setTimeout(function () {
   check(stripHome.classList.contains("is-current"), "首页时高亮 ①取内容");
   check(!stripProcess.classList.contains("is-current"), "首页时不高亮 ②加工");
 
-  sandbox.__syncStrip("process");
+  sandbox.__syncStrip("refine");
   check(stripProcess.classList.contains("is-current"), "加工页时高亮 ②加工");
   check(!stripHome.classList.contains("is-current"), "加工页时不高亮 ①取内容");
 

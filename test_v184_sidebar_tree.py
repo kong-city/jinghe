@@ -25,8 +25,8 @@ class V184SidebarTreeTest(unittest.TestCase):
     def test_01_independent_ids_no_new_data_page(self):
         for marker in ('id="sideKbTree"', 'id="sideKbToggle"', 'id="sideKbList"'):
             self.assertIn(marker, self.html)
-        # 7 个功能入口被测试契约锁定，文档目录不得占用 data-page
-        self.assertEqual(self.html.count('data-page="'), 7)
+        # 6 个功能入口被测试契约锁定（v1.8.5 加工页已删），文档目录不得占用 data-page
+        self.assertEqual(self.html.count('data-page="'), 6)
         self.assertNotIn('data-page="sideKb', self.html)
 
     def test_02_default_collapsed(self):

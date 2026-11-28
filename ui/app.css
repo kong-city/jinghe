@@ -48,7 +48,9 @@ body {
 button, input { font-family: inherit; }
 
 /* v1.7.6：自定义标题栏文字行（原生 titleBarOverlay 只负责右侧窗口按钮）。
-   app-region 让整行可拖动窗口；宽度避开 overlay 的按钮区，防止标题压在按钮下。 */
+   app-region 让整行可拖动窗口；宽度避开 overlay 的按钮区，防止标题压在按钮下。
+   v1.8.9：取消底部 border-bottom——这条灰线只画到窗口按钮区中途、右侧未与
+   关闭按钮对齐，视觉上形成断裂；去掉后由背景色自然分隔，右侧不再有半截线。 */
 .shell-titlebar {
   height: var(--shell-titlebar-h);
   width: env(titlebar-area-width, 100%);
@@ -56,7 +58,6 @@ button, input { font-family: inherit; }
   align-items: center;
   padding: 0 var(--sp-3);
   background: var(--c-surface);
-  border-bottom: 1px solid var(--c-border);
   color: var(--c-muted);
   font-size: var(--fs-sm);
   line-height: 1;
@@ -261,7 +262,6 @@ button, input { font-family: inherit; }
    - 折叠态曾统一写成近黑 #1F1F1D，在深色侧栏底 #1E2226 上几乎隐形，已取消该规则；
    - 深色主题换用同色相提亮版（见下方 dark 段），保证在深色底上对比度 ≥ 3:1。 */
 .nav-item[data-page="home"] svg { stroke: #185FA5; }
-.nav-item[data-page="process"] svg { stroke: #0F8A8A; }
 .nav-item[data-page="refine"] svg { stroke: #8257A8; }
 .nav-item[data-page="revise"] svg { stroke: #C2701C; }
 .nav-item[data-page="kb"] svg { stroke: #2E7D52; }
@@ -340,6 +340,13 @@ button, input { font-family: inherit; }
   color: #6B6A65;
 }
 
+/* v1.8.6：原版本号徽章改为中英切换按钮。保留原胶囊配色，补可点击反馈。 */
+/* v1.8.7：页头右上角中英 / 深浅两个切换按钮并排，沿用同一套 .header-tag 样式 */
+.header-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .header-tag {
   font-size: 12px;
   color: #185FA5;
@@ -347,7 +354,14 @@ button, input { font-family: inherit; }
   border: 1px solid #CFE0F1;
   border-radius: 999px;
   padding: 3px 10px;
+  min-width: 34px;
+  cursor: pointer;
+  line-height: 1.4;
+  font-weight: 600;
+  transition: background .15s ease, border-color .15s ease;
 }
+.header-tag:hover { background: #D8E7F6; border-color: #9CC4E8; }
+.header-tag:focus-visible { outline: 2px solid #185FA5; outline-offset: 2px; }
 
 /* ---------- 卡片网格 ----------
    v0.3.8：输入 / 输出由左右并排改为上下堆叠（左列），
@@ -633,8 +647,8 @@ button, input { font-family: inherit; }
 
 /* ---------- 结果区 ---------- */
 .result {
-  flex: 1 1 auto;
-  min-height: 200px;
+  flex: 0 0 auto;
+  min-height: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -685,7 +699,7 @@ button, input { font-family: inherit; }
   display: none;
   flex: 1 1 auto;
   min-height: 0;
-  padding: 14px 16px;
+  padding: 10px 16px;
   overflow: auto;
 }
 
@@ -799,7 +813,9 @@ button, input { font-family: inherit; }
 
 @media (max-height: 760px) {
   .page { min-height: auto; }
-  .result { height: 340px; flex: 0 0 auto; }
+  /* v1.8.5：概览空栏高度减免——340px 固定高改为内容自适应，矮屏不再撑出大片空白。
+     运行日志 tab 有独立 .log-panel 滚动，不依赖这里的固定高度。 */
+  .result { height: auto; flex: 0 0 auto; }
 }
 
 /* ---------- 设置页 ---------- */
@@ -1507,7 +1523,6 @@ html[data-theme="dark"] .nav-group-title { color: var(--c-muted); }
 /* 深色主题下的导航图标：同色相提亮版，保证深色侧栏底上对比度 ≥ 3:1。
    v1.7.7 前这里把图标压成单色 var(--c-text)，彩色丢失；折叠态更是近黑不可见。 */
 html[data-theme="dark"] .nav-item[data-page="home"] svg { stroke: #7FB4EE; }
-html[data-theme="dark"] .nav-item[data-page="process"] svg { stroke: #5AC8C8; }
 html[data-theme="dark"] .nav-item[data-page="refine"] svg { stroke: #BB92E0; }
 html[data-theme="dark"] .nav-item[data-page="revise"] svg { stroke: #EDA253; }
 html[data-theme="dark"] .nav-item[data-page="kb"] svg { stroke: #5CC08A; }
@@ -1526,6 +1541,7 @@ html[data-theme="dark"] .history-meta,
 html[data-theme="dark"] .kb-block-meta,
 html[data-theme="dark"] .file-empty { color: var(--c-muted); }
 html[data-theme="dark"] .header-tag { background: #2B3036; color: var(--c-muted); border-color: var(--c-border); }
+html[data-theme="dark"] .header-tag:hover { background: #38414B; border-color: #5AC8C8; color: #5AC8C8; }
 html[data-theme="dark"] .card,
 html[data-theme="dark"] .result,
 html[data-theme="dark"] .result-box,
@@ -1864,7 +1880,11 @@ html[data-theme="dark"] .pipe-meta { background: #2B3036; color: var(--c-muted);
 .extract-panel[data-extract-panel="file"] > .progress { grid-row: 3; }
 .extract-panel[data-extract-panel="file"] > .done-summary { grid-row: 4; }
 .extract-panel[data-extract-panel="file"] > .result { grid-area: result; }
-.extract-panel[data-extract-panel="file"] > .artifact-center { grid-area: artifacts; }
+/* v1.8.5：右栏第二格改为列容器，内部纵向堆叠「文档加工 → 产物中心」。
+   产物中心仍保留 grid-area 兜底（单列回落时容器不再栅格化，子项各自成块）。 */
+.extract-panel[data-extract-panel="file"] > .artifact-column { grid-area: artifacts; }
+.artifact-column { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.artifact-column > .artifact-center { margin-top: 0; }
 
 /* 隐藏态的面板不占格（[hidden] 全局 display:none!important） */
 

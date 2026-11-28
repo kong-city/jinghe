@@ -19,7 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-PAGES = ("home", "process", "refine", "revise", "kb", "settings", "about")
+# v1.8.5：加工页已删，6 个导航入口
+PAGES = ("home", "refine", "revise", "kb", "settings", "about")
 
 # 侧栏底色（浅色主题 / 深色主题）与交互态底色，取自 ui/app.css
 LIGHT_SIDEBAR = "#FFFFFF"

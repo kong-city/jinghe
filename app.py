@@ -3469,6 +3469,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/components/install":
                 # S10：启用组件——只接受内置 id，下载源由 components.py 固定，杜绝任意 URL
                 self._send_json(components.install(str(data.get("id") or "").strip()))
+            elif path == "/api/components/vc-mirror":
+                # v1.8.5：VC++ 运行库国内镜像补齐。独立手动令牌，不进 system 组件的
+                # install()/batch_enable() 链路；不接受任何 URL 参数（防任意下载）。
+                self._send_json(components.install_vc_runtime(user_initiated=True))
             elif path == "/api/components/setup-batch":
                 # v1.7.3：首次启动向导的批量启用——用户一次性勾选后调用。
                 # 语义 = 把用户原本要点 N 次的「启用」合并成一次点击：
@@ -4715,6 +4719,19 @@ def main(argv: list[str] | None = None) -> int:
 
     _prepare_runtime()
     _log_startup_banner()
+
+    # 组件 PATH 增强：把组件 bin（ffmpeg / VC++ 补充 DLL）与 venv Scripts
+    # （whisper / yt-dlp CLI）注入**进程级** PATH，必须在任何媒体能力探测
+    # 之前完成。
+    # 为什么要放在启动时而不是等「相关组件」接口被调用时：
+    # ensure_component_path() 此前只在 components.py 内部触发，于是 PATH
+    # 注入依赖「用户先打开组件清单页」——用户若先点音频/视频转写，
+    # /api/tools/probe 会因 which 找不到而误报「未找到 whisper / ffmpeg，
+    # 请安装后重试」，而组件其实装得好好的（实测 enabled=false）。
+    try:
+        components.ensure_component_path()
+    except Exception as exc:  # noqa: BLE001 - 失败只影响探测，不阻断启动
+        _append_log("[WARN] 组件 PATH 注入失败（不影响启动）：%r" % (exc,))
 
     # 单实例保护（仅固定端口）：先 connect 本机端口，若已有人在 listen 则退出。
     # 不能用「bind 抛 10048」判断——ThreadingHTTPServer 开了 SO_REUSEADDR，

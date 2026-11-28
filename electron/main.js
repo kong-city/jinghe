@@ -80,9 +80,14 @@ let cleanupDone = false;       // 子进程回收完成，before-quit 才放行
 // 左侧标题栏（网页画）用 --c-surface，右侧按钮区（OS 画）用这里的 color，
 // 两者一旦不同源就会出现「左白右灰」的硬色差分界线（用户截图实测）。
 // 守护测试 test_v183_titlebar_color_sync 会从 CSS 反解色值强制校验，勿硬改。
+// v1.9.0：显式指定 overlay 高度，与 ui/app.css 的 --shell-titlebar-h 严格同源。
+// 系统默认高度比网页标题栏高约 5px，会在右侧按钮区下方多出一条白底（用户截图实测），
+// 故两层同高，消除这条未对齐的色带。height 必须放在 symbolColor 之后——
+// test_v183 的正则按 color,symbolColor 顺序解析，插在中间会破坏守护。
+const TITLEBAR_HEIGHT = 28;
 const TITLEBAR_THEME = Object.freeze({
-  light: { color: '#FFFFFF', symbolColor: '#2A2E33' },
-  dark: { color: '#22262B', symbolColor: '#ECEDEE' },
+  light: { color: '#FFFFFF', symbolColor: '#2A2E33', height: TITLEBAR_HEIGHT },
+  dark: { color: '#22262B', symbolColor: '#ECEDEE', height: TITLEBAR_HEIGHT },
 });
 function applyTitleBarTheme(theme) {
   const source = (theme === 'dark') ? 'dark' : 'light';
@@ -93,8 +98,9 @@ function applyTitleBarTheme(theme) {
     mainWindow.setTitleBarOverlay({
       color: colors.color,
       symbolColor: colors.symbolColor,
+      height: TITLEBAR_HEIGHT,
     });
-    shellLog('原生标题栏配色已同步 color=' + colors.color);
+    shellLog('原生标题栏配色已同步 color=' + colors.color + ' height=' + TITLEBAR_HEIGHT);
   } catch (err) {
     shellLog('标题栏配色同步失败（已忽略）：' + String(err));
   }
@@ -695,7 +701,8 @@ function createWindow() {
     ...(process.platform === 'win32' ? {
       titleBarStyle: 'hidden',
       titleBarOverlay: { color: TITLEBAR_THEME.light.color,
-                         symbolColor: TITLEBAR_THEME.light.symbolColor },
+                         symbolColor: TITLEBAR_THEME.light.symbolColor,
+                         height: TITLEBAR_HEIGHT },
     } : {}),
     show: false,
     webPreferences: {
@@ -755,6 +762,10 @@ async function shutdown() {
 /* -------------------------------------------------------------------------- */
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  // 已有实例在运行（第二次双击／开发态与打包态并存）→ 本次直接退出。
+  // 必须留日志痕迹：否则 shell.log 只剩「main.js 已加载」一行，
+  // 排查时极易误判为「程序坏了／打包异常」。
+  shellLog('已有实例在运行，本次启动退出（再次双击属正常行为，非故障）');
   app.quit();
 } else {
   app.on('second-instance', () => {

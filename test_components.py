@@ -970,6 +970,10 @@ class TestDllPrecheck(unittest.TestCase):
 
         用**真实 torch DLL**（依赖 VCRUNTIME140_THREADS.dll）当夹具：
         这正是用户本机的真实故障场景。
+
+        组件 bin 目录（v1.8.5 起也是合法 DLL 来源）必须**显式隔离**：
+        否则开发机若恰好备了 VC++ 补充 DLL，「缺 VC++」这一前提就被打破，
+        预检会改报别的缺件——用例结果取决于开发机状态，而非被测逻辑。
         """
         src = self._real_torch_dll()
         if src is None:
@@ -979,10 +983,11 @@ class TestDllPrecheck(unittest.TestCase):
             lib = sp / "torch" / "lib"
             lib.mkdir(parents=True)
             (lib / "torch_cpu.dll").write_bytes(src.read_bytes())
-            ok, reason = self.c._dll_precheck(sp, "whisper")
-        # 若本机恰好装了 VC++ 运行库，则本用例不成立（跳过而非误报）
-        if ok:
-            self.skipTest("本机已安装 VC++ 运行库，缺失场景不成立")
+            empty_bin = Path(td) / "empty_bin"
+            empty_bin.mkdir()
+            with mock.patch.object(self.c, "BIN_DIR", empty_bin):
+                ok, reason = self.c._dll_precheck(sp, "whisper")
+        self.assertFalse(ok, "隔离组件 bin 后仍应判定缺 VC++ 运行库")
         self.assertIn("VCRUNTIME140_THREADS.dll", reason)
         self.assertIn("Visual C++", reason)
 
@@ -996,7 +1001,10 @@ class TestDllPrecheck(unittest.TestCase):
             lib = sp / "torch" / "lib"
             lib.mkdir(parents=True)
             (lib / "a.dll").write_bytes(src.read_bytes())
-            ok, reason = self.c._dll_precheck(sp, "whisper")
+            empty_bin = Path(td) / "empty_bin"
+            empty_bin.mkdir()
+            with mock.patch.object(self.c, "BIN_DIR", empty_bin):
+                ok, reason = self.c._dll_precheck(sp, "whisper")
         self.assertTrue(ok, "系统 DLL 依赖齐备，不该报缺失：%s" % reason)
 
     def test_dll_precheck_scoped_per_component(self):
@@ -1009,8 +1017,11 @@ class TestDllPrecheck(unittest.TestCase):
             lib = sp / "torch" / "lib"
             lib.mkdir(parents=True)
             (lib / "torch_cpu.dll").write_bytes(src.read_bytes())
-            # yt-dlp 是纯 Python 包，不依赖 torch → 必须放行
-            ok, _ = self.c._dll_precheck(sp, "yt-dlp")
+            empty_bin = Path(td) / "empty_bin"
+            empty_bin.mkdir()
+            with mock.patch.object(self.c, "BIN_DIR", empty_bin):
+                # yt-dlp 是纯 Python 包，不依赖 torch → 必须放行
+                ok, _ = self.c._dll_precheck(sp, "yt-dlp")
         self.assertTrue(ok, "yt-dlp 不该被 torch 的环境问题连坐")
 
     def test_managed_component_not_exempt_from_check(self):
@@ -1030,13 +1041,14 @@ class TestDllPrecheck(unittest.TestCase):
             exe = Path(td) / "venv" / "Scripts" / "whisper.exe"
             exe.parent.mkdir(parents=True)
             exe.write_bytes(b"MZ")
-            with mock.patch.object(self.c, "_is_managed_path", return_value=True), \
+            empty_bin = Path(td) / "empty_bin"
+            empty_bin.mkdir()
+            with mock.patch.object(self.c, "BIN_DIR", empty_bin), \
+                 mock.patch.object(self.c, "_is_managed_path", return_value=True), \
                  mock.patch.object(self.c, "_site_packages_of", return_value=sp), \
                  mock.patch.object(self.c.shutil, "which", return_value=str(exe)):
                 r = self.c._probe_one("whisper")
-        # 本机已装 VC++ 运行库时该场景不成立（此时 whisper 本就可用）
-        if r["available"]:
-            self.skipTest("本机已安装 VC++ 运行库，坏组件场景不成立")
+        # 组件 bin 已隔离 → 「坏组件」场景必然成立，不该因开发机状态而 skip
         self.assertFalse(r["available"], "受控目录的坏组件必须报不可用")
         self.assertEqual(r["state"], "error")
 

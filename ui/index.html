@@ -40,14 +40,8 @@
         </svg>
         <span class="nav-label" data-i18n="nav.home">首页</span>
       </button>
-      <!-- v1.1.0：加工页——从首页迁出后处理与链接提取，首页回归提取主干 -->
-      <button class="nav-item" type="button" data-page="process" title="加工" data-i18n-title="nav.process">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h7M15 17h5"/>
-          <circle cx="16" cy="7" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="17" r="2"/>
-        </svg>
-        <span class="nav-label" data-i18n="nav.process">加工</span>
-      </button>
+      <!-- v1.8.5：加工导航项与加工页已删除（用户裁决：功能已并入首页与精读/修订，入口多余）。
+           加工流水线概念保留在首页流程条②与精读/修订页，不再是独立入口。 -->
       </div>
       <div class="nav-group" data-group="refine-flow">
         <span class="nav-group-title" data-i18n="group.refine-flow">加工流水线</span>
@@ -126,9 +120,19 @@
           <p id="pageSub" data-i18n="阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪">阶段 1 提取已交付 · 阶段 2 / 3 功能已就绪</p>
         </div>
       </div>
-      <!-- v0.4.0：版本号唯一来源是 extract.py，页面标签由 /api/state 动态注入，
-           这里只留占位符，避免每次发版都要手改 HTML。 -->
-      <div class="header-tag" id="headerTag">—</div>
+      <!-- v1.8.6：页头右上角原版本号徽章改为中英切换按钮。
+           中文态显示「中」、英文态显示「EN」，单击切换界面语言；
+           版本号仍由 /api/state 注入窗口标题与「关于」页，此处不再显示。
+           v1.8.7：紧邻其右新增深浅主题切换按钮，沿用同一套按钮样式与交互模式：
+           中英显示当前语言（中/EN），深浅显示当前主题（中文 浅/深，英文 L/D），单击即切换。 -->
+      <div class="header-tags">
+        <button class="header-tag" id="headerTag" type="button"
+                title="切换界面语言" data-i18n-title="切换界面语言"
+                aria-label="切换界面语言" data-i18n-aria="切换界面语言">中</button>
+        <button class="header-tag" id="themeTag" type="button"
+                title="切换界面主题" data-i18n-title="切换界面主题"
+                aria-label="切换界面主题" data-i18n-aria="切换界面主题">浅</button>
+      </div>
     </header>
 
     <!-- v1.0.6：提示条提升为 .content 全局元素（此前在 page-home 内部，
@@ -153,7 +157,7 @@
           </span>
         </button>
         <span class="strip-arrow" aria-hidden="true">→</span>
-        <button class="strip-step" type="button" data-goto="process">
+        <button class="strip-step" type="button" data-goto="refine">
           <span class="strip-idx">②</span>
           <span class="strip-body">
             <span class="strip-name" data-i18n="加工">加工</span>
@@ -312,6 +316,24 @@
         </div>
       </section>
 
+      <!-- v1.8.5：右栏列容器——文档加工卡片置于「产物中心」上方。
+           整体占据 grid 的 artifacts 格，内部纵向堆叠，外层双栏结构不变。 -->
+      <div class="artifact-column">
+
+      <!-- v1.8.5：文档加工从加工页迁入首页，紧邻产物中心上方。
+           三个按钮 id 与事件绑定不变（全局 id 查找，与所在页无关）。 -->
+      <section class="card features doc-features">
+        <div class="card-title" data-i18n="文档加工">文档加工</div>
+        <p class="card-sub" data-i18n="基于已提取的 Markdown 做进一步加工；Word / 音频 / 视频产物落 out/derived/，不改动 MERGED.md 等对账文件。">基于已提取的 Markdown 做进一步加工；Word / 音频 / 视频产物落 out/derived/，不改动 MERGED.md 等对账文件。</p>
+        <div class="feature-grid">
+          <button id="btnSummarize" class="feature-btn" type="button" disabled data-i18n="核心提炼（摘要）">核心提炼（摘要）</button>
+          <button id="btnExportDocx" class="feature-btn" type="button" disabled
+                  title="把 MERGED.md / 所选 .md 导出为独立 .docx（落 out/derived/），来源注释与块级锚点按原文保留" data-i18n="导出文档" data-i18n-title="把 MERGED.md / 所选 .md 导出为独立 .docx（落 out/derived/），来源注释与块级锚点按原文保留">导出文档</button>
+          <button id="btnWordEnhance" class="feature-btn" type="button" disabled
+                  title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）" data-i18n="文档输入增强" data-i18n-title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）">文档输入增强</button>
+        </div>
+      </section>
+
       <!-- v1.7.1：产物中心从页面底部移入右侧产物栏（与结果区同列）。
            借鉴 AnythingLLM「产物区常驻可见」——提取完成即可见，不必滚到底。
            id / 类名保持不变，历史批次索引与打开端点的行为完全不变。 -->
@@ -330,6 +352,7 @@
           <div id="historyEmpty" class="hint center" hidden data-i18n="暂无历史产物批次。完成一次提取后会出现在这里。">暂无历史产物批次。完成一次提取后会出现在这里。</div>
         </details>
       </section>
+      </div><!-- /artifact-column -->
       </div><!-- /extract-panel file -->
 
       <!-- 来源 2：音频转写（从加工页迁入，按钮 id 原样保留） -->
@@ -423,60 +446,6 @@
 
       <!-- v1.7.1：产物中心已移入 file 面板右侧栏（见 result 区之后），
            不再沉在页面底部——提取完一屏可见。 -->
-    </section>
-
-    <!-- ==================== 加工（v1.1.0：后处理与链接提取独立成页） ==================== -->
-    <section class="page" id="page-process" hidden>
-      <!-- v1.7.1：加工页升级为流水线看板。
-           原先这里只有一张指引卡 + 三个跳转按钮，信息量太薄（点进来像空壳）。
-           借鉴 Trilium「流程指引」+ AnythingLLM「卡片式工作区」：
-           三步各成一张卡，标明这一步做什么、产出到哪、下一步去哪。 -->
-      <section class="card" id="flowGuide">
-        <div class="card-title" data-i18n="加工流水线">加工流水线</div>
-        <p class="card-sub" data-i18n="对已提取的 Markdown 做二次加工。三步依次是「提纯核心 → 改写补充 → 入库检索」，每步都可独立重跑，不满意就回到上一步重来。">对已提取的 Markdown 做二次加工。三步依次是「提纯核心 → 改写补充 → 入库检索」，每步都可独立重跑，不满意就回到上一步重来。</p>
-        <div class="pipeline">
-          <div class="pipe-step">
-            <div class="pipe-head">
-              <span class="pipe-idx">1</span>
-              <span class="pipe-name" data-i18n="提纯核心">提纯核心</span>
-            </div>
-            <p class="pipe-desc" data-i18n="从 md 里抽出核心知识点。默认抽取式：原文原句、逐字可回溯，零依赖离线。">从 md 里抽出核心知识点。默认抽取式：原文原句、逐字可回溯，零依赖离线。</p>
-            <div class="pipe-meta" data-i18n="产出：核心 md 落 out/derived/">产出：核心 md 落 out/derived/</div>
-            <button type="button" class="btn btn-ghost" data-goto="refine" data-i18n="打开提纯核心 →">打开提纯核心 →</button>
-          </div>
-          <div class="pipe-step">
-            <div class="pipe-head">
-              <span class="pipe-idx">2</span>
-              <span class="pipe-name" data-i18n="改写补充">改写补充</span>
-            </div>
-            <p class="pipe-desc" data-i18n="在提纯结果上做术语归一 / 合并去重 / 结构重排。可信模式只改写法不动事实；大模型模式可补写，改动以颜色标记。">在提纯结果上做术语归一 / 合并去重 / 结构重排。可信模式只改写法不动事实；大模型模式可补写，改动以颜色标记。</p>
-            <div class="pipe-meta" data-i18n="产出：修订稿 + 变更标记">产出：修订稿 + 变更标记</div>
-            <button type="button" class="btn btn-ghost" data-goto="revise" data-i18n="打开改写补充 →">打开改写补充 →</button>
-          </div>
-          <div class="pipe-step">
-            <div class="pipe-head">
-              <span class="pipe-idx">3</span>
-              <span class="pipe-name" data-i18n="入库检索">入库检索</span>
-            </div>
-            <p class="pipe-desc" data-i18n="把产物沉淀为本机知识库条目，可全文检索、按文档浏览块、点块回跳原文位置。">把产物沉淀为本机知识库条目，可全文检索、按文档浏览块、点块回跳原文位置。</p>
-            <div class="pipe-meta" data-i18n="产出：可检索条目 + 块级溯源">产出：可检索条目 + 块级溯源</div>
-            <button type="button" class="btn btn-ghost" data-goto="kb" data-i18n="打开知识库 →">打开知识库 →</button>
-          </div>
-        </div>
-      </section>
-      <section class="card features">
-        <div class="card-title" data-i18n="文档加工">文档加工</div>
-        <p class="card-sub" data-i18n="基于已提取的 Markdown 做进一步加工；Word / 音频 / 视频产物落 out/derived/，不改动 MERGED.md 等对账文件。">基于已提取的 Markdown 做进一步加工；Word / 音频 / 视频产物落 out/derived/，不改动 MERGED.md 等对账文件。</p>
-        <div class="feature-grid">
-          <button id="btnSummarize" class="feature-btn" type="button" disabled data-i18n="核心提炼（摘要）">核心提炼（摘要）</button>
-          <button id="btnExportDocx" class="feature-btn" type="button" disabled
-                  title="把 MERGED.md / 所选 .md 导出为独立 .docx（落 out/derived/），来源注释与块级锚点按原文保留" data-i18n="导出文档" data-i18n-title="把 MERGED.md / 所选 .md 导出为独立 .docx（落 out/derived/），来源注释与块级锚点按原文保留">导出文档</button>
-          <button id="btnWordEnhance" class="feature-btn" type="button" disabled
-                  title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）" data-i18n="文档输入增强" data-i18n-title="对所选 .docx / .doc 生成带批注、修订、加密识别的独立增强 .md（落 out/derived/）">文档输入增强</button>
-        </div>
-      </section>
-
-      <!-- v1.6.2：音视频转写与视频链接已迁入首页「统一提取台」，加工页回归纯二次加工。 -->
     </section>
 
     <!-- ==================== 知识库（v1.1.0：S9 后端已实现，接上真实端点） ==================== -->

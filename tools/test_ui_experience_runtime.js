@@ -180,10 +180,10 @@ check(sandbox.__nativeTheme === "light", "applyTheme('light') 同步原生菜单
 sandbox.currentLang = "en";
 
 // ---- 场景 2：命令注册表 + 模糊搜索 ----
-check(sandbox.__CMD_ITEMS.length === 15, "命令注册表含 15 条（7 页面 + 6 动作 + 2 主题）");
-check(sandbox.__cmdMatches(sandbox.__CMD_ITEMS[4], "知识库") === true, "中文关键词命中知识库页");
-check(sandbox.__cmdMatches(sandbox.__CMD_ITEMS[4], "kb") === true, "英文关键词命中知识库页");
-check(sandbox.__cmdMatches(sandbox.__CMD_ITEMS[4], "zzzz") === false, "无关关键词不匹配");
+check(sandbox.__CMD_ITEMS.length === 14, "命令注册表含 14 条（6 页面 + 6 动作 + 2 主题）");
+check(sandbox.__cmdMatches(sandbox.__CMD_ITEMS[3], "知识库") === true, "中文关键词命中知识库页");
+check(sandbox.__cmdMatches(sandbox.__CMD_ITEMS[3], "kb") === true, "英文关键词命中知识库页");
+check(sandbox.__cmdMatches(sandbox.__CMD_ITEMS[3], "zzzz") === false, "无关关键词不匹配");
 
 // ---- 场景 3：渲染命令列表（英文界面）----
 cmdInput.value = "theme";

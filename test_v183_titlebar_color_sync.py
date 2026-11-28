@@ -118,6 +118,22 @@ class TestTitlebarColorSync(unittest.TestCase):
         self.assertTrue(m, "未找到 .shell-titlebar 样式块")
         self.assertIn("background: var(--c-surface)", m.group(1))
 
+    def test_07_overlay_height_matches_dom_titlebar(self):
+        """v1.9.0：原生 overlay 高度必须与网页标题栏 --shell-titlebar-h 同源。
+
+        两者不等高会在右侧按钮区下方多出一条白底（用户截图实测未对齐）。
+        """
+        h = re.search(r'--shell-titlebar-h\s*:\s*(\d+)px', self.css)
+        self.assertTrue(h, "未找到 --shell-titlebar-h 的像素值")
+        dom_h = h.group(1)
+        const = re.search(r'const TITLEBAR_HEIGHT\s*=\s*(\d+);', self.main)
+        self.assertTrue(const, "未找到 TITLEBAR_HEIGHT 常量")
+        self.assertEqual(const.group(1), dom_h,
+                         "overlay 高度与网页标题栏高度不一致，会复现右侧白底色带")
+        # 初始化与主题切换两条路径都必须带 height
+        self.assertGreaterEqual(self.main.count("height: TITLEBAR_HEIGHT"), 2,
+                                "初始化与切主题两处都要显式传 height")
+
 
 if __name__ == "__main__":
     unittest.main()

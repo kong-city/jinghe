@@ -323,13 +323,39 @@ class AppContractTest(unittest.TestCase):
             if self.srv is not None:
                 self.srv.stop()
         finally:
-            self._tmp_holder.cleanup()
+            self._cleanup_tmp()
+
+    def _cleanup_tmp(self) -> None:
+        """清理测试临时目录（LOCALAPPDATA 已指向这里，app.log 也落在这里）。
+
+        Windows 上文件句柄释放有延迟：app.py 被 TerminateProcess 回收后，
+        它 spawn 的提取子进程（`app.py --cli` 自我重入）可能仍短暂持有
+        app.log 的句柄，直接 rmtree 会抛 WinError 32（另一个程序正在使用此文件），
+        让用例以 error 收场——而这与被测契约无关。
+        故：带重试清理；仍失败则忽略残留（临时目录终会被系统回收）。
+        """
+        for _ in range(20):
+            try:
+                self._tmp_holder.cleanup()
+                return
+            except PermissionError:
+                time.sleep(0.25)
+            except FileNotFoundError:
+                return
+        shutil.rmtree(self._tmp_holder.name, ignore_errors=True)
 
     # ---------------------------- 辅助 ---------------------------- #
     def start(self, *, patch_open: bool = True,
               env_extra: dict | None = None) -> AppServer:
+        # 隔离真实用户目录：app.py 在 import 时按 LOCALAPPDATA 定位
+        # %LOCALAPPDATA%\Jinghe（settings.json / app.log / 知识库 / 组件目录）。
+        # 不隔离的话，POST /api/settings 会直接改写用户真实配置——
+        # 实测单测跑完会把本机 settings.json 的 default_indir 改成测试值。
+        # 已有用例（app.log、backend.json 隔离）走的是同一口径，这里统一到基类。
+        env: dict = {"LOCALAPPDATA": str(self.tmp)}
+        env.update(env_extra or {})   # 用例可显式覆盖
         self.srv = AppServer(patch_open=patch_open, workdir=self.tmp,
-                             cwd=ROOT, env_extra=env_extra)
+                             cwd=ROOT, env_extra=env)
         self.srv.start(timeout=self.START_TIMEOUT)
         return self.srv
 
@@ -1692,12 +1718,16 @@ class AppContractTest(unittest.TestCase):
         self.assertIsNone(re.search(r'>\s*v\d+\.\d+\.\d+\s*<', html),
                           "ui/index.html 仍硬编码版本号")
         self.assertIn('id="headerTag"', html)
-        self.assertIn("headerTag.textContent", js,
-                      "版本号未由 /api/state 动态注入")
-        # 防回归：loadAbout() 只在切到关于页时才跑，页头标签必须在启动分支注入
-        boot = js[js.index('document.title = "精核 · 文件提取 v"'):]
-        self.assertIn("el.headerTag", boot[:500],
-                      "页头版本号挂在 loadAbout 里，首页会一直显示占位符")
+        self.assertIn('id="headerTag" type="button"', html,
+                      "v1.8.6：页头版本号徽章应改为中英切换按钮")
+        # v1.8.6：页头徽章改为语言切换按钮，文字由 applyLang 统一渲染
+        self.assertIn('el.headerTag.textContent = (currentLang === "en") ? "EN" : "中"', js,
+                      "页头按钮未随语言切换渲染 中/EN")
+        self.assertIn('el.headerTag.addEventListener("click"', js,
+                      "页头按钮未绑定单击切换")
+        # 版本号仍保留在窗口标题与关于页（不得因改造丢失）
+        self.assertIn('document.title = "精核 · 文件提取 v" + st.version', js)
+        self.assertIn('id="aboutVersion"', html)
 
         # 防回归：Windows runner 默认 cp1252，门禁打印中文会抛
         # UnicodeEncodeError，导致整个 Release 构建作业被 needs: test 跳过。
@@ -5438,8 +5468,8 @@ class AppContractTest(unittest.TestCase):
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
 
-        # ① 七个导航项 + 页面容器齐全
-        expected = ("home", "process", "kb", "refine", "revise", "settings", "about")
+        # ① 六个导航项 + 页面容器齐全（v1.8.5 加工页已删）
+        expected = ("home", "kb", "refine", "revise", "settings", "about")
         for name in expected:
             self.assertIn('data-page="%s"' % name, html,
                           "导航栏缺少 %s 入口" % name)
@@ -5448,8 +5478,9 @@ class AppContractTest(unittest.TestCase):
             self.assertIn("%s: { title:" % name, js, "PAGE_META 缺 %s" % name)
 
         # ② 首页：v1.6.2 统一提取台——四类来源平级，提取入口全在首页
-        home = html[html.index('id="page-home"'):html.index('id="page-process"')]
-        self.assertNotIn("btnSummarize", home, "首页应只留内容获取，二次加工留在加工页")
+        home = html[html.index('id="page-home"'):html.index('id="page-kb"')]
+        # v1.8.5：文档加工三按钮迁入首页产物中心上方（见 test_ui_layout / test_v162）
+        self.assertIn("btnSummarize", home, "文档加工核心提炼应迁入首页产物中心上方")
         self.assertIn("btnRun", home, "首页须保留「开始提取」")
         self.assertIn("btnPreview", home, "首页须保留「仅预览分流」")
         # 迁移后的四类来源入口必须在首页（旧契约要求 btnLinkRun 不在首页，已随布局调整废弃）
@@ -5457,14 +5488,13 @@ class AppContractTest(unittest.TestCase):
                     "btnLinkRun", "btnLinkInspect", "subUrl"):
             self.assertIn('id="%s"' % fid, home, "统一提取台缺 %s" % fid)
 
-        # ③ 加工页：回归纯二次加工 + 僵尸按钮已清
-        proc = html[html.index('id="page-process"'):html.index('id="page-kb"')]
+        # ③ 加工页：v1.8.5 已整体删除，文档加工三按钮全在首页产物中心上方
+        self.assertNotIn('id="page-process"', html, "加工页容器未删净")
+        self.assertNotIn('data-page="process"', html, "加工导航项未删净")
+        self.assertNotIn('data-goto="process"', html, "流程条仍指向已删加工页")
         for fid in ("btnSummarize", "btnExportDocx", "btnWordEnhance"):
-            self.assertIn('id="%s"' % fid, proc, "加工页缺少 %s" % fid)
-        self.assertNotIn("btnAudioTranscribe", proc, "音视频入口已迁至首页")
-        self.assertNotIn("btnLinkRun", proc, "链接入口已迁至首页")
-        self.assertNotIn("btnTranscribe", proc, "僵尸占位按钮须从界面清除")
-        self.assertNotIn("规划中", proc, "加工页不得再有「规划中」占位")
+            self.assertIn('id="%s"' % fid, home, "文档加工 %s 应已迁入首页" % fid)
+        self.assertNotIn("btnTranscribe", html, "僵尸占位按钮须从界面清除")
 
         # ④ 知识库：接上真实 S9 端点（不再是「规划中」弹窗）
         kb = html[html.index('id="page-kb"'):html.index('id="page-refine"')]
@@ -5484,9 +5514,9 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('api("/api/kb/status", undefined', kb_fn,
                       "kb/status 是 GET，务必传 undefined")
 
-        # ⑤ 切页时按页加载（加工页刷工具状态、知识库页刷状态）
+        # ⑤ 切页时按页加载（首页刷工具状态、知识库页刷状态）
         act = js[js.index("function activatePage"):js.index("function applySettings")]
-        self.assertIn('name === "process") loadTools()', act)
+        self.assertIn('name === "home") loadTools()', act)
         self.assertIn('name === "kb") loadKbStatus()', act)
 
         # ⑥ 后端空心占位仍诚实保留（红线由后端守护，前端按钮已清）
@@ -5637,9 +5667,11 @@ class AppContractTest(unittest.TestCase):
             self.assertNotIn(gone, html, "HTML 仍残留 %s" % gone)
             self.assertNotIn(gone, js, "JS 仍残留 %s" % gone)
             self.assertNotIn("." + gone, css, "CSS 仍残留 %s" % gone)
-        # 顶部版本号保留（用户裁决）
+        # v1.8.6：顶部版本号徽章改为中英切换按钮（中/EN，单击切换）
         self.assertIn('id="headerTag"', html)
-        self.assertIn('el.headerTag.textContent = "v" + st.version', js)
+        self.assertIn('el.headerTag.addEventListener("click"', js)
+        self.assertNotIn('el.headerTag.textContent = "v" + st.version', js,
+                         "页头仍在显示版本号，未改为语言切换")
 
     # ------------------------------------------------------------------ #
     # 73) v1.0.5 回归：测试不得真唤起资源管理器（用户 2026-11-20 反馈老是弹窗）
@@ -5749,7 +5781,7 @@ class AppContractTest(unittest.TestCase):
         self.assertIn('id="errorBar"', html)
         eb = html.index('id="errorBar"')
         home_start = html.index('id="page-home"')
-        home_end = html.index('id="page-process"')
+        home_end = html.index('id="page-kb"')
         self.assertFalse(home_start < eb < home_end,
                          "errorBar 仍在 page-home 内，跨页提示不可见")
         self.assertLess(eb, home_start, "errorBar 应提升为 .content 全局元素")

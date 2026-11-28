@@ -172,13 +172,13 @@
         },
         {
           "kind": "text_contains",
-          "name": "加工导航项存在",
-          "text": "data-page=\"process\""
-        },
-        {
-          "kind": "text_contains",
           "name": "知识库导航项存在",
           "text": "data-page=\"kb\""
+        },
+        {
+          "kind": "text_absent",
+          "name": "加工导航项已删除",
+          "text": "data-page=\"process\""
         },
         {
           "kind": "text_absent",
@@ -204,52 +204,6 @@
           "各导航图标线条清晰、无重叠"
         ]
       }
-    },
-    {
-      "name": "process",
-      "hash": "",
-      "structure": [
-        {
-          "kind": "id_exists",
-          "name": "加工页容器存在",
-          "id": "page-process"
-        },
-        {
-          "kind": "id_exists",
-          "name": "核心提炼按钮存在",
-          "id": "btnSummarize"
-        },
-        {
-          "kind": "id_exists",
-          "name": "导出 Word 按钮存在",
-          "id": "btnExportDocx"
-        },
-        {
-          "kind": "id_exists",
-          "name": "音频转写按钮存在",
-          "id": "btnAudioTranscribe"
-        },
-        {
-          "kind": "id_exists",
-          "name": "视频提取按钮存在",
-          "id": "btnVideoTranscribe"
-        },
-        {
-          "kind": "id_exists",
-          "name": "链接提取卡片已迁入",
-          "id": "linkCard"
-        },
-        {
-          "kind": "text_absent",
-          "name": "无僵尸占位按钮",
-          "text": "btnTranscribe"
-        },
-        {
-          "kind": "text_absent",
-          "name": "无规划中占位",
-          "text": "is-soon"
-        }
-      ]
     },
     {
       "name": "kb",

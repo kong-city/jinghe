@@ -28,7 +28,9 @@ v[0-9]*.png
 # ---- Electron 外壳（v1.1.0+）----
 # node_modules 与构建产物一律不入库，CI 用 npm ci 按 package-lock.json 还原
 electron/node_modules/
-electron/release/
+# 打包输出目录一律不入库。旧目录（release/）可能因 app.asar 被占用而删不掉，
+# 此时改用另一个输出目录（release2/ 等）重新打包，故用通配覆盖。
+electron/release*/
 # 本地验证用的 setup.exe 输出目录（release-setup / release-setup2 等）同样不入库
 electron/release-setup*/
 # 后端 exe 由 CI 构建后COPY进来（见 ci.yml），不提交二进制

@@ -8,7 +8,7 @@
 3. 加工页回归纯二次加工，知识库页不再有订阅表单；
 4. 前端切换逻辑（switchExtractSource / switchVideoSub / bindExtractSourceTabs）存在，
    且 tab 选择器收窄（不误伤另一组 tab）；
-5. 导航 7 入口 + 4 分组 + 页面物理顺序全部保留（S14 契约不破）。
+5. 导航 6 入口（v1.8.5 加工页已删）+ 4 分组 + 页面物理顺序保留（S14 契约）。
 
 这些断言是硬契约——改布局时必须同步更新，不允许靠删断言让测试变绿。
 """
@@ -32,7 +32,7 @@ class TestUnifiedExtractHub(unittest.TestCase):
 
     # ---------- 1. 来源 tab 与面板 ----------
     def test_01_four_source_tabs_present(self):
-        home = self._page("home", "process")
+        home = self._page("home", "kb")
         for src in ("file", "audio", "video", "sub"):
             self.assertIn('data-extract-tab="%s"' % src, home,
                           "首页缺来源 tab：%s" % src)
@@ -42,7 +42,7 @@ class TestUnifiedExtractHub(unittest.TestCase):
         self.assertRegex(home, r'class="extract-panel active" data-extract-panel="file"')
 
     def test_02_video_subswitch_present(self):
-        home = self._page("home", "process")
+        home = self._page("home", "kb")
         for mode in ("local", "link"):
             self.assertIn('data-video-sub="%s"' % mode, home, "视频缺子切换 tab：%s" % mode)
             self.assertIn('data-video-subpanel="%s"' % mode, home, "视频缺子面板：%s" % mode)
@@ -56,18 +56,18 @@ class TestUnifiedExtractHub(unittest.TestCase):
 
     # ---------- 2. 入口归属 ----------
     def test_04_extract_entries_all_in_home(self):
-        home = self._page("home", "process")
+        home = self._page("home", "kb")
         for fid in ("btnRun", "btnPreview", "btnAudioTranscribe", "btnVideoTranscribe",
                     "btnLinkRun", "btnLinkInspect", "subUrl", "btnSubAdd", "toolStatus",
                     "linkCap", "subSchedHint"):
             self.assertIn('id="%s"' % fid, home, "统一提取台缺 %s" % fid)
 
-    def test_05_process_is_pure_secondary(self):
-        proc = self._page("process", "kb")
+    def test_05_process_page_deleted(self):
+        """v1.8.5：加工页整体删除，文档加工三按钮在首页产物中心上方。"""
+        home = self._page("home", "kb")
+        self.assertNotIn('id="page-process"', self.html, "加工页容器未删净")
         for fid in ("btnSummarize", "btnExportDocx", "btnWordEnhance"):
-            self.assertIn('id="%s"' % fid, proc, "加工页缺 %s" % fid)
-        for fid in ("btnAudioTranscribe", "btnVideoTranscribe", "btnLinkRun", "subUrl"):
-            self.assertNotIn('id="%s"' % fid, proc, "%s 应从加工页迁出" % fid)
+            self.assertIn('id="%s"' % fid, home, "首页产物中心上方缺 %s" % fid)
 
     def test_06_kb_no_sub_form(self):
         kb = self._page("kb", "refine")
@@ -93,7 +93,7 @@ class TestUnifiedExtractHub(unittest.TestCase):
 
     # ---------- 4. S14 骨架不破 ----------
     def test_10_nav_seven_entries_intact(self):
-        for p in ("home", "process", "kb", "refine", "revise", "settings", "about"):
+        for p in ("home", "kb", "refine", "revise", "settings", "about"):
             self.assertIn('data-page="%s"' % p, self.html, "导航缺 %s" % p)
             self.assertIn('id="page-%s"' % p, self.html, "缺页面容器 %s" % p)
 
@@ -103,7 +103,7 @@ class TestUnifiedExtractHub(unittest.TestCase):
 
     def test_12_page_physical_order_intact(self):
         pages = re.findall(r'id="page-([a-z]+)"', self.html)
-        self.assertEqual(pages, ["home", "process", "kb", "refine", "revise",
+        self.assertEqual(pages, ["home", "kb", "refine", "revise",
                                  "settings", "about"], "页面物理顺序被破坏")
 
     def test_13_css_styles_present(self):

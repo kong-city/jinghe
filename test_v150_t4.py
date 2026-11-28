@@ -14,7 +14,7 @@ T4-3    只索引围栏内产物（越权目录不进索引）           test_03
 T4-4    历史批次字段完整（路径/时间/md/derived/大小）  test_04
 T4-5    前端首页产物中心卡片 + 刷新/打开接线            test_05
 T4-6    提取完成后自动刷新历史索引                     test_06
-T4-7    不新增导航入口（7 入口测试契约不变）           test_07
+T4-7    不新增导航入口（6 入口测试契约，加工页已删）    test_07
 T4-8    不碰冻结 extract.py 内核 / 不放宽 /api/open     test_08
 ======  ==============================================  =====================
 
@@ -129,14 +129,14 @@ class TestV150T4(unittest.TestCase):
                       "提取完成后未刷新历史索引")
 
     def test_07_no_new_nav_entry(self) -> None:
-        """7 入口测试契约不变：不新增 data-page。"""
+        """6 入口测试契约（v1.8.5 加工页已删）：不新增 data-page。"""
         import re
         pages = re.findall(r'data-page="([^"]+)"', self.ui_html)
         self.assertEqual(
             sorted(set(pages)),
-            sorted(["home", "process", "refine", "revise",
+            sorted(["home", "refine", "revise",
                     "kb", "settings", "about"]),
-            "产物中心不得新增导航入口（7 入口锁死）")
+            "产物中心不得新增导航入口（6 入口锁死）")
 
     def test_08_frozen_contract_untouched(self) -> None:
         """不碰冻结 extract.py；不放宽 /api/open 白名单。"""

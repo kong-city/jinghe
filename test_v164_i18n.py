@@ -39,7 +39,7 @@ class TestV164I18n(unittest.TestCase):
 
     # ---- 一、HTML 标记 ----
     def test_01_nav_labels_have_i18n_markers(self):
-        for page in ("home", "process", "refine", "revise", "kb", "settings", "about"):
+        for page in ("home", "refine", "revise", "kb", "settings", "about"):
             self.assertIn(
                 'data-i18n="nav.%s"' % page, HTML,
                 "导航 %s 缺 data-i18n 标记" % page)
@@ -54,7 +54,7 @@ class TestV164I18n(unittest.TestCase):
 
     def test_03_nav_labels_still_chinese_by_default(self):
         """默认必须是中文——用户要求的第一步就是「翻译中文」。"""
-        for label in ("首页", "加工", "精读", "修订", "知识库", "设置", "关于"):
+        for label in ("首页", "精读", "修订", "知识库", "设置", "关于"):
             self.assertIn('data-i18n="nav.', HTML)
             self.assertIn(">%s</span>" % label, HTML,
                           "默认文案缺中文 %s" % label)
@@ -72,7 +72,7 @@ class TestV164I18n(unittest.TestCase):
         self.assertIn("var I18N = window.JINGHE_I18N", JS_CODE)
         for lang in ("zh:", "en:"):
             self.assertIn(lang, I18NJS)
-        for page in ("home", "process", "refine", "revise", "kb", "settings", "about"):
+        for page in ("home", "refine", "revise", "kb", "settings", "about"):
             self.assertIn('"nav.%s"' % page, I18NJS,
                           "字典缺 nav.%s" % page)
             self.assertIn('"page.%s.title"' % page, I18NJS)
@@ -120,7 +120,7 @@ class TestV164I18n(unittest.TestCase):
     # ---- 五、回归护栏 ----
     def test_14_function_attrs_untouched(self):
         """翻译不能动 data-page / data-extract-tab 等功能属性。"""
-        self.assertEqual(HTML.count('data-page="'), 7, "导航入口数被改动")
+        self.assertEqual(HTML.count('data-page="'), 6, "导航入口数被改动（v1.8.5 加工页已删）")
         for tab in ("file", "audio", "video", "sub"):
             self.assertIn('data-extract-tab="%s"' % tab, HTML)
             self.assertNotIn('data-i18n="%s"' % tab, HTML)
@@ -315,7 +315,7 @@ class UiExperienceV170Test(unittest.TestCase):
         self.assertIn("function cmdExecuteActive", js, "缺执行入口")
         self.assertIn(".cmd-overlay", css, "缺命令面板样式")
         # 命令面板不能加 data-page（否则破坏 7 个导航入口的测试契约）
-        self.assertEqual(html.count('data-page="'), 7, "命令面板误加了 data-page")
+        self.assertEqual(html.count('data-page="'), 6, "命令面板误加了 data-page（应为 6 页）")
 
     def test_05_result_front_loading(self):
         """提取成功后按钮下方直接给摘要，不必滚到结果 tab。"""
@@ -431,7 +431,7 @@ class LayoutRestructureV171Test(unittest.TestCase):
     def test_04_artifact_center_moved_into_sidebar(self):
         """产物中心进右栏，不再沉在页面底部。"""
         home = self.html[self.html.index('id="page-home"'):
-                         self.html.index('id="page-process"')]
+                         self.html.index('id="page-kb"')]
         self.assertIn('id="artifactCenter"', home, "产物中心不在首页")
         # 必须位于 file 面板内（与结果区同列）
         panel = home[home.index('data-extract-panel="file"'):]
@@ -450,16 +450,14 @@ class LayoutRestructureV171Test(unittest.TestCase):
         self.assertIn("@media (max-width: 1180px)", self.css,
                       "缺窄屏单列回落")
 
-    def test_06_process_page_pipeline_board(self):
-        """加工页升级为流水线看板：三个步骤卡 + 跳转入口。"""
-        proc = self.html[self.html.index('id="page-process"'):
-                         self.html.index('id="page-kb"')]
-        self.assertIn('class="pipeline"', proc, "缺流水线看板")
-        self.assertEqual(proc.count('class="pipe-step"'), 3,
-                         "流水线看板应有 3 个步骤卡")
-        for target in ("refine", "revise", "kb"):
-            self.assertIn('data-goto="%s"' % target, proc,
-                          "流水线看板缺跳转 %s" % target)
+    def test_06_process_page_removed(self):
+        """v1.8.5：加工页与流水线看板已删；流程条②改指向精读页。"""
+        self.assertNotIn('id="page-process"', self.html, "加工页容器未删净")
+        self.assertNotIn('id="flowGuide"', self.html, "看板未删净")
+        self.assertNotIn('data-goto="process"', self.html, "流程条仍指向已删加工页")
+        strip = self.html[self.html.index('class="pipeline-strip"'):
+                          self.html.index('source-tabs-card')]
+        self.assertIn('data-goto="refine"', strip, "流程条②应指向精读页")
 
     def test_07_history_batches_collapsed(self):
         """历史批次改为折叠抽屉，默认收起。"""
@@ -471,8 +469,8 @@ class LayoutRestructureV171Test(unittest.TestCase):
         """本轮是纯布局改造：不新增/删除导航入口，不新增 API。"""
         import re
         pages = re.findall(r'data-page="([^"]+)"', self.html)
-        self.assertEqual(len(pages), 7, "导航入口数变了：%s" % pages)
-        for p in ("home", "process", "kb", "refine", "revise", "settings", "about"):
+        self.assertEqual(len(pages), 6, "导航入口数变了：%s" % pages)
+        for p in ("home", "kb", "refine", "revise", "settings", "about"):
             self.assertIn(p, pages, "导航缺 %s" % p)
         # 不引入新的 API 路径
         for api in ("/api/layout", "/api/sidebar", "/api/workspace"):

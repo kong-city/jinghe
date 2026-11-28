@@ -155,6 +155,33 @@ FFMPEG_SHA256 = ("f27ca4cb85e2d4946deedbce1a81245dfd942a2bcf94b53676fb3956aa95bf
 # 「探测 + 给出官方下载入口」，绝不进 install() 令牌链路、绝不静默安装。
 # 官方直链（微软 aka.ms 短链，始终指向最新版 vc_redist.x64.exe）。
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+
+# v1.8.5（用户 2026-11-28 裁决：下载必走方便稳定的渠道）：
+# 微软官方 CDN 在受限网络下实测不可达（aka.ms 跳转后 10.6s 超时、下载 0 字节）。
+# 阿里云 PyPI 镜像的 msvc-runtime wheel 内含微软官方重分发的同款 DLL，
+# 实测 Authenticode 签名 Status=Valid、签名者 Microsoft Windows Software
+# Compatibility Publisher；固定 sha256 防止镜像内容被替换。
+# wheel 只是分发容器（cp313 标签），里面的 DLL 与 Python 版本无关。
+VC_MSVC_WHEEL_FILE = "msvc_runtime-14.51.36231-cp313-cp313-win_amd64.whl"
+VC_MSVC_WHEEL_URL = ("https://mirrors.aliyun.com/pypi/packages/c2/6e/"
+                     "7ba5696e9d8c1bcb01352f06e441497c308e84f75aba598400646ab31ca7/"
+                     + VC_MSVC_WHEEL_FILE)
+VC_MSVC_WHEEL_SHA256 = ("f3c3ac4f733a774f6ae209567e533bfde6f72dc1c109"
+                        "77733bfe09ce01e5b624")
+
+# whisper 原生模型权重的国内镜像（hf-mirror 的 Angelholl/openai-whisper-pt
+# 是字节级镜像；下面 5 个 sha256 与 whisper 上游 _MODELS pin 逐一比对一致）。
+# 仅登记为稳定源常量：S3 契约 §3 规定软件不自动下载模型，后续迭代可直接复用。
+WHISPER_MODEL_MIRROR = ("https://hf-mirror.com/Angelholl/openai-whisper-pt/"
+                        "resolve/main/%s.pt")
+WHISPER_MODEL_SHA256 = {
+    "tiny": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
+    "base": "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e",
+    "small": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794",
+    "medium": "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1",
+    "large-v2": "81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524",
+}
+
 # 探测口径：whisper/torch 实际加载时需要的 4 个关键 DLL。
 # 本机实测缺 vcruntime140_threads.dll + msvcp140_atomic_wait.dll → torch
 # 报 WinError 126 → whisper「装了也用不了」。这 4 个齐全才算运行库可用。
@@ -207,7 +234,10 @@ COMPONENTS = (
         "probe": "",             # 无 CLI；探测走 probe_module
         "probe_module": "fitz,rapidocr_onnxruntime",
         "kind": "pylib",
-        "package": "pymupdf rapidocr-onnxruntime",
+# v1.8.5：钉住 onnxruntime 兼容版。实测 1.32.0 在 Windows Server 2019
+        # 上 import 即访问违例（0xC0000005）崩溃（该版要求 Win10+）；
+        # 1.20.0 在本机与 rapidocr 均导入正常并完成中文识别。
+        "package": "pymupdf rapidocr-onnxruntime onnxruntime==1.20.0",
         "exe": "",
     },
     {
@@ -220,6 +250,8 @@ COMPONENTS = (
         "probe": "",              # 无 CLI；探测走 _probe_vc_runtime()
         "kind": "system",
         "url": VC_REDIST_URL,     # 前端按钮打开此官方下载页，不触发安装
+        # v1.8.5：官方源不可达时的国内镜像补齐入口（独立 API，不进 install 链路）
+        "mirror_url": VC_MSVC_WHEEL_URL,
         "exe": "",
     },
 )
@@ -616,6 +648,12 @@ def _dll_precheck(site_packages: Path, component: str = "") -> tuple[bool, str]:
                     continue
                 if any((root / dep).exists() for root in py_dirs):
                     continue
+                # v1.8.5：组件 bin 目录也是合法来源——微软官方 CDN 不可达时，
+                # 可把微软官方重分发的同款 DLL 放这里（不写系统目录、不需管理员
+                # 权限），项目的 PATH 增强机制保证 torch 经它加载得到。
+                # 不认这个目录会误报「缺 VC++ 运行库」，而组件其实完全可用。
+                if (BIN_DIR / dep).exists():
+                    continue
                 if (sys32 / dep).exists():
                     continue
                 missing.add(dep)
@@ -651,6 +689,25 @@ def _interpreter_for(exe_path: str) -> str:
     except (OSError, ValueError):
         pass
     return ""
+
+
+def _last_error_line(text: str) -> str:
+    """从合并输出（stdout+stderr）里挑出**真正的错误行**。
+
+    子进程把 stderr 并进 stdout 后，最后一行往往只是 warning 的尾巴
+    （实测 pymupdf 的 ``warnings.warn(``），拿它当「失败原因」等于没报错，
+    用户只看到一句无意义的碎片。故：从后往前找第一行非 warning 的；
+    若整段都是 warning，才退回最后一行。
+    """
+    lines = [ln.strip() for ln in (text or "").strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    noise = ("UserWarning", "FutureWarning", "DeprecationWarning",
+             "PendingDeprecationWarning", "warnings.warn(")
+    for ln in reversed(lines):
+        if not any(n in ln for n in noise):
+            return ln
+    return lines[-1]
 
 
 def _import_check(exe_path: str, module: str) -> tuple[bool, str]:
@@ -702,7 +759,7 @@ def _import_check(exe_path: str, module: str) -> tuple[bool, str]:
             _IMPORT_CHECK_CACHE[key] = (now, True, "")
         return True, ""
     out = (proc.stdout or "").strip().splitlines()
-    reason = out[-1][:200] if out else "导入失败（退出码 %d）" % proc.returncode
+    reason = _last_error_line("\n".join(out))[:200] if out else "导入失败（退出码 %d）" % proc.returncode
     with _LOCK:
         _IMPORT_CHECK_CACHE[key] = (now, False, reason)
     return False, reason
@@ -731,7 +788,7 @@ def _import_check_strict(py: str, modules: list[str]) -> tuple[bool, str]:
     if r.returncode == 0:
         return True, ""
     lines = (r.stdout or "").strip().splitlines()
-    return False, lines[-1][:200] if lines else "导入失败（退出码 %d）" % r.returncode
+    return False, _last_error_line("\n".join(lines))[:200] if lines else "导入失败（退出码 %d）" % r.returncode
 
 
 # --------------------------------------------------------------------------- #
@@ -756,14 +813,34 @@ def _probe_pylib(comp: dict) -> dict:
             "path": py, "state": "ok"}
 
 
+def _vc_dll_dirs() -> list[Path]:
+    """VC++ 关键 DLL 的扫描目录，按优先级：系统目录 → 组件 bin 目录。
+
+    v1.8.5：把组件 bin 目录也纳入扫描。微软官方 CDN 在受限网络下
+    完全不可达（实测直连 download.visualstudio.microsoft.com 超时、
+    下载 0 字节），此时「下载安装」按钮形同虚设；而 PyPI 的
+    msvc-runtime wheel 内含微软官方重分发的同款 DLL（Authenticode
+    签名有效，签名者 Microsoft Windows Software Compatibility
+    Publisher）。解压进组件 bin 目录后，torch 经项目的 PATH 增强机制
+    即可找到它们——不写系统目录、不需管理员权限。
+    """
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return [Path(root) / "System32", Path(root) / "SysWOW64", BIN_DIR]
+
+
+def _vc_source_dirs(dirs: list[Path]) -> int:
+    """有多少个目录实际提供了 VC++ DLL（用于如实标注 DLL 来源）。"""
+    return sum(1 for d in dirs
+               if any(d.is_dir() and (d / dll).is_file() for dll in _VC_PROBE_DLLS))
+
+
 def _vc_dlls_present() -> tuple[str, ...]:
-    """返回系统目录里实际存在的 VC++ 关键 DLL 名（纯文件扫描，零网络）。
+    """返回实际存在的 VC++ 关键 DLL 名（纯文件扫描，零网络）。
 
     单独抽出是为了可测试：测试 mock 本函数即可构造「齐全 / 缺失」两态，
     不依赖跑测试那台机器是否装了 VC++ 运行库。
     """
-    root = os.environ.get("SystemRoot", r"C:\Windows")
-    scan_dirs = [Path(root) / "System32", Path(root) / "SysWOW64"]
+    scan_dirs = _vc_dll_dirs()
     return tuple(
         dll for dll in _VC_PROBE_DLLS
         if any(d.is_dir() and (d / dll).is_file() for d in scan_dirs)
@@ -781,25 +858,36 @@ def _probe_vc_runtime() -> dict:
     if os.name != "nt":
         return {"available": False, "version": "", "path": "",
                 "reason": "VC++ 运行库仅适用于 Windows", "state": "missing"}
-    root = os.environ.get("SystemRoot", r"C:\Windows")
-    system32 = str(Path(root) / "System32")
+    dirs = _vc_dll_dirs()
+    # path 反映**实际命中**的目录：装了官方运行库是 System32，
+    # 走 PyPI 备用路线解压到组件 bin 目录时就是 bin 目录——别再报错位置。
+    hit = next((d for d in dirs
+                if any(d.is_dir() and (d / dll).is_file() for dll in _VC_PROBE_DLLS)),
+               dirs[0])
     found = _vc_dlls_present()
     missing = tuple(dll for dll in _VC_PROBE_DLLS if dll not in found)
     if missing:
         return {
             "available": False,
             "version": "",
-            "path": system32,
+            "path": str(hit),
             "reason": (
                 "缺少 VC++ 运行库文件：%s。\n"
                 "Whisper 依赖的 torch 需要这些 DLL，缺失会导致"
                 "「装了组件却用不了」（WinError 126）。"
-                "请在设置页点「下载安装」，用微软官方安装包补齐后重启软件。"
+                "请在设置页点「下载安装」（微软官方安装包）或「镜像补齐」"
+                "（推荐：阿里云国内镜像，自动取微软官方重分发的同款 DLL，"
+                "固定 SHA256 校验、不写系统目录、不需管理员权限），完成后重启软件。\n"
+                "官方源在当前网络不可达时（连不上 download.visualstudio."
+                "microsoft.com），直接用「镜像补齐」即可。"
                 % "、".join(missing)),
             "state": "missing",
         }
-    return {"available": True, "version": "Visual C++ Redistributable",
-            "path": system32, "reason": "", "state": "ok"}
+    return {"available": True,
+            "version": ("Visual C++ Redistributable（部分 DLL 来自组件目录）"
+                        if _vc_source_dirs(dirs) > 1
+                        else "Visual C++ Redistributable"),
+            "path": str(hit), "reason": "", "state": "ok"}
 
 
 def _probe_one(probe_name: str, deep: bool = False) -> dict:
@@ -944,8 +1032,9 @@ def preflight(component_id: str) -> dict:
             blockers.append({
                 "code": "vc-runtime",
                 "message": "安装 Whisper 前请先安装 VC++ 运行库，否则装好也用不了"
-                           "（WinError 126）。请在设置页点「下载安装」，"
-                           "按微软官方指引装完并重启软件后再试。",
+                           "（WinError 126）。请在设置页点「镜像补齐」（推荐，"
+                           "走阿里云国内镜像）或「下载安装」（微软官方源），"
+                           "装完并重启软件后再试。",
                 "url": VC_REDIST_URL,
             })
     return {
@@ -1971,6 +2060,79 @@ def install(component_id: str) -> dict:
                      name="jinghe-component-install-%s" % component_id,
                      daemon=True).start()
     return {"ok": True, "already_installed": False}
+
+
+def install_vc_runtime(*, user_initiated: bool = False) -> dict:
+    """从国内镜像补齐 VC++ 运行库 DLL（v1.8.5，手动令牌保护）。
+
+    安全边界（与 install() 的红线一致）：
+
+    * 必须显式 ``user_initiated=True``（来自用户点「镜像补齐」按钮）。
+      默认 False 时什么都不做——不发令牌、不联网、不写文件。
+    * 不进 ``install()`` / ``batch_enable()`` 链路：system 项仍被两者
+      显式拒绝（既有守护测试 test_v180 不变）。
+    * 固定 sha256，经 :func:`_download` 原子替换；DLL 只写组件 bin 目录，
+      不碰 System32、不需要管理员权限；靠 ``ensure_component_path()``
+      注入 PATH 后对 torch 生效。
+
+    官方 aka.ms 入口保留为备选（前端原按钮不动），本函数是官方源不可达
+    时的国内稳定通道。
+    """
+    if not user_initiated:
+        return {"ok": False, "error": "未获用户授权，拒绝下载", "code": "no-opt-in"}
+    if os.name != "nt":
+        return {"ok": False, "error": "VC++ 运行库仅适用于 Windows", "code": "unsupported"}
+
+    missing = [d for d in _VC_PROBE_DLLS if d not in _vc_dlls_present()]
+    if not missing:
+        return {"ok": True, "already_installed": True,
+                "message": "VC++ 运行库已齐全，无需补齐"}
+
+    wheel = COMPONENT_DIR / VC_MSVC_WHEEL_FILE
+    with _LOCK:
+        _USER_OPT_INS.add("vc-runtime")
+        _USER_OPT_IN["granted"] = True
+        _USER_OPT_IN["component_id"] = "vc-runtime"
+        job = _job_for("vc-runtime")
+        job.update({"running": True, "state": "running", "percent": 0.0,
+                    "message": "从国内镜像补齐 VC++ 运行库…", "error": "",
+                    "cancelled": False, "events": [], "next_seq": 1})
+        _sync_recent("vc-runtime")
+    try:
+        _emit("progress", "从阿里云镜像下载 VC++ 运行库…", 0.05, "vc-runtime")
+        _download(VC_MSVC_WHEEL_URL, wheel, "vc-runtime",
+                  sha256=VC_MSVC_WHEEL_SHA256)
+        _emit("progress", "解压微软官方重分发 DLL…", 0.92, "vc-runtime")
+        BIN_DIR.mkdir(parents=True, exist_ok=True)
+        installed: list[str] = []
+        with zipfile.ZipFile(wheel) as zf:
+            for name in zf.namelist():
+                base = Path(name).name
+                if not base.lower().endswith(".dll"):
+                    continue
+                with zf.open(name) as src, open(BIN_DIR / base, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                installed.append(base)
+        _IMPORT_CHECK_CACHE.clear()
+        _emit("done", "VC++ 运行库已补齐：%s" % "、".join(installed), 1.0, "vc-runtime")
+        with _LOCK:
+            job["running"] = False
+            job["state"] = "done"
+        return {"ok": True, "installed": installed,
+                "message": "VC++ 运行库已补齐，重启软件后生效"}
+    except Exception as exc:
+        msg = str(exc)[:200]
+        _emit("error", "补齐失败：%s" % msg, None, "vc-runtime")
+        with _LOCK:
+            job["running"] = False
+            job["state"] = "failed"
+            job["error"] = msg
+        return {"ok": False, "error": msg, "code": "failed"}
+    finally:
+        with _LOCK:
+            _USER_OPT_INS.discard("vc-runtime")
+            if _USER_OPT_IN["component_id"] == "vc-runtime":
+                _USER_OPT_IN.update({"granted": False, "component_id": ""})
 
 
 def auto_install_missing(*, enabled: bool = False) -> dict:

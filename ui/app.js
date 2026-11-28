@@ -95,9 +95,9 @@
     pageTitle: $("pageTitle"),
     pageSub: $("pageSub"),
     headerTag: $("headerTag"),
+    themeTag: $("themeTag"),
     pages: {
       home: $("page-home"),
-      process: $("page-process"),
       kb: $("page-kb"),
       refine: $("page-refine"),
       revise: $("page-revise"),
@@ -433,6 +433,15 @@
     if (el.pageSub) el.pageSub.textContent = tr("page." + currentPage + ".sub");
     if (el.setLangZh) el.setLangZh.checked = (currentLang === "zh");
     if (el.setLangEn) el.setLangEn.checked = (currentLang === "en");
+    // v1.8.6 / v1.8.7：页头两个按钮在此同步渲染——语言变化会同时改变
+    // 中英（中↔EN）与深浅（浅/深↔L/D）的文字。保持函数体自包含，
+    // 运行时测试只抽本函数执行，不依赖外部辅助函数。
+    if (el.headerTag) el.headerTag.textContent = (currentLang === "en") ? "EN" : "中";
+    if (el.themeTag) {
+      el.themeTag.textContent = (currentTheme === "dark")
+        ? ((currentLang === "en") ? "D" : "深")
+        : ((currentLang === "en") ? "L" : "浅");
+    }
     if (document.documentElement) {
       document.documentElement.setAttribute("lang", currentLang === "zh" ? "zh-CN" : "en");
     }
@@ -462,6 +471,13 @@
         window.desktopMenu.available &&
         typeof window.desktopMenu.setTheme === "function") {
       window.desktopMenu.setTheme(currentTheme);
+    }
+    // v1.8.7：主题变化同步页头深浅按钮文字（浅/深 ↔ L/D）。
+    // 与 applyLang 里的渲染保持一致；函数体自包含，便于运行时测试抽取。
+    if (el.themeTag) {
+      el.themeTag.textContent = (currentTheme === "dark")
+        ? ((currentLang === "en") ? "D" : "深")
+        : ((currentLang === "en") ? "L" : "浅");
     }
   }
 
@@ -497,10 +513,9 @@
 
   var PAGE_META = {
     home: { title: "① 获取 · 统一提取台", sub: "文档 / 音频 / 视频（含链接）/ 订阅四类来源同等级切换，产物统一落到产物中心" },
-    process: { title: "② 加工 · 文档加工", sub: "核心提炼 / 导出文档 / 文档输入增强；提纯核心与改写补充走左侧导航后续步骤" },
-    kb: { title: "④ 沉淀 · 知识库", sub: "把产物入库为可检索条目 + 维护索引，全部保存在本机；订阅博主在首页统一提取台" },
-    refine: { title: "② 加工 · 提纯核心", sub: "第二步：对 md 提取核心知识点，默认抽取式（原文原句、可逐字回溯）" },
-    revise: { title: "③ 加工 · 改写补充", sub: "第三步：术语归一 / 合并去重 / 改写补充，变更以颜色标记区分" },
+    kb: { title: "③ 沉淀 · 知识库", sub: "把产物入库为可检索条目 + 维护索引，全部保存在本机；订阅博主在首页统一提取台" },
+    refine: { title: "② 加工 · 提纯核心", sub: "加工流程第 1 步：对 md 提取核心知识点，默认抽取式（原文原句、可逐字回溯）" },
+    revise: { title: "② 加工 · 改写补充", sub: "加工流程第 2 步：术语归一 / 合并去重 / 改写补充，变更以颜色标记区分" },
     settings: { title: "系统 · 设置", sub: "提纯方式与迭代轮数、组件、路径——只保存在本机，改动即时生效" },
     about: { title: "系统 · 关于", sub: "版本、路线与隐私说明" }
   };
@@ -562,11 +577,11 @@
     });
   }
 
-  // v1.7.1：首页流程指引条同步当前阶段。
-  // 三段映射：home→①取内容；process/refine/revise→②加工；kb→③沉淀。
+  // v1.8.5：首页流程指引条同步当前阶段。
+  // 三段映射：home→①取内容；refine/revise→②加工（流程条②指向 refine）；kb→③沉淀。
   function syncStrip(name) {
     var flowStage = (name === "kb") ? "kb"
-                  : ((name === "process" || name === "refine" || name === "revise") ? "process" : "home");
+                  : ((name === "refine" || name === "revise") ? "refine" : "home");
     var stripSteps = document.querySelectorAll(".strip-step");
     for (var f = 0; f < stripSteps.length; f += 1) {
       stripSteps[f].classList.toggle("is-current",
@@ -593,8 +608,7 @@
     if (name === "settings") { loadSettingsIntoForm(); loadBackendForm(); loadComponents(); }
     if (name === "about") loadAbout();
     if (name === "refine" || name === "revise") refreshRefineCap();
-    // v1.1.0：进入加工页时刷新一次工具能力（按钮「未启用」判定依赖它）
-    if (name === "process") loadTools();
+    // v1.8.5：加工页已删，工具能力刷新只随首页加载（按钮「未启用」判定依赖它）
     // v1.6.2：音视频转写迁入首页，进入首页也刷新工具能力
     if (name === "home") loadTools();
     // v1.1.0：进入知识库页时刷新真实状态（S9 端点早已实现）
@@ -721,7 +735,8 @@
           el.aboutSettingsFile.textContent = sr.settings_file;
         }
       }).catch(function () {});
-      if (el.headerTag) el.headerTag.textContent = "v" + ver;
+      // v1.8.6：页头徽章已改为中英切换按钮，版本号不再写这里；
+      // 当前版本仍由本函数渲染到 aboutVersion（见上）。
     }).catch(function () { /* 读不到就保持占位符 */ });
   }
 
@@ -1861,14 +1876,13 @@
 
   /* ------------------------------ v1.7.0 命令面板 ------------------------------ */
   // Ctrl+K 全局命令面板：页面跳转 + 高频动作，键盘可达、中英双语。
-  // 命令注册表只引用已有函数，不改变任何页面结构（data-page 数量保持 7）。
+  // 命令注册表只引用已有函数，不改变任何页面结构（v1.8.5 起 data-page 数量为 6）。
   var cmdOpen = false;
   var cmdActive = 0;
   var cmdVisible = [];
   var CMD_ITEMS = [
     { id: "page.home",     group: "页面",  label: "nav.home",     hint: "跳转",  kw: "home shouye 首页",        run: function () { activatePage("home"); } },
-    { id: "page.process",  group: "页面",  label: "nav.process",  hint: "跳转",  kw: "process jiagong 加工",    run: function () { activatePage("process"); } },
-    { id: "page.refine",   group: "页面",  label: "nav.refine",   hint: "跳转",  kw: "refine jingdu 精读",      run: function () { activatePage("refine"); } },
+    { id: "page.refine",   group: "页面",  label: "nav.refine",   hint: "跳转",  kw: "refine jingdu 精读 jiagong 加工", run: function () { activatePage("refine"); } },
     { id: "page.revise",   group: "页面",  label: "nav.revise",   hint: "跳转",  kw: "revise xiuding 修订",     run: function () { activatePage("revise"); } },
     { id: "page.kb",       group: "页面",  label: "nav.kb",       hint: "跳转",  kw: "kb knowledge zhishiku 知识库", run: function () { activatePage("kb"); } },
     { id: "page.settings", group: "页面",  label: "nav.settings", hint: "跳转",  kw: "settings shezhi 设置",    run: function () { activatePage("settings"); } },
@@ -2354,6 +2368,19 @@
       row.appendChild(info);
       row.appendChild(badge);
       row.appendChild(btn);
+      // v1.8.5：官方源不可达时的国内稳定通道。保留原「下载安装」按钮与
+      // download 分支（system 项仍不进 install 令牌链路），仅额外提供
+      // 一个独立 API 的镜像补齐入口；不写 System32、不需管理员权限。
+      if (isSystem && !c.installed) {
+        var mirrorBtn = makeEl("button", "btn component-toggle btn-vc-mirror",
+                               tr("镜像补齐"));
+        mirrorBtn.type = "button";
+        mirrorBtn.setAttribute("data-role", "vc-mirror");
+        mirrorBtn.setAttribute("data-cid", c.id);
+        mirrorBtn.setAttribute("data-system", "true");
+        mirrorBtn.title = "阿里云国内镜像 · 微软官方重分发 DLL · 固定 SHA256 校验";
+        row.appendChild(mirrorBtn);
+      }
       el.componentList.appendChild(row);
     });
 
@@ -2483,6 +2510,29 @@
       if (btn.getAttribute("data-role") === "download") {
         var url = btn.getAttribute("data-url") || "";
         if (/^https?:\/\//.test(url)) window.open(url, "_blank");
+        return;
+      }
+      // v1.8.5：国内镜像补齐走独立端点，仍由用户点击触发（手动令牌），
+      // 与 install() 的「绝不主动下载」红线保持一致。
+      if (btn.getAttribute("data-role") === "vc-mirror") {
+        var label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "补齐中…";
+        api("/api/components/vc-mirror", {}, 120000).then(function (r) {
+          btn.disabled = false;
+          btn.textContent = label;
+          if (r && r.ok) {
+            showToast(r.already_installed ? "VC++ 运行库已齐全"
+                                          : "VC++ 运行库已补齐，重启软件后生效");
+            loadComponents();
+          } else {
+            showToast("镜像补齐失败：" + ((r && r.error) || "未知错误"), true);
+          }
+        }).catch(function (err) {
+          btn.disabled = false;
+          btn.textContent = label;
+          showToast("镜像补齐失败：" + (err && err.message ? err.message : err), true);
+        });
         return;
       }
       enableComponent(btn.getAttribute("data-cid"));
@@ -4176,6 +4226,22 @@
     if (el.setLangEn) el.setLangEn.addEventListener("change", function () {
       if (el.setLangEn.checked) { applyLang("en"); uiPrefOverride.lang = "en"; persistUiPref("lang", "en"); }
     });
+    // v1.8.6：页头右上角「中 / EN」按钮——单击切换并显示下一个语言。
+    // 与设置页单选共用 applyLang → uiPrefOverride → persistUiPref 链路，真源一致。
+    if (el.headerTag) el.headerTag.addEventListener("click", function () {
+      var next = (currentLang === "en") ? "zh" : "en";
+      applyLang(next);
+      uiPrefOverride.lang = next;
+      persistUiPref("lang", next);
+    });
+    // v1.8.7：页头「浅 / 深」按钮——单击切换主题，与中英按钮同一交互模式。
+    // 复用设置页单选的 applyTheme → uiPrefOverride → persistUiPref 链路，真源一致。
+    if (el.themeTag) el.themeTag.addEventListener("click", function () {
+      var next = (currentTheme === "dark") ? "light" : "dark";
+      applyTheme(next);
+      uiPrefOverride.theme = next;
+      persistUiPref("theme", next);
+    });
     // v1.7.0：主题即时预览（保存后永久生效，与语言一致）
     // v1.7.1：主题改为点选即落盘——原先只改 DOM，切页回来会被后端旧值盖回浅色。
     if (el.setThemeLight) el.setThemeLight.addEventListener("change", function () {
@@ -4308,7 +4374,8 @@
       if (st.version && st.version !== "unknown") {
         document.title = "精核 · 文件提取 v" + st.version;
         syncShellTitle();
-        if (el.headerTag) el.headerTag.textContent = "v" + st.version;
+        // v1.8.6：页头徽章改为语言切换按钮，文字由 applyLang() 统一渲染，
+        // 这里不再注入版本号（版本号仍保留在窗口标题与 aboutVersion）。
       }
       if (st.log_file) {
         logFile = st.log_file;

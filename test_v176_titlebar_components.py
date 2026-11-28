@@ -62,6 +62,15 @@ class TestTitlebarTheme(unittest.TestCase):
         self.assertIn("-webkit-app-region: drag", self.css)
         self.assertIn("env(titlebar-area-width", self.css)
 
+    def test_04b_no_titlebar_bottom_border(self):
+        """v1.8.9：取消标题栏底部灰线——原线只画到按钮区中途、右侧未对齐。"""
+        start = self.css.index(".shell-titlebar {")
+        end = self.css.index("}", start)
+        block = self.css[start:end]
+        self.assertNotIn("border-bottom", block, "标题栏底部灰线应取消")
+        # 宽度仍避开 overlay 按钮区，标题文字不被窗口按钮覆盖
+        self.assertIn("env(titlebar-area-width", self.css)
+
     def test_05_menu_bridge_is_whitelisted(self):
         preload = (ROOT / "electron" / "preload.js").read_text(encoding="utf-8")
         js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
